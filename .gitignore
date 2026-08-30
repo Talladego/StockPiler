@@ -1,0 +1,13 @@
+# Local / generated
+.DS_Store
+Thumbs.db
+*.bak
+*.swp
+
+# Offline SavedVariables tools (machine-specific paths)
+/scripts/
+
+# Editor
+.idea/
+.vscode/
+*.code-workspace

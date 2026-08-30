@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <Scripts>
+        <Script file="Source/StockPilerTabAutoGrow.lua" />
+    </Scripts>
+    <Windows>
+        <Window name="StockPilerTabAutoGrow" movable="false">
+            <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" relativeTo="StockPilerWindowSocket">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+                <Anchor point="bottomright" relativePoint="bottomright" relativeTo="StockPilerWindowSocket">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="StockPilerTabAutoGrow.Initialize" />
+            </EventHandlers>
+            <Windows>
+                <Window name="$parentBanner">
+                    <Size>
+                        <AbsPoint x="500" y="56" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                        <Anchor point="topright" relativePoint="topright">
+                            <AbsPoint x="-20" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <FullResizeImage name="$parentBackground" inherits="SettingsSectionBackground" />
+                        <Label name="$parentTitle" inherits="EA_Settings_SectionTitle">
+                            <Size>
+                                <AbsPoint x="400" y="22" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="12" y="6" />
+                                </Anchor>
+                            </Anchors>
+                        </Label>
+                        <Label name="$parentText" font="font_chat_text" maxchars="256" textalign="leftcenter" handleinput="false" wordwrap="true">
+                            <Size>
+                                <AbsPoint x="900" y="22" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="12" y="28" />
+                                </Anchor>
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Button name="$parentEnable" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="62" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnToggleEnabled" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverEnabled" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentEnableLabel" font="font_chat_text" maxchars="32" textalign="leftcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="156" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="24" y="58" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Button name="$parentAdditives" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="184" y="62" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnToggleAdditives" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverAdditives" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentAdditivesLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="88" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="208" y="58" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentSeedBufferLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="100" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="300" y="58" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <Window name="$parentSeedBufferChip" handleinput="true">
+                    <Size>
+                        <AbsPoint x="36" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="402" y="61" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnSeedBufferLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPilerTabAutoGrow.OnSeedBufferRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverSeedBuffer" />
+                    </EventHandlers>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                        <Label name="$parentValue" font="font_chat_text" maxchars="4" textalign="center" handleinput="false" layer="overlay">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Button name="$parentHarvest" inherits="StockPiler_RowTextButton" gameactionbutton="left">
+                    <Size>
+                        <AbsPoint x="80" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="446" y="58" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonDown" function="StockPilerTabAutoGrow.OnHarvestPrepare" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverHarvest" />
+                    </EventHandlers>
+                </Button>
+
+                <!-- Headers: Potion | Status | Stock | Craftable | Target | AutoGrow | Craft (match row columns; not sortable) -->
+                <Button name="$parentColPotion" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="312" y="28" />
+                    </Size>
+                    <TextOffset x="34" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="88" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColStatus" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="248" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="312" y="88" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColStock" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="560" y="88" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColCraftable" inherits="StockPiler_StaticHeader" handleinput="true">
+                    <Size>
+                        <AbsPoint x="96" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="632" y="88" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverCraftableHeader" />
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnCraftableHeaderClick" />
+                    </EventHandlers>
+                </Button>
+                <Button name="$parentColTarget" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="70" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="728" y="88" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColPriority" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="68" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="798" y="88" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColCraft" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="76" y="28" />
+                    </Size>
+                    <TextOffset x="2" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="866" y="88" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+
+                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPilerAutoGrowRow" visiblerows="12" rowspacing="2">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="118" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-6" y="-8" />
+                        </Anchor>
+                    </Anchors>
+                    <ListData table="StockPilerTabAutoGrow.listData" populationfunction="StockPilerTabAutoGrow.UpdateRows">
+                        <ListColumns>
+                            <ListColumn windowname="Name" variable="name" format="wstring" />
+                            <ListColumn windowname="Status" variable="statusText" format="wstring" />
+                            <ListColumn windowname="Stock" variable="stockText" format="wstring" />
+                            <ListColumn windowname="Craftable" variable="craftableText" format="wstring" />
+                            <ListColumn windowname="Target" variable="targetText" format="wstring" />
+                        </ListColumns>
+                    </ListData>
+                </ListBox>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>

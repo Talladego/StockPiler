@@ -1,0 +1,344 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tab strip: own handlers (do not use EA_Templates_SettingsWindowTabButton - it calls SettingsWindowTabbed.*). -->
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <Windows>
+        <Button name="StockPiler_Templates_TabButton" inherits="EA_Button_Tab">
+            <Size>
+                <AbsPoint x="124" y="35" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="StockPilerWindow.OnLButtonUpTab" />
+            </EventHandlers>
+            <TextOffset x="0" y="0" />
+        </Button>
+
+        <Button name="StockPiler_SortHeader" inherits="EA_Button_DefaultListSort" font="font_default_text" textalign="left">
+            <Size>
+                <AbsPoint x="80" y="28" />
+            </Size>
+            <TextOffset x="4" y="4" />
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="StockPilerTabPotions.OnSortColumn" />
+            </EventHandlers>
+            <Windows>
+                <DynamicImage name="$parentUpArrow" inherits="EA_ListSortUpArrow">
+                    <Anchors>
+                        <Anchor point="right" relativePoint="right">
+                            <AbsPoint x="-12" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </DynamicImage>
+                <DynamicImage name="$parentDownArrow" inherits="EA_ListSortDownArrow">
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parentUpArrow">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </DynamicImage>
+            </Windows>
+        </Button>
+
+        <!-- Same column-header chrome as StockPiler_SortHeader, but not clickable and no sort arrows. -->
+        <Button name="StockPiler_StaticHeader" inherits="EA_Button_ListSort" font="font_default_text" textalign="left" handleinput="false">
+            <Size>
+                <AbsPoint x="80" y="28" />
+            </Size>
+            <TextOffset x="4" y="4" />
+        </Button>
+
+        <!-- Compact row action: gold text, orange hover, no trapezoid chrome (that skin does not scale to 22px). -->
+        <Button name="StockPiler_RowTextButton" inherits="EA_Button_DefaultText" font="font_chat_text" textalign="center">
+            <Size>
+                <AbsPoint x="70" y="28" />
+            </Size>
+            <TextColors>
+                <Normal r="255" g="204" b="102" a="255" />
+                <NormalHighlit r="255" g="85" b="0" a="255" />
+                <Pressed r="255" g="85" b="0" a="255" />
+                <PressedHighlit r="255" g="85" b="0" a="255" />
+                <Disabled r="92" g="92" b="92" a="255" />
+            </TextColors>
+        </Button>
+
+        <!-- Potion row: columns sum to 942px (scrollbar gutter). Keep headers in TabPotions in sync. -->
+        <Window name="StockPilerPotionRow">
+            <Size>
+                <AbsPoint x="942" y="32" />
+            </Size>
+            <Windows>
+                <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
+                    </Anchors>
+                </FullResizeImage>
+
+                <Button name="$parentWatch" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="6" y="6" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabPotions.OnToggleWatch" />
+                    </EventHandlers>
+                </Button>
+
+                <DynamicImage name="$parentIcon" handleinput="true" texturescale="0.34">
+                    <Size>
+                        <AbsPoint x="22" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="30" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerTabPotions.OnMouseOverIcon" />
+                    </EventHandlers>
+                </DynamicImage>
+
+                <Label name="$parentName" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="false" wordwrap="false">
+                    <Size>
+                        <AbsPoint x="362" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="56" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentEffect" font="font_chat_text" maxchars="24" textalign="rightcenter" handleinput="false" wordwrap="false">
+                    <Size>
+                        <AbsPoint x="92" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="418" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentRank" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="510" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentBuff" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="582" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentDuration" font="font_chat_text" maxchars="10" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="68" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="654" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentHave" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="80" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="722" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <DynamicImage name="$parentRecipe" handleinput="true" texture="EA_HUD_01" slice="IM-Note-HIGHLIGHTED" textureScale="0.85">
+                    <Size>
+                        <AbsPoint x="22" y="23" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="826" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerTabPotions.OnMouseOverRecipe" />
+                    </EventHandlers>
+                </DynamicImage>
+
+                <Button name="$parentForget" inherits="StockPiler_RowTextButton">
+                    <Size>
+                        <AbsPoint x="70" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="872" y="2" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabPotions.OnForgetRow" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabPotions.OnMouseOverForget" />
+                    </EventHandlers>
+                </Button>
+            </Windows>
+        </Window>
+
+        <!-- AutoGrow row: Potion | Status | Stock | Craftable | Target | AutoGrow | Craft (942px) -->
+        <Window name="StockPilerAutoGrowRow">
+            <Size>
+                <AbsPoint x="942" y="32" />
+            </Size>
+            <Windows>
+                <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
+                    </Anchors>
+                </FullResizeImage>
+
+                <DynamicImage name="$parentIcon" handleinput="true" texturescale="0.34">
+                    <Size>
+                        <AbsPoint x="22" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="8" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverIcon" />
+                    </EventHandlers>
+                </DynamicImage>
+
+                <Label name="$parentName" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="false" wordwrap="false">
+                    <Size>
+                        <AbsPoint x="278" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="34" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentStatus" font="font_chat_text" maxchars="48" textalign="leftcenter" handleinput="true" wordwrap="false">
+                    <Size>
+                        <AbsPoint x="248" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="312" y="2" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverStatus" />
+                    </EventHandlers>
+                </Label>
+
+                <Label name="$parentStock" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="560" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentCraftable" font="font_chat_text" maxchars="10" textalign="rightcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="96" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="632" y="2" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverCraftable" />
+                    </EventHandlers>
+                </Label>
+
+                <Window name="$parentTargetChip" handleinput="false">
+                    <Size>
+                        <AbsPoint x="48" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="739" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                    </Windows>
+                </Window>
+                <Label name="$parentTarget" font="font_chat_text" maxchars="8" textalign="center" handleinput="true">
+                    <Size>
+                        <AbsPoint x="48" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="739" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnTargetLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPilerTabAutoGrow.OnTargetRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverTarget" />
+                    </EventHandlers>
+                </Label>
+
+                <Button name="$parentAutoGrow" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="822" y="6" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnToggleRowAutoGrow" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverRowAutoGrow" />
+                    </EventHandlers>
+                </Button>
+
+                <Button name="$parentLoad" inherits="StockPiler_RowTextButton">
+                    <Size>
+                        <AbsPoint x="56" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="876" y="2" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnLoadRow" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverLoad" />
+                    </EventHandlers>
+                </Button>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>
