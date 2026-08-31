@@ -10,17 +10,7 @@
 StockPiler.Additives = StockPiler.Additives or {}
 
 local function ToNarrow(text)
-    if text == nil then
-        return ""
-    end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(text)
+    return StockPiler.ToNarrow(text)
 end
 
 local function EnsureSettings()
@@ -172,13 +162,11 @@ function StockPiler.Additives.SetEnabled(enabled)
     if StockPiler.PersistActiveCharacterSettings then
         StockPiler.PersistActiveCharacterSettings(s)
     end
-    if changed and StockPiler.NotifyFeature and StockPiler.StatusMessagesEnabled
-        and StockPiler.StatusMessagesEnabled()
-    then
+    if changed and StockPiler.NotifyManual then
         if enabled then
-            StockPiler.NotifyFeature(L"AutoGrow", L"Additives on. Uses Soil / Watering / Nutrient from the crafting bag during the matching stage.")
+            StockPiler.NotifyManual(L"AutoGrow", L"Additives on. Uses Soil / Watering / Nutrient from the crafting bag during the matching stage.")
         else
-            StockPiler.NotifyFeature(L"AutoGrow", L"Additives off.")
+            StockPiler.NotifyManual(L"AutoGrow", L"Additives off.")
         end
     end
     return enabled
@@ -193,16 +181,17 @@ local function StoreRecord(itemData, info, source)
     if type(s) ~= "table" then
         return false, false
     end
-    if type(s.learnedAdditives) ~= "table" then
-        s.learnedAdditives = {}
+    if type(s.additives) ~= "table" then
+        s.additives = {}
     end
+    s.learnedAdditives = s.additives
     local key = tostring(uid)
-    local isNew = s.learnedAdditives[key] == nil
+    local isNew = s.additives[key] == nil
     local nameW = itemData.name
     if type(nameW) ~= "wstring" then
         nameW = towstring(tostring(itemData.name or ""))
     end
-    s.learnedAdditives[key] = {
+    s.additives[key] = {
         uniqueID = uid,
         iconNum = tonumber(itemData.iconNum) or 0,
         name = nameW,
@@ -216,6 +205,9 @@ local function StoreRecord(itemData, info, source)
         skillReq = tonumber(itemData.craftingSkillRequirement) or 0,
         source = source or "bag",
     }
+    if StockPiler.Items and StockPiler.Items.UpsertFromItemData then
+        StockPiler.Items.UpsertFromItemData(itemData, "additive")
+    end
     return true, isNew
 end
 
@@ -227,7 +219,7 @@ function StockPiler.Additives.LearnFromItemData(itemData, source)
     end
     local stored, isNew = StoreRecord(itemData, info, source)
     if stored and isNew and StockPiler.NotifyAdditiveLearned then
-        pcall(StockPiler.NotifyAdditiveLearned, itemData, info)
+        StockPiler.NotifyAdditiveLearned(itemData, info)
     elseif stored and isNew and StockPiler.D then
         StockPiler.D("Learned additive uid=" .. tostring(itemData.uniqueID)
             .. " role=" .. tostring(info.role))
@@ -340,7 +332,7 @@ function StockPiler.Additives.FindBestInCraftBag(cultType)
     end
     local bag = nil
     if DataUtils and DataUtils.GetCraftingItems then
-        local ok, items = pcall(DataUtils.GetCraftingItems)
+        local ok, items = StockPiler.TryCallQuiet("DataUtils.GetCraftingItems", DataUtils.GetCraftingItems)
         if ok then
             bag = items
         end

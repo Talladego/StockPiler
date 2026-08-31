@@ -55,17 +55,7 @@ local function D(msg)
 end
 
 local function ToNarrow(name)
-    if name == nil then
-        return ""
-    end
-    if type(name) == "wstring" then
-        local ok, s = pcall(WStringToString, name)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(name)
+    return StockPiler.ToNarrow(name)
 end
 
 local function NameContains(itemName, asciiNeedle)
@@ -79,7 +69,7 @@ local function NameContains(itemName, asciiNeedle)
 
     -- Prefer wide-string search (avoids WStringToString failures on some names)
     if type(itemName) == "wstring" and type(wstring) == "table" and type(wstring.find) == "function" then
-        local ok, found = pcall(function()
+        local ok, found = StockPiler.TryCallQuiet("NameContains.wstring.find", function()
             local hay = itemName
             if type(wstring.lower) == "function" then
                 hay = wstring.lower(itemName)
@@ -134,6 +124,10 @@ local function IsCultivationSeedOrSpore(itemData)
         return false
     end
     return string.find(n, " spore$", 1, true) ~= nil or string.find(n, " seed$", 1, true) ~= nil
+end
+
+function StockPiler.Inventory.IsSeedOrSporeItem(itemData)
+    return IsCultivationSeedOrSpore(itemData)
 end
 
 --- Reject cultivation seeds/spores when resolving apothecary recipe materials by plant name.
@@ -251,12 +245,12 @@ local function FetchBagTables()
     end
 
     if DataUtils and type(DataUtils.GetItems) == "function" then
-        local ok, data = pcall(DataUtils.GetItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetItems", DataUtils.GetItems)
         if ok then
             add(data)
         end
     elseif type(GetInventoryItemData) == "function" then
-        local ok, data = pcall(GetInventoryItemData)
+        local ok, data = StockPiler.TryCallQuiet("GetInventoryItemData", GetInventoryItemData)
         if ok then
             add(data)
         end
@@ -266,12 +260,12 @@ local function FetchBagTables()
         GameData.Player.craftingItemsDirty = true
     end
     if DataUtils and type(DataUtils.GetCraftingItems) == "function" then
-        local ok, data = pcall(DataUtils.GetCraftingItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetCraftingItems", DataUtils.GetCraftingItems)
         if ok then
             add(data)
         end
     elseif type(GetCraftingItemData) == "function" then
-        local ok, data = pcall(GetCraftingItemData)
+        local ok, data = StockPiler.TryCallQuiet("GetCraftingItemData", GetCraftingItemData)
         if ok then
             add(data)
         end
@@ -284,23 +278,23 @@ end
 local function FetchBagTablesLight()
     local bags = {}
     if DataUtils and type(DataUtils.GetItems) == "function" then
-        local ok, data = pcall(DataUtils.GetItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetItems", DataUtils.GetItems)
         if ok and type(data) == "table" then
             bags[#bags + 1] = data
         end
     elseif type(GetInventoryItemData) == "function" then
-        local ok, data = pcall(GetInventoryItemData)
+        local ok, data = StockPiler.TryCallQuiet("GetInventoryItemData", GetInventoryItemData)
         if ok and type(data) == "table" then
             bags[#bags + 1] = data
         end
     end
     if DataUtils and type(DataUtils.GetCraftingItems) == "function" then
-        local ok, data = pcall(DataUtils.GetCraftingItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetCraftingItems", DataUtils.GetCraftingItems)
         if ok and type(data) == "table" then
             bags[#bags + 1] = data
         end
     elseif type(GetCraftingItemData) == "function" then
-        local ok, data = pcall(GetCraftingItemData)
+        local ok, data = StockPiler.TryCallQuiet("GetCraftingItemData", GetCraftingItemData)
         if ok and type(data) == "table" then
             bags[#bags + 1] = data
         end
@@ -342,6 +336,9 @@ local function AppendBagItems(flat, seen, bag)
 end
 
 local function SnapshotItems(forceEngineRefresh)
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("SnapshotItems")
+    end
     forceEngineRefresh = forceEngineRefresh == true
     local flat = {}
     local seen = {}
@@ -351,6 +348,18 @@ local function SnapshotItems(forceEngineRefresh)
     end
     StockPiler.Inventory._items = flat
     StockPiler.Inventory._itemCount = #flat
+    StockPiler.Inventory._specParseCache = {}
+    if StockPiler.MaterialSpec and StockPiler.MaterialSpec.FromItemDataCached then
+        for i = 1, #flat do
+            local item = flat[i]
+            if type(item) == "table"
+                and (type(item.craftingBonus) == "table"
+                    or (tonumber(item.cultivationType) or 0) ~= 0)
+            then
+                StockPiler.MaterialSpec.FromItemDataCached(item, nil)
+            end
+        end
+    end
     local countByUid = {}
     local sampleByUid = {}
     for i = 1, #flat do
@@ -368,15 +377,13 @@ local function SnapshotItems(forceEngineRefresh)
     StockPiler.Inventory._snapshotGen = (tonumber(StockPiler.Inventory._snapshotGen) or 0) + 1
     StockPiler.Inventory._snapshotDone = true
     if StockPiler.Additives and StockPiler.Additives.LearnFromSnapshotSamples then
-        pcall(StockPiler.Additives.LearnFromSnapshotSamples)
+        StockPiler.Additives.LearnFromSnapshotSamples()
     end
-    if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-        StockPiler.Planner.InvalidatePlanCache()
-    end
-    -- Brewing empties plants; AutoGrow must rebuild the queue or it stays
-    -- idle until the user toggles AutoGrow.
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
-        pcall(StockPiler.AutoGrow.InvalidatePlantQueue)
+    -- Keep the last plan/specDemand. A new snap gen already prevents
+    -- BuildPlan reuse when the Watch tab asks for fresh craftable counts.
+    -- Invalidating here made MaybeAutoRefine rebuild demand (~800ms).
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("SnapshotItems")
     end
     return flat
 end
@@ -793,7 +800,7 @@ local function LookupDatabaseItem(ids)
             if StockPiler.Inventory._dbItemCache[id] then
                 return StockPiler.Inventory._dbItemCache[id]
             end
-            local ok, data = pcall(GetDatabaseItemData, id)
+            local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, id)
             if ok and DatabaseItemUsable(data) then
                 StockPiler.Inventory._dbItemCache[id] = data
                 return data
@@ -807,23 +814,66 @@ function StockPiler.Inventory.GetDatabaseItemByIds(...)
     return LookupDatabaseItem(CollectUniqueIds(...))
 end
 
---- Fill icon/item caches from observedPotions when bags are empty but we have tooltip history.
-function StockPiler.Inventory.HydrateCatalogCachesFromObserved()
-    local s = EnsureSettings()
-    if type(s) ~= "table" or type(s.observedPotions) ~= "table" then
-        return
+--- Thin itemData from Account.items / Account.potions when bags have no sample.
+local function CatalogItemFromAccount(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
     end
+    if StockPiler.Items and StockPiler.Items.AsItemData then
+        local data = StockPiler.Items.AsItemData(uid)
+        if type(data) == "table" and (tonumber(data.iconNum) or 0) > 0 then
+            return data
+        end
+    end
+    local s = EnsureSettings()
+    if type(s) ~= "table" then
+        return nil
+    end
+    local potions = s.potions or s.knownPotions
+    if type(potions) == "table" then
+        local pot = potions["uid:" .. tostring(uid)]
+        if type(pot) == "table" then
+            return {
+                uniqueID = uid,
+                name = pot.name,
+                nameNarrow = pot.nameNarrow,
+                iconNum = tonumber(pot.iconNum) or 0,
+                craftingSkillRequirement = 0,
+            }
+        end
+    end
+    if type(s.items) == "table" then
+        local row = s.items[tostring(uid)]
+        if type(row) == "table" then
+            return {
+                uniqueID = uid,
+                name = row.name,
+                nameNarrow = row.nameNarrow,
+                iconNum = tonumber(row.iconNum) or 0,
+                craftingSkillRequirement = tonumber(row.skillReq) or 0,
+                tradeSkill = tonumber(row.tradeSkill) or 0,
+                cultivationType = tonumber(row.cultivationType) or 0,
+                isRefinable = row.isRefinable == true,
+                itemType = tonumber(row.itemType) or 0,
+                type = tonumber(row.itemType) or 0,
+                iLevel = tonumber(row.iLevel) or 0,
+            }
+        end
+    end
+    return nil
+end
+
+--- Fill icon/item caches from Account potions/items when bags are empty.
+function StockPiler.Inventory.HydrateCatalogCachesFromObserved()
     for _, entry in ipairs(CatalogPotions()) do
         if entry.id then
             local ids = CollectUniqueIds(entry.uniqueID, entry.uniqueIDs)
             for i = 1, #ids do
-                local key = StockPiler.Inventory.ObservedId(ids[i])
-                local obs = key and s.observedPotions[key]
-                if type(obs) == "table" and type(obs.itemData) == "table" then
-                    if IsCatalogTooltipSample(entry, obs.itemData) then
-                        PersistPotionCache(entry.id, obs.itemData)
-                        break
-                    end
+                local data = CatalogItemFromAccount(ids[i])
+                if type(data) == "table" and IsCatalogTooltipSample(entry, data) then
+                    PersistPotionCache(entry.id, data)
+                    break
                 end
             end
         end
@@ -855,18 +905,11 @@ function StockPiler.Inventory.ResolveTooltipItemData(entry, existing)
     if type(learned) == "table" and DatabaseItemUsable(learned) and IsCatalogTooltipSample(entry, learned) then
         best = PreferRicherItemData(best, learned)
     end
-    local s = EnsureSettings()
-    if type(s) == "table" and type(s.observedPotions) == "table" then
-        local catalogIds = CollectUniqueIds(entry.uniqueID, entry.uniqueIDs)
-        for i = 1, #catalogIds do
-            local key = StockPiler.Inventory.ObservedId(catalogIds[i])
-            local obs = key and s.observedPotions[key]
-            if type(obs) == "table" and type(obs.itemData) == "table" then
-                local obsItem = obs.itemData
-                if DatabaseItemUsable(obsItem) and IsCatalogTooltipSample(entry, obsItem) then
-                    best = PreferRicherItemData(best, obsItem)
-                end
-            end
+    local catalogIds = CollectUniqueIds(entry.uniqueID, entry.uniqueIDs)
+    for i = 1, #catalogIds do
+        local acctItem = CatalogItemFromAccount(catalogIds[i])
+        if type(acctItem) == "table" and DatabaseItemUsable(acctItem) and IsCatalogTooltipSample(entry, acctItem) then
+            best = PreferRicherItemData(best, acctItem)
         end
     end
     if type(dbItem) == "table" and DatabaseItemUsable(dbItem) then
@@ -931,7 +974,7 @@ end
 function StockPiler.Inventory.ResolvePotionItemData(potionKey, uid, existing)
     uid = tonumber(uid) or 0
     if uid <= 0 and type(potionKey) == "string" then
-        local fromKey = string.match(potionKey, "^uid:(%d+)$")
+        local fromKey = string.match(potionKey, "^uid:(%d+)")
         uid = tonumber(fromKey) or 0
     end
     if uid <= 0 then
@@ -943,21 +986,15 @@ function StockPiler.Inventory.ResolvePotionItemData(potionKey, uid, existing)
         uniqueIDs = { uid },
     }
     if type(existing) ~= "table" then
-        local s = EnsureSettings()
-        if type(s) == "table" and type(s.observedPotions) == "table" then
-            local obs = s.observedPotions["uid:" .. tostring(uid)]
-            if type(obs) == "table" and type(obs.itemData) == "table" then
-                existing = obs.itemData
-            end
-        end
-        if type(existing) ~= "table" then
-            local _, sample = StockPiler.Inventory.CountByUniqueId(uid)
-            existing = sample
-        end
-        if type(existing) ~= "table" then
-            existing = StockPiler.Inventory._learnedItemData[entry.id]
-                or StockPiler.Inventory._learnedItemData["uid:" .. tostring(uid)]
-        end
+        local _, sample = StockPiler.Inventory.CountByUniqueId(uid)
+        existing = sample
+    end
+    if type(existing) ~= "table" then
+        existing = CatalogItemFromAccount(uid)
+    end
+    if type(existing) ~= "table" then
+        existing = StockPiler.Inventory._learnedItemData[entry.id]
+            or StockPiler.Inventory._learnedItemData["uid:" .. tostring(uid)]
     end
     return StockPiler.Inventory.ResolveTooltipItemData(entry, existing) or existing
 end
@@ -966,6 +1003,11 @@ function StockPiler.Inventory.ShowItemTooltip(itemData, anchorWindow, extraText)
     if type(itemData) ~= "table" or type(Tooltips) ~= "table"
         or type(Tooltips.CreateItemTooltip) ~= "function"
     then
+        return false
+    end
+    -- Thin Account/DB shells lack bonus[] Use lines; CreateItemTooltip then looks wrong
+    -- or fails. Only show the stock item tooltip when we have real Use data (usually bags).
+    if not ItemDataHasUseBonus(itemData) then
         return false
     end
     local data = StockPiler.Inventory.NormalizeItemDataForTooltip(itemData)
@@ -978,8 +1020,8 @@ function StockPiler.Inventory.ShowItemTooltip(itemData, anchorWindow, extraText)
     if extraText == L"" then
         extraText = nil
     end
-    local ok = pcall(
-        Tooltips.CreateItemTooltip,
+    local ok = StockPiler.TryCall(
+        "Tooltips.CreateItemTooltip", Tooltips.CreateItemTooltip,
         data,
         anchorWindow or SystemData.ActiveWindow.name,
         Tooltips.ANCHOR_WINDOW_RIGHT,
@@ -1032,12 +1074,9 @@ function StockPiler.Inventory.ResolveTooltipMatData(mat, existing)
                 best = PreferRicherItemData(best, byUid)
             end
         end
-        local s = EnsureSettings()
-        if type(s) == "table" and type(s.observedMats) == "table" and key then
-            local obs = s.observedMats[key]
-            if type(obs) == "table" and type(obs.itemData) == "table" then
-                best = PreferRicherItemData(best, obs.itemData)
-            end
+        local acctItem = CatalogItemFromAccount(uid)
+        if type(acctItem) == "table" then
+            best = PreferRicherItemData(best, acctItem)
         end
     end
 
@@ -1135,7 +1174,7 @@ local function IsApothecaryMat(itemData)
     if DataUtils and type(DataUtils.IsTradeSkillItem) == "function"
         and GameData and GameData.TradeSkills and GameData.TradeSkills.APOTHECARY
     then
-        local ok, result = pcall(DataUtils.IsTradeSkillItem, itemData, GameData.TradeSkills.APOTHECARY)
+        local ok, result = StockPiler.TryCallQuiet("DataUtils.IsTradeSkillItem", DataUtils.IsTradeSkillItem, itemData, GameData.TradeSkills.APOTHECARY)
         if ok and result == true then
             return true
         end
@@ -1187,7 +1226,11 @@ function StockPiler.Inventory.ObservedId(uniqueID)
     return "uid:" .. tostring(uniqueID)
 end
 
+--- Legacy helper: never writes observed* tables; upserts Account.items only.
 local function StoreObservedRecord(bucket, itemData, source, logLabel)
+    if type(itemData) ~= "table" then
+        return false
+    end
     local uid = tonumber(itemData.uniqueID) or tonumber(itemData.id) or 0
     if uid <= 0 then
         return false
@@ -1196,53 +1239,47 @@ local function StoreObservedRecord(bucket, itemData, source, logLabel)
     if iconNum <= 0 then
         return false
     end
-    local s = EnsureSettings()
-    if type(s) ~= "table" then
-        return false
+    local kindHint = "mat"
+    if bucket == "observedPotions" or bucket == "potions" then
+        kindHint = "potion"
+    else
+        local _, _, _, kind = ClassifyMat(itemData)
+        kindHint = kind or "mat"
     end
-    if type(s[bucket]) ~= "table" then
-        s[bucket] = {}
+    local existed = StockPiler.Items and StockPiler.Items.Get and StockPiler.Items.Get(uid) ~= nil
+    if StockPiler.Items and StockPiler.Items.UpsertFromItemData then
+        StockPiler.Items.UpsertFromItemData(itemData, kindHint)
     end
     local key = StockPiler.Inventory.ObservedId(uid)
-    local isNew = s[bucket][key] == nil
     local copy = CopyItemData(itemData)
-    local nameW = itemData.name
-    if type(nameW) ~= "wstring" then
-        nameW = towstring(tostring(itemData.name or ""))
+    if key and copy then
+        if kindHint == "potion" then
+            StockPiler.Inventory._learnedItemData[key] = copy
+        else
+            StockPiler.Inventory._learnedMatData[key] = copy
+        end
     end
-    local record = {
-        uniqueID = uid,
-        iconNum = iconNum,
-        name = nameW,
-        nameNarrow = ToNarrow(itemData.name),
-        source = source or "unknown",
-        iLevel = tonumber(itemData.iLevel) or tonumber(itemData.level) or 0,
-        itemType = tonumber(itemData.type) or 0,
-        craftingSkillRequirement = tonumber(itemData.craftingSkillRequirement) or 0,
-        cultivationType = tonumber(itemData.cultivationType) or 0,
-    }
-    if bucket == "observedMats" then
-        local tradeSkill, resourceType, skillReq, kind = ClassifyMat(itemData)
-        record.tradeSkill = tradeSkill
-        record.resourceType = resourceType
-        record.craftingSkillRequirement = skillReq
-        record.matKind = kind
-        record.isRefinable = itemData.isRefinable == true
-    end
-    s[bucket][key] = record
-    if bucket == "observedPotions" then
-        StockPiler.Inventory._learnedItemData[key] = copy
-    else
-        StockPiler.Inventory._learnedMatData[key] = copy
-    end
-    if isNew and StockPiler.NotifyItemCollected then
-        StockPiler.NotifyItemCollected(record, bucket, source)
+    if not existed and StockPiler.NotifyItemCollected then
+        local nameW = itemData.name
+        if type(nameW) ~= "wstring" then
+            nameW = towstring(tostring(itemData.name or ""))
+        end
+        StockPiler.NotifyItemCollected({
+            uniqueID = uid,
+            iconNum = iconNum,
+            name = nameW,
+            nameNarrow = ToNarrow(itemData.name),
+            source = source or "unknown",
+        }, kindHint == "potion" and "potions" or "items", source)
     end
     return true
 end
 
---- Scan bags for items not yet in observedPotions / observedMats (pickup / loot).
+--- Scan bags for catalog cache / additive / seed registration (no observed* writes).
 function StockPiler.Inventory.LearnNewFromBags(source)
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("LearnNewFromBags")
+    end
     source = source or "bag"
     StockPiler.Inventory._snapshotDone = false
     SnapshotItems(false)
@@ -1250,39 +1287,39 @@ function StockPiler.Inventory.LearnNewFromBags(source)
     for i = 1, #items do
         StockPiler.Inventory.LearnFromItemData(items[i], source)
     end
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("LearnNewFromBags")
+    end
 end
 
---- Persist apo-crafted potions (skill > 0) or already-known potion UIDs. Food/consumables stay session-only.
+--- No-op: brew path registers potions via RecipeSpec.RegisterKnownPotion.
 function StockPiler.Inventory.ObservePotion(itemData, source)
-    if not IsPotionType(itemData) then
-        return false
-    end
-    local skill = tonumber(itemData.craftingSkillRequirement) or 0
-    if skill <= 0 then
-        local uid = tonumber(itemData.uniqueID) or tonumber(itemData.id) or 0
-        local s = EnsureSettings()
-        local known = type(s) == "table" and type(s.knownPotions) == "table"
-            and s.knownPotions["uid:" .. tostring(uid)] ~= nil
-        if not known then
-            return false
-        end
-    end
-    return StoreObservedRecord("observedPotions", itemData, source, "ObservePotion")
+    return false
 end
 
---- Persist Apothecary + Cultivation mats only (not Talisman / other crafting).
+--- Upsert apo/cult mat into Account.items (never observedMats). Callers: refine/harvest/brew only.
 function StockPiler.Inventory.ObserveMat(itemData, source)
     if not IsApothecaryOrCultivationMat(itemData) then
         return false
     end
-    -- Avoid double-storing potions that somehow also look crafting-ish
     if IsPotionType(itemData) then
         return false
     end
-    return StoreObservedRecord("observedMats", itemData, source, "ObserveMat")
+    local _, _, _, kind = ClassifyMat(itemData)
+    if StockPiler.Items and StockPiler.Items.UpsertFromItemData then
+        StockPiler.Items.UpsertFromItemData(itemData, kind or "mat")
+        local uid = tonumber(itemData.uniqueID) or tonumber(itemData.id) or 0
+        local key = StockPiler.Inventory.ObservedId(uid)
+        local copy = CopyItemData(itemData)
+        if key and copy then
+            StockPiler.Inventory._learnedMatData[key] = copy
+        end
+        return true
+    end
+    return false
 end
 
---- True if a saved observedMats entry is still in scope (Apothecary / Cultivation).
+--- True if a saved mat record is still in scope (Apothecary / Cultivation).
 function StockPiler.Inventory.IsObservedMatInScope(obs)
     if type(obs) ~= "table" then
         return false
@@ -1304,7 +1341,7 @@ function StockPiler.Inventory.IsObservedMatInScope(obs)
 end
 
 --- Learn icon/tooltip data from any live itemData (bags, AH, tooltip mouseover).
---- Persists apo potions + Apo/Cult mats as slim records; full itemData stays session-only.
+--- Does not bag-scan into Account.items/potions; brew/plant/harvest/refine register those.
 function StockPiler.Inventory.LearnFromItemData(itemData, source)
     if type(itemData) ~= "table" then
         return false
@@ -1315,19 +1352,12 @@ function StockPiler.Inventory.LearnFromItemData(itemData, source)
     end
 
     local learned = false
-    if StockPiler.Inventory.ObservePotion(itemData, source) then
-        learned = true
-    end
-    if StockPiler.Inventory.ObserveMat(itemData, source) then
-        learned = true
-    end
+    -- Skip ObservePotion / ObserveMat / RegisterFromItem: no bag "observe everything".
+    -- Brew / harvest / refine paths register items and grow links explicitly.
     if StockPiler.Additives and StockPiler.Additives.LearnFromItemData then
         if StockPiler.Additives.LearnFromItemData(itemData, source) then
             learned = true
         end
-    end
-    if StockPiler.SeedMap and StockPiler.SeedMap.RegisterFromItem then
-        pcall(StockPiler.SeedMap.RegisterFromItem, itemData)
     end
 
     for _, entry in ipairs(CatalogPotions()) do
@@ -1403,12 +1433,12 @@ function StockPiler.Inventory.LearnFromBankData(source)
         if GameData and GameData.Player then
             GameData.Player.bankItemsDirty = true
         end
-        local ok, data = pcall(DataUtils.GetBankData)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetBankData", DataUtils.GetBankData)
         if ok then
             bank = data
         end
     elseif type(GetBankData) == "function" then
-        local ok, data = pcall(GetBankData)
+        local ok, data = StockPiler.TryCallQuiet("GetBankData", GetBankData)
         if ok then
             bank = data
         end
@@ -1422,7 +1452,7 @@ function StockPiler.Inventory.LearnFromStoreData(source)
     source = source or "store"
     local store = nil
     if type(GetStoreData) == "function" then
-        local ok, data = pcall(GetStoreData)
+        local ok, data = StockPiler.TryCallQuiet("GetStoreData", GetStoreData)
         if ok then
             store = data
         end
@@ -1434,7 +1464,7 @@ function StockPiler.Inventory.LearnFromStoreData(source)
     -- Buy-back list also carries full itemData
     local buyback = nil
     if type(GetBuyBackData) == "function" then
-        local ok, data = pcall(GetBuyBackData)
+        local ok, data = StockPiler.TryCallQuiet("GetBuyBackData", GetBuyBackData)
         if ok then
             buyback = data
         end
@@ -1923,7 +1953,7 @@ function StockPiler.Inventory.CaptureApothecaryMaterials()
             local matKind = nil
             if type(itemData) == "table" then
                 if CraftingSystem and type(CraftingSystem.GetCraftingData) == "function" then
-                    local ok, _, rt = pcall(CraftingSystem.GetCraftingData, itemData)
+                    local ok, _, rt = StockPiler.TryCallQuiet("CraftingSystem.GetCraftingData", CraftingSystem.GetCraftingData, itemData)
                     if ok then
                         resourceType = tonumber(rt) or 0
                     end
@@ -2088,8 +2118,16 @@ function StockPiler.Inventory.BeginPendingCraft()
         StockPiler.Inventory._pendingCraft = nil
         return
     end
+    local mainUid = 0
+    for i = 1, #materials do
+        if materials[i].role == "main" then
+            mainUid = tonumber(materials[i].uniqueID) or 0
+            break
+        end
+    end
     StockPiler.Inventory._pendingCraft = {
         materials = materials,
+        mainUid = mainUid,
         recipeKey = StockPiler.Inventory.BuildRecipeKey(materials),
         potionCountsBefore = StockPiler.Inventory.SnapshotPotionCounts(),
     }
@@ -2263,12 +2301,10 @@ local function MigrateLearnedRecipes(s)
     if version < 4 then
         for key, recipe in pairs(s.learnedRecipes) do
             if type(recipe) == "table" and (tonumber(recipe.recipeYield) or 0) <= 0 then
-                local ok, out = pcall(StockPiler.Inventory.PrimaryRecipeOutput, recipe.outputs)
-                if ok then
-                    local delta = out and tonumber(out.lastDelta) or 0
-                    if delta > 0 then
-                        recipe.recipeYield = delta
-                    end
+                local out = StockPiler.Inventory.PrimaryRecipeOutput(recipe.outputs)
+                local delta = out and tonumber(out.lastDelta) or 0
+                if delta > 0 then
+                    recipe.recipeYield = delta
                 end
             end
         end
@@ -2296,6 +2332,9 @@ function StockPiler.Inventory.RecipeYield(recipe)
     if type(recipe) ~= "table" then
         return 2
     end
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RecipeOutputYield then
+        return StockPiler.RecipeSpec.RecipeOutputYield(recipe)
+    end
     local yield = tonumber(recipe.recipeYield)
     if yield and yield > 0 then
         return yield
@@ -2321,9 +2360,30 @@ function StockPiler.Inventory.StoreLearnedRecipe(_materials, _outputs)
     return false
 end
 
-function StockPiler.Inventory.CompletePendingCraftLearn()
+local function CauldronStillHasMain(mainUid)
+    mainUid = tonumber(mainUid) or 0
+    if mainUid <= 0 then
+        return nil
+    end
+    local slots = StockPiler.Inventory.CaptureApothecaryMaterials()
+    if type(slots) ~= "table" then
+        return nil
+    end
+    for i = 1, #slots do
+        local slot = slots[i]
+        if type(slot) == "table" and slot.role == "main"
+            and (tonumber(slot.uniqueID) or 0) == mainUid then
+            return true
+        end
+    end
+    return false
+end
+
+function StockPiler.Inventory.CompletePendingCraftLearn(opts)
+    if type(opts) ~= "table" then
+        opts = {}
+    end
     local pending = StockPiler.Inventory._pendingCraft
-    StockPiler.Inventory._pendingCraft = nil
     if type(pending) ~= "table" then
         return false
     end
@@ -2349,22 +2409,56 @@ function StockPiler.Inventory.CompletePendingCraftLearn()
             }
         end
     end
-    if #outputs == 0 then
+    -- SUCCESS with no bag delta yet: keep pending for the inventory fallback.
+    -- FAIL / critical failure (window closed, items destroyed) with no
+    -- potion is recorded now. A volatile that already landed in bags is
+    -- learned even when the engine reports FAIL.
+    local chatCues = nil
+    if StockPiler.CraftChat and StockPiler.CraftChat.PeekCues then
+        chatCues = StockPiler.CraftChat.PeekCues()
+    end
+    if type(pending.chatCriticalFailure) == "boolean" and pending.chatCriticalFailure then
+        opts.failed = opts.failed == true or (#outputs == 0)
+    elseif type(chatCues) == "table" and chatCues.criticalFailure == true and #outputs == 0 then
+        opts.failed = true
+    end
+    if #outputs == 0 and opts.failed ~= true then
         if StockPiler.Trace then
-            StockPiler.Trace("Brew complete: no new potion outputs detected")
+            StockPiler.Trace("Brew complete: no new potion outputs yet")
         end
         return false
     end
+    local mainStillThere = CauldronStillHasMain(pending.mainUid)
+    local mainConsumed = mainStillThere ~= true
+    -- Brew chat "Critical Success" pairs with Potent output (name/uid), not main-kept.
+    -- Main kept is only from cauldron still holding the main after brew.
+    StockPiler.Inventory._pendingCraft = nil
+    if StockPiler.CraftChat and StockPiler.CraftChat.TakeCues then
+        StockPiler.CraftChat.TakeCues()
+    end
     local stored = false
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.StoreLearnedRecipeSpec then
-        stored = StockPiler.RecipeSpec.StoreLearnedRecipeSpec(pending.materials, outputs, "good") == true
+        stored = StockPiler.RecipeSpec.StoreLearnedRecipeSpec(pending.materials, outputs, {
+            failed = #outputs == 0,
+            mainConsumed = mainConsumed,
+        }) == true
     end
     if StockPiler.Trace then
-        for i = 1, #outputs do
-            local out = outputs[i]
-            StockPiler.Trace("Brew learned uid=" .. tostring(out.uniqueID)
-                .. " delta=" .. tostring(out.lastDelta or out.crafts or 1)
-                .. " spec=" .. tostring(stored == true))
+        local chatCrit = pending.chatCriticalSuccess == true
+            or (type(chatCues) == "table" and chatCues.criticalSuccess == true)
+        if #outputs == 0 then
+            StockPiler.Trace("Brew recorded as failure (no potion produced)"
+                .. " mainConsumed=" .. tostring(mainConsumed)
+                .. " chatCritFail=" .. tostring(pending.chatCriticalFailure == true))
+        else
+            for i = 1, #outputs do
+                local out = outputs[i]
+                StockPiler.Trace("Brew learned uid=" .. tostring(out.uniqueID)
+                    .. " delta=" .. tostring(out.lastDelta or out.crafts or 1)
+                    .. " mainConsumed=" .. tostring(mainConsumed)
+                    .. " chatCritOk=" .. tostring(chatCrit)
+                    .. " spec=" .. tostring(stored == true))
+            end
         end
     end
     return stored
@@ -2405,14 +2499,16 @@ function StockPiler.Inventory.OnCraftingUpdated()
     local FAIL = GameData.CraftingStates.FAIL
     local PERFORMING = GameData.CraftingStates.PERFORMING
     if state == PERFORMING then
-        if StockPiler.Inventory._pendingCraft == nil then
-            StockPiler.Inventory.BeginPendingCraft()
-        end
+        StockPiler.Inventory.BeginPendingCraft()
         return false
     end
     if state == FAIL then
-        StockPiler.Inventory._pendingCraft = nil
-        return false
+        local err = tonumber(GameData.CraftingStatus.ErrorCode) or 0
+        local backpackFull = GameData.CraftingError and GameData.CraftingError.BACKPACK_FULL
+        if backpackFull and err == backpackFull then
+            return false
+        end
+        return StockPiler.Inventory.CompletePendingCraftLearn({ failed = true }) == true
     end
     if state == SUCCESS or state == SUCCESS_REPEAT then
         return StockPiler.Inventory.CompletePendingCraftLearn() == true
@@ -2467,15 +2563,11 @@ local function ResolveRecipePotionDisplay(uid, fallbackName, fallbackItemData, c
     end
 
     if iconNum <= 0 and uid > 0 then
-        local s = EnsureSettings()
-        local key = StockPiler.Inventory.ObservedId(uid)
-        if type(s) == "table" and type(s.observedPotions) == "table" and key then
-            local obs = s.observedPotions[key]
-            if type(obs) == "table" then
-                iconNum = tonumber(obs.iconNum) or iconNum
-                itemData = itemData or obs.itemData
-                name = name or obs.name
-            end
+        local acctItem = CatalogItemFromAccount(uid)
+        if type(acctItem) == "table" then
+            iconNum = tonumber(acctItem.iconNum) or iconNum
+            itemData = itemData or acctItem
+            name = name or acctItem.name
         end
     end
 
@@ -2536,23 +2628,19 @@ local function ResolveMatDisplay(matDef)
 
     itemData = StockPiler.Inventory.ResolveTooltipMatData(matDef, itemData or sample)
 
-    local s = EnsureSettings()
     local iconNum = 0
     if type(itemData) == "table" and tonumber(itemData.iconNum) and tonumber(itemData.iconNum) > 0 then
         iconNum = tonumber(itemData.iconNum)
     end
     if iconNum <= 0 and uid > 0 then
-        local key = StockPiler.Inventory.ObservedId(uid)
-        if type(s) == "table" and type(s.observedMats) == "table" and key then
-            local obs = s.observedMats[key]
-            if type(obs) == "table" then
-                iconNum = tonumber(obs.iconNum) or iconNum
-                if name == nil then
-                    name = obs.name
-                end
-                if itemData == nil then
-                    itemData = obs.itemData
-                end
+        local acctItem = CatalogItemFromAccount(uid)
+        if type(acctItem) == "table" then
+            iconNum = tonumber(acctItem.iconNum) or iconNum
+            if name == nil then
+                name = acctItem.name
+            end
+            if itemData == nil then
+                itemData = acctItem
             end
         end
     end
@@ -2615,21 +2703,17 @@ local function EnrichMainMat(mainMat)
     end
     local uid = tonumber(mainMat.uniqueID) or 0
     if mainMat.matKind == nil and uid > 0 then
-        local s = EnsureSettings()
-        local key = StockPiler.Inventory.ObservedId(uid)
-        if type(s) == "table" and type(s.observedMats) == "table" and key then
-            local obs = s.observedMats[key]
-            if type(obs) == "table" then
-                mainMat = {
-                    uniqueID = uid,
-                    name = mainMat.name or obs.name,
-                    nameNarrow = mainMat.nameNarrow or obs.nameNarrow,
-                    matKind = obs.matKind,
-                    craftingSkillRequirement = tonumber(mainMat.craftingSkillRequirement)
-                        or tonumber(obs.craftingSkillRequirement) or 0,
-                    itemData = mainMat.itemData or obs.itemData,
-                }
-            end
+        local row = StockPiler.Items and StockPiler.Items.Get and StockPiler.Items.Get(uid)
+        if type(row) == "table" then
+            mainMat = {
+                uniqueID = uid,
+                name = mainMat.name or row.name,
+                nameNarrow = mainMat.nameNarrow or row.nameNarrow,
+                matKind = row.kind == "mat" and (row.role or "ingredient") or row.kind,
+                craftingSkillRequirement = tonumber(mainMat.craftingSkillRequirement)
+                    or tonumber(row.skillReq) or 0,
+                itemData = mainMat.itemData or (StockPiler.Items.AsItemData and StockPiler.Items.AsItemData(uid)),
+            }
         end
     end
     if (mainMat.craftingSkillRequirement or 0) <= 0 and type(mainMat.itemData) == "table" then
@@ -3034,7 +3118,7 @@ function StockPiler.Inventory.PlayerTradeSkill(skillId)
         end
     end
     if type(GetTradeSkillLevel) == "function" then
-        local ok, level = pcall(GetTradeSkillLevel, skillId)
+        local ok, level = StockPiler.TryCallQuiet("GetTradeSkillLevel", GetTradeSkillLevel, skillId)
         if ok then
             return tonumber(level) or 0
         end
@@ -3066,7 +3150,7 @@ local function PlotLockedFlag(plotNum)
         return cache[plotNum].Locked == true
     end
     if type(GetCultivationInfo) == "function" then
-        local ok, info = pcall(GetCultivationInfo, plotNum)
+        local ok, info = StockPiler.TryCallQuiet("GetCultivationInfo", GetCultivationInfo, plotNum)
         if ok and type(info) == "table" then
             return info.Locked == true
         end
@@ -3118,7 +3202,7 @@ function StockPiler.Inventory.CanUseCraftingItem(item)
         return false
     end
     if DataUtils and type(DataUtils.PlayerTradeSkillLevelIsEnoughForItem) == "function" then
-        local ok, enough = pcall(DataUtils.PlayerTradeSkillLevelIsEnoughForItem, item)
+        local ok, enough = StockPiler.TryCallQuiet("DataUtils.PlayerTradeSkillLevelIsEnoughForItem", DataUtils.PlayerTradeSkillLevelIsEnoughForItem, item)
         if ok then
             return enough == true
         end
@@ -3144,7 +3228,7 @@ function StockPiler.Inventory.CanUseUniqueId(uniqueID)
         end
     end
     if type(item) ~= "table" and type(GetDatabaseItemData) == "function" then
-        local ok, data = pcall(GetDatabaseItemData, uniqueID)
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, uniqueID)
         if ok and type(data) == "table" then
             item = data
         end
@@ -3183,16 +3267,9 @@ function StockPiler.Inventory.GetLocalCultivator()
 end
 
 function StockPiler.Inventory.EnforceProfessionGates()
-    if StockPiler.Inventory.CultivatorState() ~= false then
-        return false
-    end
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.SetEnabled then
-        local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings() or StockPiler.Settings
-        if type(s) == "table" and s.autoGrowEnabled == true then
-            StockPiler.AutoGrow.SetEnabled(false)
-            return true
-        end
-    end
+    -- Runtime gating lives in AutoGrow.IsEnabled / UI Denied helpers.
+    -- Do not persist autoGrowEnabled=false here: CultivatorState can be false
+    -- briefly at load (skills/plots not ready) and would wipe the saved preference.
     return false
 end
 

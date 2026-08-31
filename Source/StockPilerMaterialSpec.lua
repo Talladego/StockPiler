@@ -7,17 +7,7 @@ StockPiler.MaterialSpec = StockPiler.MaterialSpec or {}
 local MS = StockPiler.MaterialSpec
 
 local function ToNarrow(text)
-    if text == nil then
-        return ""
-    end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(text)
+    return StockPiler.ToNarrow(text)
 end
 
 local function SignedBonus(val)
@@ -135,17 +125,169 @@ local function RoleFromItemData(itemData, roleHint)
     return RoleFromSlotType(slotType)
 end
 
-local CVT_EFFECT_TO_KEY = {
-    heal = "heal",
-    regen = "hot",
-    ap = "ap",
-    str = "str",
-    int = "int",
-    wil = "wp",
-    tou = "tou",
-    rskill = "bs",
-    shabs = "absorb",
-    arm = "armor",
+-- Built-in apothecary effect id → StockPiler key (and CVT-compatible aliases).
+local EFFECT_ID_TO_KEY = {
+    [1] = "heal",
+    [2] = "hot",
+    [3] = "ap",
+    [4] = "str",
+    [5] = "int",
+    [6] = "wp",
+    [7] = "tou",
+    [8] = "bs",
+    [9] = "absorb",
+    [10] = "rcorp",
+    [11] = "rele",
+    [12] = "rspi",
+    [13] = "armor",
+    [14] = "shdmg",
+    [15] = "dmg",
+    [16] = "dmgaoe",
+    [17] = "dmgcone",
+    [18] = "snare",
+    [21] = "hytoucrit",
+    [22] = "hystrmelee",
+    [23] = "hywillheal",
+    [24] = "hystrheal",
+    [25] = "hyintmcrit",
+    [26] = "hyaccrcrit",
+    [27] = "hywoumelee",
+    [28] = "hywoucrit",
+    [29] = "hywoumcrit",
+    [30] = "hywourcrit",
+    [31] = "hywouheal",
+    [32] = "hywoustr",
+    [33] = "hyresist",
+    [34] = "hywouarmpen",
+    [35] = "hywouinit",
+    [36] = "hytounocrit",
+    [37] = "hyhpregencritdmg",
+    [38] = "hywsarmpen",
+    [41] = "trapoth",
+    [42] = "trcult",
+    [43] = "trsalv",
+    [44] = "trtal",
+    [45] = "rez",
+    [46] = "morale",
+    [1101] = "autoheal",
+    [1102] = "freecast",
+    [1103] = "autoheal",
+    [1104] = "freecast",
+    [1105] = "autoheal",
+    [1106] = "freecast",
+    [1107] = "autoheal",
+    [1108] = "freecast",
+    [1109] = "pet",
+    [1110] = "movespeed",
+}
+
+-- Reverse lookup: StockPiler keys + legacy CVT names → effect id.
+local EFFECT_KEY_TO_ID = {
+    heal = 1,
+    regen = 2,
+    hot = 2,
+    ap = 3,
+    str = 4,
+    int = 5,
+    wil = 6,
+    wp = 6,
+    tou = 7,
+    rskill = 8,
+    bs = 8,
+    shabs = 9,
+    absorb = 9,
+    rcorp = 10,
+    rele = 11,
+    rspi = 12,
+    arm = 13,
+    armor = 13,
+    shdmg = 14,
+    dmg = 15,
+    dmgaoe = 16,
+    dmgcone = 17,
+    snare = 18,
+    hytoucrit = 21,
+    hystrmelee = 22,
+    hywillheal = 23,
+    hystrheal = 24,
+    hyintmcrit = 25,
+    hyaccrcrit = 26,
+    hywoumelee = 27,
+    hywoucrit = 28,
+    hywoumcrit = 29,
+    hywourcrit = 30,
+    hywouheal = 31,
+    hywoustr = 32,
+    hyresist = 33,
+    hywouarmpen = 34,
+    hywouinit = 35,
+    hytounocrit = 36,
+    hyhpregencritdmg = 37,
+    hywsarmpen = 38,
+    trapoth = 41,
+    trcult = 42,
+    trsalv = 43,
+    trtal = 44,
+    rez = 45,
+    morale = 46,
+    autoheal = 1101,
+    freecast = 1102,
+    pet = 1109,
+    movespeed = 1110,
+}
+
+local EFFECT_ID_TO_NAME = {
+    heal = L"Healing",
+    regen = L"Restoration",
+    hot = L"Restoration",
+    ap = L"Energy",
+    str = L"Strength",
+    int = L"Intelligence",
+    wil = L"Willpower",
+    wp = L"Willpower",
+    tou = L"Toughness",
+    rskill = L"Ballistic Skill",
+    bs = L"Ballistic Skill",
+    shabs = L"Absorb Shield",
+    absorb = L"Absorb Shield",
+    arm = L"Armor",
+    armor = L"Armor",
+    rcorp = L"Corporeal Resist",
+    rele = L"Elemental Resist",
+    rspi = L"Spirit Resist",
+    shdmg = L"Thorn Shield",
+    dmg = L"Molotov",
+    dmgaoe = L"Napalm",
+    dmgcone = L"Flaming Breath",
+    snare = L"Snare",
+    hytoucrit = L"Toughness+Melee Crit",
+    hystrmelee = L"Strength+Melee",
+    hywillheal = L"Willpower+Healing",
+    hystrheal = L"Strength+Healing",
+    hyintmcrit = L"Intelligence+Magic Crit",
+    hyaccrcrit = L"Ballistics+Ranged Crit",
+    hywoumelee = L"Wounds+Melee",
+    hywoucrit = L"Wounds+Melee Crit",
+    hywoumcrit = L"Wounds+Magic Crit",
+    hywourcrit = L"Wounds+Ranged Crit",
+    hywouheal = L"Wounds+Healing",
+    hywoustr = L"Wounds+Strength",
+    hyresist = L"All resists",
+    hywouarmpen = L"Wounds+Reduced armor pen.",
+    hywouinit = L"Wounds+Initiative",
+    hytounocrit = L"Toughness+Reduced chance to be Crit",
+    hyhpregencritdmg = L"Healthregen+Reduced Crit Dmg",
+    hywsarmpen = L"Weapon Skill+Reduced armor pen.",
+    trapoth = L"Apothecary Skill",
+    trcult = L"Cultivation Skill",
+    trsalv = L"Magical Salvaging Skill",
+    trtal = L"Talisman Making Skill",
+    rez = L"Resurrection",
+    morale = L"Morale Gain",
+    autoheal = L"Reactive Heal",
+    freecast = L"Free Cast Chance",
+    pet = L"Summon Pet",
+    movespeed = L"Move Speed",
 }
 
 local DESC_EFFECT_PATTERNS = {
@@ -158,51 +300,47 @@ local DESC_EFFECT_PATTERNS = {
     { "healing", "heal" },
     { "restoration", "regen" },
     { "regenerat", "regen" },
+    -- AP / invigoration mains often omit EFFECT in craftingBonus; infer from text.
     { "action point", "ap" },
+    { "invigor", "ap" },
+    { "energy", "ap" },
     { "armor", "arm" },
     { "absorb", "shabs" },
     { "barrier", "shabs" },
     { "flame breath", "dmgcone" },
 }
 
-local function EffectIdFromCvtName(name)
-    if type(name) ~= "string" or name == "" then
+local function EffectIdFromKey(key)
+    if type(key) ~= "string" or key == "" then
         return nil
     end
-    if type(CraftValueTip) == "table" and type(CraftValueTip.ApothEffectList) == "table" then
-        for id, effectName in pairs(CraftValueTip.ApothEffectList) do
-            if effectName == name then
-                return tonumber(id)
-            end
-        end
-    end
-    return nil
+    return EFFECT_KEY_TO_ID[key]
 end
 
-local function EffectIdFromSeedListUid(uid)
-    uid = tonumber(uid) or 0
-    if uid <= 0 or type(CraftValueTip) ~= "table" or type(CraftValueTip.SeedList) ~= "table" then
-        return nil
+function MS.EffectIdFromKey(key)
+    return EffectIdFromKey(key)
+end
+
+--- Stamp a main-ingredient effect fingerprint onto an incomplete (or fx-less) spec.
+function MS.ApplyMainEffectId(spec, effectId)
+    effectId = tonumber(effectId) or 0
+    if type(spec) ~= "table" or spec.role ~= "main" or effectId <= 0 then
+        return false
     end
-    local function effectFromRow(row)
-        if type(row) ~= "table" or row[2] ~= false then
-            return nil
-        end
-        return EffectIdFromCvtName(row[3])
+    if spec.incomplete ~= true
+        and tonumber(spec.effectId)
+        and tonumber(spec.effectId) > 0
+        and tonumber(spec.effectId) == effectId
+    then
+        return false
     end
-    local direct = effectFromRow(CraftValueTip.SeedList[uid])
-    if direct then
-        return direct
+    spec.effectId = effectId
+    spec.incomplete = false
+    if type(spec.bonuses) ~= "table" then
+        spec.bonuses = {}
     end
-    for _, row in pairs(CraftValueTip.SeedList) do
-        if type(row) == "table" and (row[4] == uid or row[5] == uid) then
-            local effectId = effectFromRow(row)
-            if effectId then
-                return effectId
-            end
-        end
-    end
-    return nil
+    spec.bonuses[CraftBonusRefs().EFFECT] = effectId
+    return true
 end
 
 local function EffectIdFromDescription(description)
@@ -211,9 +349,9 @@ local function EffectIdFromDescription(description)
         return nil
     end
     for i = 1, #DESC_EFFECT_PATTERNS do
-        local needle, cvtName = DESC_EFFECT_PATTERNS[i][1], DESC_EFFECT_PATTERNS[i][2]
+        local needle, effectKey = DESC_EFFECT_PATTERNS[i][1], DESC_EFFECT_PATTERNS[i][2]
         if string.find(desc, needle, 1, true) then
-            return EffectIdFromCvtName(cvtName)
+            return EffectIdFromKey(effectKey)
         end
     end
     return nil
@@ -230,42 +368,35 @@ local function ResolveItemDataForUid(uid)
             return sample
         end
     end
+    if StockPiler.Items and StockPiler.Items.AsItemData then
+        local cached = StockPiler.Items.AsItemData(uid)
+        if type(cached) == "table" then
+            return cached
+        end
+    end
     local s = StockPiler.Settings
-    if type(s) == "table" then
+    if type(s) == "table" and type(s.matDataCache) == "table" then
         local uidKey = "uid:" .. tostring(uid)
-        if type(s.observedMats) == "table" then
-            local observed = s.observedMats[uidKey]
-            if type(observed) == "table" then
-                if type(observed.itemData) == "table" then
-                    return observed.itemData
-                end
-                if observed.uniqueID ~= nil then
-                    return observed
-                end
+        local cached = s.matDataCache[uidKey]
+        if type(cached) == "table" then
+            if type(cached.itemData) == "table" then
+                return cached.itemData
+            end
+            if cached.uniqueID ~= nil then
+                return cached
             end
         end
-        if type(s.matDataCache) == "table" then
-            local cached = s.matDataCache[uidKey]
-            if type(cached) == "table" then
-                if type(cached.itemData) == "table" then
-                    return cached.itemData
-                end
-                if cached.uniqueID ~= nil then
-                    return cached
-                end
-            end
-            for _, entry in pairs(s.matDataCache) do
-                if type(entry) == "table" then
-                    local data = entry.itemData or entry
-                    if type(data) == "table" and tonumber(data.uniqueID) == uid then
-                        return data
-                    end
+        for _, entry in pairs(s.matDataCache) do
+            if type(entry) == "table" then
+                local data = entry.itemData or entry
+                if type(data) == "table" and tonumber(data.uniqueID) == uid then
+                    return data
                 end
             end
         end
     end
     if type(GetDatabaseItemData) == "function" then
-        local ok, data = pcall(GetDatabaseItemData, uid)
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, uid)
         if ok and type(data) == "table" then
             return data
         end
@@ -280,7 +411,7 @@ local function ResolveMainEffectId(itemData, bonuses)
         return effectId
     end
     if type(CraftItemInfo) == "table" and type(CraftItemInfo.GetItemBonuses) == "function" and type(itemData) == "table" then
-        local ok, vData = pcall(CraftItemInfo.GetItemBonuses, itemData)
+        local ok, vData = StockPiler.TryCallQuiet("CraftItemInfo.GetItemBonuses", CraftItemInfo.GetItemBonuses, itemData)
         if ok and type(vData) == "table" and type(vData[B.EFFECT]) == "table" then
             effectId = tonumber(vData[B.EFFECT][1]) or 0
             if effectId > 0 then
@@ -289,10 +420,6 @@ local function ResolveMainEffectId(itemData, bonuses)
         end
     end
     if type(itemData) == "table" then
-        effectId = EffectIdFromSeedListUid(itemData.uniqueID)
-        if effectId then
-            return effectId
-        end
         effectId = EffectIdFromDescription(itemData.description)
         if effectId then
             return effectId
@@ -306,12 +433,43 @@ function MS.EffectKeyFromEffectId(effectId)
     if effectId <= 0 then
         return nil
     end
-    if type(CraftValueTip) == "table" and type(CraftValueTip.ApothEffectList) == "table" then
-        local name = CraftValueTip.ApothEffectList[effectId]
-        if name and CVT_EFFECT_TO_KEY[name] then
-            return CVT_EFFECT_TO_KEY[name]
-        end
+    return EFFECT_ID_TO_KEY[effectId]
+end
+
+--- Parse once per snapshot item + role. Matches used to call FromItemData
+--- on every bag item for every recipe spec (~1s BuildPlan after harvest).
+function MS.FromItemDataCached(itemData, roleHint)
+    if type(itemData) ~= "table" then
+        return nil
     end
+    local inv = StockPiler.Inventory
+    if type(inv) ~= "table" then
+        return MS.FromItemData(itemData, roleHint)
+    end
+    local cache = inv._specParseCache
+    if type(cache) ~= "table" then
+        cache = {}
+        inv._specParseCache = cache
+    end
+    local role = roleHint or ""
+    local byRole = cache[itemData]
+    if type(byRole) ~= "table" then
+        byRole = {}
+        cache[itemData] = byRole
+    end
+    local hit = byRole[role]
+    if hit == false then
+        return nil
+    end
+    if type(hit) == "table" then
+        return hit
+    end
+    local spec = MS.FromItemData(itemData, roleHint)
+    if type(spec) == "table" then
+        byRole[role] = spec
+        return spec
+    end
+    byRole[role] = false
     return nil
 end
 
@@ -338,6 +496,8 @@ function MS.FromItemData(itemData, roleHint)
     else
         effectId = FirstBonus(bonuses, B.EFFECT)
     end
+    -- Keep DESTROY_ON_FAIL (15) on the mat profile for inspection (e.g. Fabricated
+    -- vials). Recipe fingerprints omit it in MS.Key — containers Match by slotType.
     local specBonuses = {}
     for ref = 1, 15 do
         if bonuses[ref] and ref ~= B.CRAFTING_FAMILY and ref ~= B.TYPE and ref ~= B.EFFECT then
@@ -416,7 +576,9 @@ function MS.Matches(itemData, spec)
     -- table has no craftingBonus, so it parses empty and never matches.
     local other = itemData
     if not IsMaterialSpec(itemData) then
-        other = MS.FromItemData(itemData, spec.role)
+        -- Parse once per item (no role hint). Using spec.role here missed the
+        -- snapshot cache and re-ran FromItemData / GetItemBonuses per spec.
+        other = MS.FromItemDataCached(itemData, nil)
     end
     if other == nil or other.incomplete == true then
         return false
@@ -491,10 +653,16 @@ function MS.Key(spec)
     if spec.effectId ~= nil then
         parts[#parts + 1] = "fx:" .. tostring(spec.effectId)
     end
+    -- Omit DESTROY_ON_FAIL from recipe identity; still stored on items/specs.
     if type(spec.bonuses) == "table" then
+        local B = CraftBonusRefs()
+        local destroyRef = B.DESTROY_ON_FAIL or 15
         local refs = {}
         for ref, val in pairs(spec.bonuses) do
-            refs[#refs + 1] = tostring(ref) .. "=" .. tostring(val)
+            local nref = tonumber(ref) or 0
+            if nref ~= destroyRef then
+                refs[#refs + 1] = tostring(ref) .. "=" .. tostring(val)
+            end
         end
         table.sort(refs)
         if #refs > 0 then
@@ -565,9 +733,12 @@ function MS.ShortLabel(spec)
     end
     if role == "stabilizer" or role == "goldweed" then
         local stab = MS.Stability(spec)
-        if stab ~= 0 then
-            return towstring("S:" .. (stab >= 0 and "+" or "") .. tostring(stab))
+        local tag = "S:" .. (stab >= 0 and "+" or "") .. tostring(stab)
+        local mult = spec.bonuses and spec.bonuses[B.MULTIPLIER]
+        if mult and tonumber(mult) ~= 0 then
+            tag = tag .. "+M" .. tostring(mult)
         end
+        return towstring(tag)
     end
     if role == "extender" then
         local dur = spec.bonuses and spec.bonuses[B.DURATION]
@@ -627,46 +798,12 @@ function MS.DescribeLines(spec, perCraft)
     return lines
 end
 
-local EFFECT_DISPLAY_OVERRIDES = {
-    rskill = L"Ballistic Skill",
-    bs = L"Ballistic Skill",
-    wil = L"Willpower",
-    regen = L"Restoration",
-    heal = L"Healing",
-    int = L"Intelligence",
-    str = L"Strength",
-    tou = L"Toughness",
-    ap = L"Energy",
-    arm = L"Armor",
-    shabs = L"Absorb Shield",
-    hot = L"Restoration",
-    wp = L"Willpower",
-}
-
-local function CvtEffectPhrase(key)
+local function EffectPhrase(key)
     if not key or key == "" then
         return nil
     end
-    if EFFECT_DISPLAY_OVERRIDES[key] then
-        return EFFECT_DISPLAY_OVERRIDES[key]
-    end
-    if type(CraftValueTip) == "table" and type(CraftValueTip.T) == "table" then
-        local pack = nil
-        if SystemData and SystemData.Settings and SystemData.Settings.Language then
-            pack = CraftValueTip.T[SystemData.Settings.Language]
-        end
-        if pack == nil and SystemData and SystemData.Settings and SystemData.Settings.Language then
-            pack = CraftValueTip.T[SystemData.Settings.Language.ENGLISH]
-        end
-        if pack == nil then
-            for _, locale in pairs(CraftValueTip.T) do
-                pack = locale
-                break
-            end
-        end
-        if pack and pack.EffectNames and pack.EffectNames[key] then
-            return pack.EffectNames[key]
-        end
+    if EFFECT_ID_TO_NAME[key] then
+        return EFFECT_ID_TO_NAME[key]
     end
     return towstring(key)
 end
@@ -699,16 +836,12 @@ function MS.EffectDisplayName(spec)
     if effectId <= 0 then
         return nil
     end
-    if type(CraftValueTip) == "table" and type(CraftValueTip.ApothEffectList) == "table" then
-        local key = CraftValueTip.ApothEffectList[effectId]
-        local phrase = CvtEffectPhrase(key)
+    local ek = MS.EffectKeyFromEffectId(effectId)
+    if ek then
+        local phrase = EffectPhrase(ek)
         if phrase and phrase ~= L"" then
             return phrase
         end
-    end
-    local ek = MS.EffectKeyFromEffectId(effectId)
-    if ek then
-        return CvtEffectPhrase(ek)
     end
     return L"Effect id: " .. towstring(tostring(effectId))
 end
@@ -878,7 +1011,7 @@ local function ResolveSeedItem(seed)
         end
     end
     if type(GetDatabaseItemData) == "function" then
-        local ok, data = pcall(GetDatabaseItemData, uid)
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, uid)
         if ok and type(data) == "table" then
             return data
         end
@@ -1084,13 +1217,17 @@ function MS.SpecFromRoleAndItem(itemData, role, perCraft)
     }
 end
 
-function MS.RepairMainSpec(spec, itemDataOrUid)
+--- Repair incomplete main specs.
+--- opts.effectId / opts.effectKey: fallback when item bonuses/description lack EFFECT
+--- (common for invigoration/AP mains; brew output / potion.effectKey is authoritative).
+function MS.RepairMainSpec(spec, itemDataOrUid, opts)
     if type(spec) ~= "table" or spec.role ~= "main" then
         return false
     end
     if spec.incomplete ~= true and tonumber(spec.effectId) and tonumber(spec.effectId) > 0 then
         return false
     end
+    opts = type(opts) == "table" and opts or nil
     local itemData = nil
     if type(itemDataOrUid) == "table" then
         itemData = itemDataOrUid
@@ -1099,21 +1236,20 @@ function MS.RepairMainSpec(spec, itemDataOrUid)
     end
     local refreshed = type(itemData) == "table" and MS.FromItemData(itemData, "main") or nil
     if refreshed == nil or refreshed.incomplete == true then
-        local uid = type(itemData) == "table" and itemData.uniqueID or itemDataOrUid
-        local effectId = EffectIdFromSeedListUid(uid)
-        if not effectId and type(itemData) == "table" then
+        local effectId = nil
+        if type(itemData) == "table" then
             effectId = EffectIdFromDescription(itemData.description)
+        end
+        if (not effectId or effectId <= 0) and opts then
+            effectId = tonumber(opts.effectId) or 0
+            if effectId <= 0 and type(opts.effectKey) == "string" then
+                effectId = EffectIdFromKey(opts.effectKey) or 0
+            end
         end
         if not effectId or effectId <= 0 then
             return false
         end
-        spec.effectId = effectId
-        spec.incomplete = false
-        if type(spec.bonuses) ~= "table" then
-            spec.bonuses = {}
-        end
-        spec.bonuses[CraftBonusRefs().EFFECT] = effectId
-        return true
+        return MS.ApplyMainEffectId(spec, effectId)
     end
     spec.tradeSkill = refreshed.tradeSkill
     spec.slotType = refreshed.slotType

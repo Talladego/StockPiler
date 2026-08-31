@@ -1,19 +1,41 @@
 ----------------------------------------------------------------
 -- StockPilerCharacter - per-character settings on shared profiles
+-- Watches / AutoGrow / AutoBuy live in Settings.characters[characterName].
+-- Shared knowledge (recipes, harvest/refine maps) lives in StockPiler.Account.
 ----------------------------------------------------------------
 
+local function ClampInt(n, lo, hi, default)
+    n = tonumber(n)
+    if n == nil then
+        return default
+    end
+    n = math.floor(n)
+    if n < lo then
+        return lo
+    end
+    if n > hi then
+        return hi
+    end
+    return n
+end
+
 StockPiler.DefaultCharacterSettings = {
-    watches = {}, -- [potionKey] = { enabled, autoGrow, targetStock }
+    watches = {}, -- [potionRecipeKey] = { enabled, autoGrow, targetStock }  (legacy uid:N migrated on bind)
     autoGrowEnabled = false,
     autoGrowAdditives = false,
+    autoBuyEnabled = false,
+    autoBuyReserveGold = 10,
+    autoBuyBudgetGold = 50,
+    growSeedBufferMin = 4,
+    brewMacroEnabled = true, -- one-click Brew hotbar (Ctrl-click toggles)
 }
 
 function StockPiler.GetCharacterKey()
     if GameData and GameData.Player and GameData.Player.name then
         local name = GameData.Player.name
         if type(name) == "wstring" then
-            local ok, narrow = pcall(WStringToString, name)
-            if ok and type(narrow) == "string" and narrow ~= "" then
+            local narrow = StockPiler.ToNarrow(name)
+            if type(narrow) == "string" and narrow ~= "" then
                 if string.len(narrow) >= 2 and string.sub(narrow, -2, -2) == "^" then
                     narrow = string.sub(narrow, 1, -3)
                 end
@@ -31,7 +53,9 @@ end
 function StockPiler.EnsureCharacterBucketShape(char)
     if type(char) ~= "table" then
         char = {}
-        for k, v in pairs(StockPiler.DefaultCharacterSettings) do
+    end
+    for k, v in pairs(StockPiler.DefaultCharacterSettings) do
+        if char[k] == nil then
             if type(v) == "table" then
                 char[k] = {}
             else
@@ -42,12 +66,13 @@ function StockPiler.EnsureCharacterBucketShape(char)
     if type(char.watches) ~= "table" then
         char.watches = {}
     end
-    if char.autoGrowEnabled == nil then
-        char.autoGrowEnabled = false
-    end
-    if char.autoGrowAdditives == nil then
-        char.autoGrowAdditives = false
-    end
+    char.autoGrowEnabled = char.autoGrowEnabled == true
+    char.autoGrowAdditives = char.autoGrowAdditives == true
+    char.autoBuyEnabled = char.autoBuyEnabled == true
+    char.brewMacroEnabled = char.brewMacroEnabled ~= false
+    char.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
+    char.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
+    char.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 4)
     return char
 end
 
@@ -70,41 +95,6 @@ local function DeepCopy(value)
     return copy
 end
 
-function StockPiler.MigrateCharacterSettings(s)
-    if type(s) ~= "table" then
-        return
-    end
-    if s.charactersVersion == 1 then
-        return
-    end
-
-    if type(s.characters) ~= "table" then
-        s.characters = {}
-    end
-
-    local key = StockPiler.GetCharacterKey()
-    if type(s.characters[key]) ~= "table" then
-        s.characters[key] = DeepCopy(StockPiler.DefaultCharacterSettings)
-    end
-    local char = StockPiler.EnsureCharacterBucketShape(s.characters[key])
-
-    if type(s.watches) == "table" and next(s.watches) ~= nil then
-        for pk, watch in pairs(s.watches) do
-            if char.watches[pk] == nil and type(watch) == "table" then
-                char.watches[pk] = DeepCopy(watch)
-            end
-        end
-    end
-    if s.autoGrowEnabled ~= nil and char.autoGrowEnabled == false then
-        char.autoGrowEnabled = s.autoGrowEnabled == true
-    end
-
-    s.charactersVersion = 1
-    if StockPiler.D then
-        StockPiler.D("Migrated planner settings to per-character bucket key=" .. tostring(key))
-    end
-end
-
 function StockPiler.PersistActiveCharacterSettings(s)
     local bucket = StockPiler._charBucket
     if type(s) ~= "table" or type(bucket) ~= "table" then
@@ -112,6 +102,11 @@ function StockPiler.PersistActiveCharacterSettings(s)
     end
     bucket.autoGrowEnabled = s.autoGrowEnabled == true
     bucket.autoGrowAdditives = s.autoGrowAdditives == true
+    bucket.autoBuyEnabled = s.autoBuyEnabled == true
+    bucket.brewMacroEnabled = s.brewMacroEnabled ~= false
+    bucket.autoBuyReserveGold = ClampInt(s.autoBuyReserveGold, 1, 99, 10)
+    bucket.autoBuyBudgetGold = ClampInt(s.autoBuyBudgetGold, 1, 999, 50)
+    bucket.growSeedBufferMin = ClampInt(s.growSeedBufferMin, 4, 20, 4)
     if type(s.watches) == "table" then
         bucket.watches = s.watches
     end
@@ -122,8 +117,12 @@ function StockPiler.BindActiveCharacterSettings(s)
     if type(s) ~= "table" then
         return nil
     end
-
-    StockPiler.MigrateCharacterSettings(s)
+    -- Tab OnInitialize calls EnsureSettings before trade skills exist.
+    -- EnforceProfessionGates used to call EnsureSettings again (C stack overflow).
+    if StockPiler._bindingCharacter == true then
+        return StockPiler._charBucket
+    end
+    StockPiler._bindingCharacter = true
 
     local prevEnabled = s.autoGrowEnabled == true
     local prevKey = s._characterKey
@@ -137,8 +136,7 @@ function StockPiler.BindActiveCharacterSettings(s)
         s.characters = {}
     end
     if type(s.characters[key]) ~= "table" then
-        local copy = DeepCopy(StockPiler.DefaultCharacterSettings)
-        s.characters[key] = copy
+        s.characters[key] = DeepCopy(StockPiler.DefaultCharacterSettings)
     end
 
     local char = StockPiler.EnsureCharacterBucketShape(s.characters[key])
@@ -146,23 +144,36 @@ function StockPiler.BindActiveCharacterSettings(s)
     StockPiler._charBucket = char
     s._charBucket = nil
     s.watches = char.watches
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigrateWatchesToPotionRecipeKeys then
+        StockPiler.RecipeSpec.MigrateWatchesToPotionRecipeKeys()
+    end
     s.autoGrowEnabled = char.autoGrowEnabled == true
     s.autoGrowAdditives = char.autoGrowAdditives == true
-    if StockPiler.Inventory and StockPiler.Inventory.EnforceProfessionGates then
-        pcall(StockPiler.Inventory.EnforceProfessionGates)
-    end
+    s.autoBuyEnabled = char.autoBuyEnabled == true
+    s.brewMacroEnabled = char.brewMacroEnabled ~= false
+    s.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
+    s.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
+    s.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 4)
     local newEnabled = s.autoGrowEnabled == true
     if keyChanged or prevEnabled ~= newEnabled then
         if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-            pcall(StockPiler.Planner.InvalidatePlanCache)
+            StockPiler.Planner.InvalidatePlanCache()
         end
         if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
-            pcall(StockPiler.AutoGrow.InvalidatePlantQueue)
+            StockPiler.AutoGrow.InvalidatePlantQueue()
         end
     end
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.SyncEnabledFromSettings then
-        pcall(StockPiler.AutoGrow.SyncEnabledFromSettings, prevEnabled, newEnabled, keyChanged)
+    -- Defer gates + AutoGrow enable until AutoGrow.Initialize. CreateWindow
+    -- OnInitialize runs first and must not BuildPlan / GetCultivationInfo.
+    if StockPiler.AutoGrow and StockPiler.AutoGrow._initialized == true then
+        if StockPiler.Inventory and StockPiler.Inventory.EnforceProfessionGates then
+            StockPiler.Inventory.EnforceProfessionGates()
+        end
+        if StockPiler.AutoGrow.SyncEnabledFromSettings then
+            StockPiler.AutoGrow.SyncEnabledFromSettings(prevEnabled, newEnabled, keyChanged)
+        end
     end
+    StockPiler._bindingCharacter = false
     return char
 end
 
@@ -171,10 +182,10 @@ function StockPiler.OnCharacterSettingsReload()
     local prevEnabled = type(StockPiler.Settings) == "table" and StockPiler.Settings.autoGrowEnabled == true
     StockPiler.EnsureSettings()
     if StockPiler.SeedMap and StockPiler.SeedMap.ApplyPendingMapReset then
-        pcall(StockPiler.SeedMap.ApplyPendingMapReset)
+        StockPiler.SeedMap.ApplyPendingMapReset()
     end
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairIncompleteMainSpecs then
-        pcall(StockPiler.RecipeSpec.RepairIncompleteMainSpecs)
+        StockPiler.RecipeSpec.RepairIncompleteMainSpecs()
     end
     local newKey = type(StockPiler.Settings) == "table" and StockPiler.Settings._characterKey or nil
     local newEnabled = type(StockPiler.Settings) == "table" and StockPiler.Settings.autoGrowEnabled == true

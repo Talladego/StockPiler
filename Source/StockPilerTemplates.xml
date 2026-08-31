@@ -46,7 +46,7 @@
             <TextOffset x="4" y="4" />
         </Button>
 
-        <!-- Compact row action: gold text, orange hover, no trapezoid chrome (that skin does not scale to 22px). -->
+        <!-- Compact row action: gold text, orange hover. -->
         <Button name="StockPiler_RowTextButton" inherits="EA_Button_DefaultText" font="font_chat_text" textalign="center">
             <Size>
                 <AbsPoint x="70" y="28" />
@@ -60,10 +60,17 @@
             </TextColors>
         </Button>
 
-        <!-- Potion row: columns sum to 942px (scrollbar gutter). Keep headers in TabPotions in sync. -->
+        <!-- Forget: shared Minus-Button artwork (EA_Shared01 / shared_01). -->
+        <Button name="StockPiler_RowForgetButton" inherits="EA_Button_DefaultMinus">
+            <Size>
+                <AbsPoint x="18" y="18" />
+            </Size>
+        </Button>
+
+        <!-- Potion row: Watch | Name | Effect | Power | Stability | Super-Crit | Yield | Stock | Recipe | Forget -->
         <Window name="StockPilerPotionRow">
             <Size>
-                <AbsPoint x="942" y="32" />
+                <AbsPoint x="1000" y="32" />
             </Size>
             <Windows>
                 <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
@@ -93,7 +100,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="30" y="5" />
+                            <AbsPoint x="32" y="5" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -101,68 +108,79 @@
                     </EventHandlers>
                 </DynamicImage>
 
-                <Label name="$parentName" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="false" wordwrap="false">
+                <Label name="$parentName" font="font_chat_text" maxchars="48" textalign="leftcenter" handleinput="false" wordwrap="false">
                     <Size>
-                        <AbsPoint x="362" y="28" />
+                        <AbsPoint x="314" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="56" y="2" />
+                            <AbsPoint x="58" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
 
-                <Label name="$parentEffect" font="font_chat_text" maxchars="24" textalign="rightcenter" handleinput="false" wordwrap="false">
+                <Label name="$parentEffect" font="font_chat_text" maxchars="12" textalign="leftcenter" handleinput="false" wordwrap="false">
+                    <Size>
+                        <AbsPoint x="64" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="388" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentPower" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="60" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="460" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentStability" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="84" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="528" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentSuperCrit" font="font_chat_text" maxchars="10" textalign="rightcenter" handleinput="false">
                     <Size>
                         <AbsPoint x="92" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="418" y="2" />
+                            <AbsPoint x="620" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
 
-                <Label name="$parentRank" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                <Label name="$parentYield" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
                     <Size>
-                        <AbsPoint x="72" y="28" />
+                        <AbsPoint x="56" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="510" y="2" />
-                        </Anchor>
-                    </Anchors>
-                </Label>
-
-                <Label name="$parentBuff" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
-                    <Size>
-                        <AbsPoint x="72" y="28" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="582" y="2" />
-                        </Anchor>
-                    </Anchors>
-                </Label>
-
-                <Label name="$parentDuration" font="font_chat_text" maxchars="10" textalign="rightcenter" handleinput="false">
-                    <Size>
-                        <AbsPoint x="68" y="28" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="654" y="2" />
+                            <AbsPoint x="720" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
 
                 <Label name="$parentHave" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
                     <Size>
-                        <AbsPoint x="80" y="28" />
+                        <AbsPoint x="60" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="722" y="2" />
+                            <AbsPoint x="784" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -173,7 +191,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="826" y="5" />
+                            <AbsPoint x="872" y="5" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -181,13 +199,13 @@
                     </EventHandlers>
                 </DynamicImage>
 
-                <Button name="$parentForget" inherits="StockPiler_RowTextButton">
+                <Button name="$parentForget" inherits="StockPiler_RowForgetButton">
                     <Size>
-                        <AbsPoint x="70" y="28" />
+                        <AbsPoint x="18" y="18" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="872" y="2" />
+                            <AbsPoint x="958" y="7" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -198,10 +216,10 @@
             </Windows>
         </Window>
 
-        <!-- AutoGrow row: Potion | Status | Stock | Craftable | Target | AutoGrow | Craft (942px) -->
+        <!-- AutoGrow row: Potion | Status | Stock | Craftable | Target | AutoGrow | Craft (1000px) -->
         <Window name="StockPilerAutoGrowRow">
             <Size>
-                <AbsPoint x="942" y="32" />
+                <AbsPoint x="1000" y="32" />
             </Size>
             <Windows>
                 <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false">
@@ -315,7 +333,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="822" y="6" />
+                            <AbsPoint x="838" y="6" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -326,11 +344,11 @@
 
                 <Button name="$parentLoad" inherits="StockPiler_RowTextButton">
                     <Size>
-                        <AbsPoint x="56" y="28" />
+                        <AbsPoint x="70" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="876" y="2" />
+                            <AbsPoint x="914" y="2" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>

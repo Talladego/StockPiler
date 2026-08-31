@@ -136,7 +136,7 @@ end
 local function SetMacroSlot(slot, name, text, iconId, kind)
     SetMacroData(name, text, iconId, slot)
     if EA_Window_Macro and EA_Window_Macro.UpdateDetails then
-        pcall(EA_Window_Macro.UpdateDetails, slot)
+        StockPiler.TryCall("EA_Window_Macro.UpdateDetails", EA_Window_Macro.UpdateDetails, slot)
     end
     if kind == "brew" then
         StockPilerMacro.BrewMacroId = slot
@@ -232,18 +232,22 @@ local function FireApothecaryBrew()
     end
     StockPilerMacro._brewFired = true
     if StockPiler.Inventory and StockPiler.Inventory.BeginPendingCraft then
-        pcall(StockPiler.Inventory.BeginPendingCraft)
+        StockPiler.Inventory.BeginPendingCraft()
     end
     if type(PerformCrafting) ~= "function" then
         D("PerformCrafting missing")
         return false
     end
-    local ok, err = pcall(PerformCrafting, ApothecaryTradeSkill(), 1)
+    local ok, err = StockPiler.TryCall("PerformCrafting", PerformCrafting, ApothecaryTradeSkill(), 1)
     D("PerformCrafting apo ok=" .. tostring(ok) .. " err=" .. tostring(err))
     if ok == true and type(ApothecaryWindow) == "table" then
         ApothecaryWindow.PerformingLock = true
     end
     return ok == true
+end
+
+function StockPilerMacro.FireApothecaryBrew()
+    return FireApothecaryBrew()
 end
 
 local function PerformCraftingAction()
@@ -347,13 +351,16 @@ local function formatTooltipIcon(iconNum)
     return towstring(string.format("<icon%05d>", iconNum))
 end
 
-function StockPilerMacro.SetButtonGlow(button, glowLevel)
+function StockPilerMacro.SetButtonGlow(button, glowLevel, gateEnabled)
     local glowFrame = getButtonGlowFrame(button)
     if not glowFrame then
         return
     end
     glowLevel = tonumber(glowLevel) or 0
-    if not isAutoGrowEnabled() or glowLevel <= 0 then
+    if gateEnabled == nil then
+        gateEnabled = isAutoGrowEnabled()
+    end
+    if gateEnabled ~= true or glowLevel <= 0 then
         glowFrame:StopAnimation(true)
         glowFrame:Show(false)
         return
@@ -388,8 +395,8 @@ local function bindHarvestGameAction(button)
     if not DoesWindowExist(actionName) then
         return false
     end
-    local ok = pcall(
-        WindowSetGameActionData,
+    local ok = StockPiler.TryCall(
+        "WindowSetGameActionData", WindowSetGameActionData,
         actionName,
         PerformCraftingAction(),
         CultivationTradeSkill(),
@@ -408,8 +415,8 @@ local function bindHarvestGameActionForButton(button)
     if type(button.GetName) == "function" then
         local actionName = button:GetName() .. "Action"
         if WindowSetGameActionData and DoesWindowExist(actionName) then
-            local ok = pcall(
-                WindowSetGameActionData,
+            local ok = StockPiler.TryCall(
+                "WindowSetGameActionData", WindowSetGameActionData,
                 actionName,
                 PerformCraftingAction(),
                 CultivationTradeSkill(),
@@ -429,8 +436,8 @@ local function bindBrewGameAction(button)
     if not DoesWindowExist(actionName) then
         return false
     end
-    local ok = pcall(
-        WindowSetGameActionData,
+    local ok = StockPiler.TryCall(
+        "WindowSetGameActionData", WindowSetGameActionData,
         actionName,
         PerformCraftingAction(),
         ApothecaryTradeSkill(),
@@ -449,8 +456,8 @@ local function bindBrewGameActionForButton(button)
     if type(button.GetName) == "function" then
         local actionName = button:GetName() .. "Action"
         if WindowSetGameActionData and DoesWindowExist(actionName) then
-            local ok = pcall(
-                WindowSetGameActionData,
+            local ok = StockPiler.TryCall(
+                "WindowSetGameActionData", WindowSetGameActionData,
                 actionName,
                 PerformCraftingAction(),
                 ApothecaryTradeSkill(),
@@ -484,6 +491,14 @@ local function canBrewNow()
         and StockPiler.Brew.HasReadyToCraft() == true
 end
 
+local function isBrewMacroEnabled()
+    if StockPiler.Brew and StockPiler.Brew.IsMacroEnabled then
+        return StockPiler.Brew.IsMacroEnabled() == true
+    end
+    local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings() or StockPiler.Settings
+    return type(s) ~= "table" or s.brewMacroEnabled ~= false
+end
+
 function StockPilerMacro.ApplyButtonAppearance(button, opts)
     if not button then
         return
@@ -495,9 +510,9 @@ function StockPilerMacro.ApplyButtonAppearance(button, opts)
     setMacroButtonEnabledOverlay(button, autoGrowOn)
     setMacroButtonVisualDisabled(button, not autoGrowOn)
     if autoGrowOn and glowLevel > 0 then
-        StockPilerMacro.SetButtonGlow(button, glowLevel)
+        StockPilerMacro.SetButtonGlow(button, glowLevel, true)
     else
-        StockPilerMacro.SetButtonGlow(button, 0)
+        StockPilerMacro.SetButtonGlow(button, 0, true)
     end
     if opts.flash == true then
         flashButton(button)
@@ -513,15 +528,22 @@ function StockPilerMacro.ApplyBrewButtonAppearance(button, opts)
         return
     end
     opts = opts or {}
+    local brewOn = isBrewMacroEnabled()
     local brewReady = canBrewNow()
-    setMacroButtonEnabledOverlay(button, brewReady)
-    setMacroButtonVisualDisabled(button, not brewReady)
-    StockPilerMacro.SetButtonGlow(button, 0)
+    setMacroButtonEnabledOverlay(button, brewOn)
+    setMacroButtonVisualDisabled(button, not brewOn)
+    if brewOn and brewReady then
+        -- Fury level 1 while a watched potion can load/brew.
+        StockPilerMacro.SetButtonGlow(button, 1, true)
+    else
+        StockPilerMacro.SetButtonGlow(button, 0, true)
+    end
     if opts.flash == true then
         flashButton(button)
     end
     bindBrewGameActionForButton(button)
     StockPilerMacro.MacroButtonState.brewReady = brewReady
+    StockPilerMacro.MacroButtonState.brewEnabled = brewOn
 end
 
 function StockPilerMacro.RebindHotbarButtons()
@@ -544,6 +566,22 @@ function StockPilerMacro.RebindHotbarButtons()
 end
 
 function StockPilerMacro.RefreshMacroButtonAppearance()
+    if StockPilerMacro._refreshingAppearance == true then
+        return
+    end
+    if not ActionBars or not ActionBars.m_Bars then
+        return
+    end
+    StockPilerMacro._refreshingAppearance = true
+    -- Raw pcall so the flag always clears; TryCall logging can re-enter the UI.
+    local ok, err = pcall(StockPilerMacro._RefreshMacroButtonAppearanceBody)
+    StockPilerMacro._refreshingAppearance = false
+    if ok ~= true and StockPiler.D then
+        StockPiler.D("[Macro] refresh failed: " .. tostring(err))
+    end
+end
+
+function StockPilerMacro._RefreshMacroButtonAppearanceBody()
     if not ActionBars or not ActionBars.m_Bars then
         return
     end
@@ -611,6 +649,11 @@ function StockPilerMacro.BrewClick()
         StockPilerMacro._brewFired = false
         return
     end
+    if not isBrewMacroEnabled() then
+        StockPilerMacro._brewFired = false
+        StockPilerMacro.RefreshMacroButtonAppearance()
+        return
+    end
     local result = "blocked"
     if StockPiler.Brew and StockPiler.Brew.TryBrewClick then
         result = StockPiler.Brew.TryBrewClick()
@@ -661,7 +704,7 @@ local function handleMacroHarvestActivation(self, flags)
         return "blocked"
     end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.PrepareHarvestPlot then
-        pcall(StockPiler.AutoGrow.PrepareHarvestPlot, true)
+        StockPiler.AutoGrow.PrepareHarvestPlot(true)
     end
     return "go"
 end
@@ -669,6 +712,12 @@ end
 local function handleMacroBrewActivation(self, flags)
     if Cursor and Cursor.IconOnCursor and Cursor.IconOnCursor() then
         return "cursor"
+    end
+    if not isBrewMacroEnabled() then
+        if flags ~= SystemData.ButtonFlags.GAME_ACTION and ActionBars and ActionBars.SetPickupButton then
+            ActionBars:SetPickupButton(nil)
+        end
+        return "blocked"
     end
     if not (StockPiler.Brew and StockPiler.Brew.TryBrewClick) then
         return "blocked"
@@ -719,8 +768,8 @@ local function installActionButtonHooks()
         end
         if StockPilerMacro.IsBrewMacroButton(self) and isControlPressed(flags) then
             ctrlHandledOnThisClick = true
-            if StockPiler.Brew and StockPiler.Brew.CancelSession then
-                StockPiler.Brew.CancelSession()
+            if StockPiler.Brew and StockPiler.Brew.ToggleMacroEnabled then
+                StockPiler.Brew.ToggleMacroEnabled()
             end
             return
         end
@@ -744,7 +793,7 @@ local function installActionButtonHooks()
             local result = handleMacroHarvestActivation(self, flags)
             if result == "cursor" or result == "go" then
                 orgOnLButtonUp(self, flags, x, y)
-                pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+                StockPilerMacro.RefreshMacroButtonAppearance()
                 return
             end
             if result == "blocked" then
@@ -753,8 +802,8 @@ local function installActionButtonHooks()
         elseif StockPilerMacro.IsBrewMacroButton(self) then
             if ctrlHandledOnThisClick or isControlPressed(flags) then
                 if (not ctrlHandledOnThisClick) and isControlPressed(flags) then
-                    if StockPiler.Brew and StockPiler.Brew.CancelSession then
-                        StockPiler.Brew.CancelSession()
+                    if StockPiler.Brew and StockPiler.Brew.ToggleMacroEnabled then
+                        StockPiler.Brew.ToggleMacroEnabled()
                     end
                 end
                 ctrlHandledOnThisClick = false
@@ -768,11 +817,11 @@ local function installActionButtonHooks()
             if result == "go" then
                 StockPilerMacro._brewFired = false
                 FireApothecaryBrew()
-                pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+                StockPilerMacro.RefreshMacroButtonAppearance()
                 return
             end
             if result == "blocked" then
-                pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+                StockPilerMacro.RefreshMacroButtonAppearance()
                 return
             end
         end
@@ -878,6 +927,7 @@ function StockPilerMacro.UnregisterHotbarEventHandler()
 end
 
 function StockPilerMacro.Initialize()
+    StockPilerMacro._refreshingAppearance = false
     if StockPilerMacro._initialized then
         StockPilerMacro.UpdateBrewMacro()
         StockPilerMacro.RefreshMacroButtonAppearance()

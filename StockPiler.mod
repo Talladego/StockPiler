@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-        <UiMod name="StockPiler" version="0.8.75" date="2026-08-30">
+        <UiMod name="StockPiler" version="0.9.48" date="2026-08-31">
         <Author name="Talladego" email="" />
-        <Description text="Apothecary stock planner with AutoGrow and harvest/brew macros." />
+        <Description text="Apothecary stock planner with AutoGrow, AutoBuy, and harvest/brew macros." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
 
         <Dependencies>
@@ -15,12 +15,12 @@
             <Dependency name="EASystem_Tooltips" />
             <Dependency name="LibSlash" optional="true" />
             <Dependency name="PotionBar" optional="true" />
-            <Dependency name="CraftValueTip" optional="true" />
             <!-- Soft runtime hooks: GatherButton, Shinies -->
         </Dependencies>
 
         <Files>
             <File name="Source/StockPiler.lua" />
+            <File name="Source/StockPilerPerf.lua" />
             <File name="Source/StockPilerCharacter.lua" />
             <File name="Source/StockPilerNotify.lua" />
             <File name="Source/StockPilerMockData.lua" />
@@ -30,8 +30,10 @@
             <File name="Source/StockPilerInventory.lua" />
             <File name="Source/StockPilerAdditives.lua" />
             <File name="Source/StockPilerSeedMap.lua" />
+            <File name="Source/StockPilerCraftChat.lua" />
             <File name="Source/StockPilerTemplates.xml" />
             <File name="Source/StockPilerPlanner.lua" />
+            <File name="Source/StockPilerBuy.lua" />
             <File name="Source/StockPilerBrew.lua" />
             <File name="Source/StockPilerAutoGrow.lua" />
             <File name="Source/StockPilerMacro.lua" />
@@ -43,6 +45,7 @@
 
         <SavedVariables>
             <SavedVariable name="StockPiler.Settings" />
+            <SavedVariable name="StockPiler.Account" global="true" />
         </SavedVariables>
 
         <OnInitialize>

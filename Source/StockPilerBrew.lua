@@ -23,22 +23,16 @@ local LOAD_ROLE_ORDER = {
 }
 
 local function ToNarrow(s)
-    if StockPiler and StockPiler.ToNarrow then
-        return StockPiler.ToNarrow(s)
-    end
-    if type(s) == "wstring" and WStringToString then
-        local ok, out = pcall(WStringToString, s)
-        if ok then
-            return out
-        end
-    end
-    return s ~= nil and tostring(s) or ""
+    return StockPiler.ToNarrow(s)
 end
 
--- Load always writes to uilog.log (engine d()). Not gated by /stp debug.
+-- Brew/load breadcrumbs → uilog.log. Gated by /stp debug.
 local function D(msg)
+    if not (StockPiler and StockPiler.DebugEnabled == true) then
+        return
+    end
     local text = "[Load] " .. tostring(msg)
-    if StockPiler and StockPiler._EmitLog and StockPiler._LogText then
+    if StockPiler._EmitLog and StockPiler._LogText then
         StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(text))
     elseif type(d) == "function" then
         d("StockPiler| " .. text)
@@ -157,7 +151,7 @@ local function ItemValid(item)
         return false
     end
     if DataUtils and type(DataUtils.IsValidItem) == "function" then
-        local ok, valid = pcall(DataUtils.IsValidItem, item)
+        local ok, valid = StockPiler.TryCallQuiet("DataUtils.IsValidItem", DataUtils.IsValidItem, item)
         if ok then
             return valid == true
         end
@@ -178,7 +172,7 @@ end
 
 GetCraftingBagTable = function()
     if DataUtils and type(DataUtils.GetCraftingItems) == "function" then
-        local ok, data = pcall(DataUtils.GetCraftingItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetCraftingItems", DataUtils.GetCraftingItems)
         if ok and type(data) == "table" then
             return data
         end
@@ -207,8 +201,15 @@ local function EachCraftingBagSlot(fn)
 end
 
 local function ItemMatchesSpec(item, spec)
-    return type(spec) == "table"
-        and StockPiler.MaterialSpec
+    if type(spec) ~= "table" then
+        return false
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.IsSeedOrSporeItem
+        and StockPiler.Inventory.IsSeedOrSporeItem(item)
+    then
+        return false
+    end
+    return StockPiler.MaterialSpec
         and StockPiler.MaterialSpec.Matches
         and StockPiler.MaterialSpec.Matches(item, spec) == true
 end
@@ -236,7 +237,7 @@ local function ItemAllowedForRole(item, role)
         return true
     end
     local function allowedIn(slot)
-        local ok, allowed = pcall(ApothecaryWindow.ItemIsAllowedInSlot, item, slot)
+        local ok, allowed = StockPiler.TryCallQuiet("ApothecaryWindow.ItemIsAllowedInSlot", ApothecaryWindow.ItemIsAllowedInSlot, item, slot)
         return ok and allowed == true
     end
     if role == "container" then
@@ -301,7 +302,7 @@ local function ClientCraftInfo(item)
     end
     local types, rt, req
     if type(CraftingSystem) == "table" and type(CraftingSystem.GetCraftingData) == "function" then
-        local ok = pcall(function()
+        local ok = StockPiler.TryCallQuiet("CraftingSystem.GetCraftingData", function()
             types, rt, req = CraftingSystem.GetCraftingData(item)
         end)
         if not ok then
@@ -312,7 +313,7 @@ local function ClientCraftInfo(item)
     if type(CraftingSystem) == "table" and type(CraftingSystem.IsCraftingItem) == "function"
         and GameData and GameData.TradeSkills
     then
-        local ok, v = pcall(CraftingSystem.IsCraftingItem, item, GameData.TradeSkills.APOTHECARY)
+        local ok, v = StockPiler.TryCallQuiet("CraftingSystem.IsCraftingItem", CraftingSystem.IsCraftingItem, item, GameData.TradeSkills.APOTHECARY)
         isApo = ok and v == true
     end
     return tonumber(rt) or 0, ResourceTypeLabel(rt), tonumber(req) or 0, isApo
@@ -326,7 +327,7 @@ local function AllowedSlotsDump(item)
     end
     local parts = {}
     for slot = 0, 4 do
-        local ok, allowed = pcall(ApothecaryWindow.ItemIsAllowedInSlot, item, slot)
+        local ok, allowed = StockPiler.TryCallQuiet("ApothecaryWindow.ItemIsAllowedInSlot", ApothecaryWindow.ItemIsAllowedInSlot, item, slot)
         parts[#parts + 1] = tostring(slot) .. "=" .. tostring(ok and allowed)
     end
     return "allowed[" .. table.concat(parts, " ") .. "]"
@@ -339,8 +340,8 @@ local function DescribeItem(item)
     local rt, rtLabel, req, isApo = ClientCraftInfo(item)
     local itemSpec = ""
     if StockPiler.MaterialSpec and StockPiler.MaterialSpec.FromItemData then
-        local ok, spec = pcall(StockPiler.MaterialSpec.FromItemData, item)
-        if ok and type(spec) == "table" then
+        local spec = StockPiler.MaterialSpec.FromItemData(item)
+        if type(spec) == "table" then
             itemSpec = SpecKey(spec)
         end
     end
@@ -453,7 +454,7 @@ local function GetApothecaryCraftData()
     if type(GetCraftingData) ~= "function" then
         return nil
     end
-    local ok, data = pcall(GetCraftingData, ApothecarySkill())
+    local ok, data = StockPiler.TryCallQuiet("GetCraftingData", GetCraftingData, ApothecarySkill())
     if ok and type(data) == "table" then
         _craftDataCache = data
         return data
@@ -482,7 +483,7 @@ local function ServerHasCraftingItems()
     if type(GetCraftingBackPackSlots) ~= "function" then
         return false
     end
-    local ok, slots = pcall(GetCraftingBackPackSlots, ApothecarySkill())
+    local ok, slots = StockPiler.TryCallQuiet("GetCraftingBackPackSlots", GetCraftingBackPackSlots, ApothecarySkill())
     if ok and type(slots) == "table" then
         for _, entry in pairs(slots) do
             if type(entry) == "table" and entry.slot then
@@ -504,7 +505,7 @@ local function RemoveApothecaryEntry(apo, slot, backpack, seen)
         end
         seen[key] = true
     end
-    pcall(RemoveCraftingItem, apo, slot, backpack)
+    StockPiler.TryCall("RemoveCraftingItem", RemoveCraftingItem, apo, slot, backpack)
     return true
 end
 
@@ -534,7 +535,7 @@ local function ClearServerApothecarySlots()
     local cleared = false
     local seen = {}
     if type(GetCraftingBackPackSlots) == "function" then
-        local ok, slots = pcall(GetCraftingBackPackSlots, apo)
+        local ok, slots = StockPiler.TryCallQuiet("GetCraftingBackPackSlots", GetCraftingBackPackSlots, apo)
         if ok and type(slots) == "table" then
             for index = 4, 0, -1 do
                 local entry = slots[index]
@@ -559,19 +560,179 @@ local function ClearServerApothecarySlots()
     return cleared
 end
 
+local function ReleaseApothecaryBackpackLocks()
+    local name = (type(ApothecaryWindow) == "table" and ApothecaryWindow.windowName) or "ApothecaryWindow"
+    if type(EA_BackpackUtilsMediator) == "table"
+        and type(EA_BackpackUtilsMediator.ReleaseAllLocksForWindow) == "function"
+    then
+        StockPiler.TryCall(
+            "ReleaseAllLocksForWindow",
+            EA_BackpackUtilsMediator.ReleaseAllLocksForWindow,
+            name
+        )
+    elseif type(EA_Window_Backpack) == "table"
+        and type(EA_Window_Backpack.ReleaseAllLocksForWindow) == "function"
+    then
+        StockPiler.TryCall(
+            "EA_Window_Backpack.ReleaseAllLocksForWindow",
+            EA_Window_Backpack.ReleaseAllLocksForWindow,
+            name
+        )
+    end
+    if type(EA_BackpackUtilsMediator) == "table"
+        and type(EA_BackpackUtilsMediator.EnableSoftLocks) == "function"
+    then
+        StockPiler.TryCall(
+            "EnableSoftLocks",
+            EA_BackpackUtilsMediator.EnableSoftLocks,
+            false
+        )
+    elseif type(EA_Window_Backpack) == "table"
+        and type(EA_Window_Backpack.EnableSoftLocks) == "function"
+    then
+        StockPiler.TryCall(
+            "EA_Window_Backpack.EnableSoftLocks",
+            EA_Window_Backpack.EnableSoftLocks,
+            false
+        )
+    end
+end
+
+local function EnsureBrewApothecarySoftLocks(enabled)
+    if type(EA_BackpackUtilsMediator) == "table"
+        and type(EA_BackpackUtilsMediator.EnableSoftLocks) == "function"
+    then
+        StockPiler.TryCallQuiet(
+            "EnableSoftLocks",
+            EA_BackpackUtilsMediator.EnableSoftLocks,
+            enabled == true
+        )
+    elseif type(EA_Window_Backpack) == "table"
+        and type(EA_Window_Backpack.EnableSoftLocks) == "function"
+    then
+        StockPiler.TryCallQuiet(
+            "EA_Window_Backpack.EnableSoftLocks",
+            EA_Window_Backpack.EnableSoftLocks,
+            enabled == true
+        )
+    end
+end
+
+--- Claim ownership when One-Click Load uses the engine session — including the common
+--- case where ADDCONTAINER is already active and OpenApothecary is skipped.
+local function ClaimBrewOwnedSession()
+    if ApothecaryWindowOpen and ApothecaryWindowOpen() then
+        return false
+    end
+    StockPiler.Brew._brewOwnedSession = true
+    StockPiler.Brew._brewApoStealth = true
+    EnsureBrewApothecarySoftLocks(true)
+    if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
+        StockPiler.TryCallQuiet(
+            "SetCurrentTradeSkill",
+            CraftingSystem.SetCurrentTradeSkill,
+            ApothecarySkill()
+        )
+    end
+    return true
+end
+
+--- End engine Apo session and clear crafting-bag blue soft-locks.
 local function CloseApothecarySession()
     local apo = ApothecarySkill()
+    local closeApo = StockPiler.Brew._brewOpenedApo == true
+    local closeBag = StockPiler.Brew._brewOpenedBackpack == true
+    local ownedSession = StockPiler.Brew._brewOwnedSession == true
+    local stealth = StockPiler.Brew._brewApoStealth == true
+    local playerVisible = ApothecaryWindowOpen and ApothecaryWindowOpen() == true
+    local apoSkillActive = CraftingSkillType and CraftingSkillType() == apo
+
     ClearServerApothecarySlots()
-    if type(ApothecaryWindow) == "table" and type(ApothecaryWindow.Hide) == "function" then
-        pcall(ApothecaryWindow.Hide)
+    -- Always clear blue tint — ownership is often unset when Load skipped OpenApothecary.
+    ReleaseApothecaryBackpackLocks()
+
+    StockPiler.Brew._brewOpenedApo = false
+    StockPiler.Brew._brewOpenedBackpack = false
+    StockPiler.Brew._brewOwnedSession = false
+    StockPiler.Brew._brewApoStealth = false
+
+    if closeBag and type(EA_BackpackUtilsMediator) == "table"
+        and type(EA_BackpackUtilsMediator.HideBackpack) == "function"
+    then
+        StockPiler.TryCall("EA_BackpackUtilsMediator.HideBackpack", EA_BackpackUtilsMediator.HideBackpack)
     end
+
+    local endEngine = ownedSession or stealth or closeApo
+        or (apoSkillActive == true and not playerVisible)
+    if not endEngine then
+        D("apo locks released (left player Apo session alone)")
+        return
+    end
+
+    if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
+        StockPiler.TryCallQuiet(
+            "SetCurrentTradeSkill",
+            CraftingSystem.SetCurrentTradeSkill,
+            apo
+        )
+    end
+
+    if type(ApothecaryWindow) == "table" then
+        local slider = ApothecaryWindow.windowName
+            and (ApothecaryWindow.windowName .. "StabilityMeterSlider")
+            or nil
+        if type(slider) == "string" and DoesWindowExist(slider)
+            and type(WindowStopPositionAnimation) == "function"
+        then
+            StockPiler.TryCallQuiet(
+                "WindowStopPositionAnimation",
+                WindowStopPositionAnimation,
+                slider
+            )
+        end
+        if type(ApothecaryWindow.Clear) == "function" then
+            StockPiler.TryCall("ApothecaryWindow.Clear", ApothecaryWindow.Clear)
+        end
+        ApothecaryWindow.nextFreeSlot = 0
+        ApothecaryWindow.PerformingLock = false
+    end
+
+    if type(SendCloseCrafting) == "function" then
+        StockPiler.TryCall("SendCloseCrafting", SendCloseCrafting, apo)
+    end
+
+    ReleaseApothecaryBackpackLocks()
+
     local name = type(ApothecaryWindow) == "table" and ApothecaryWindow.windowName or nil
     if type(name) == "string" and DoesWindowExist(name) then
-        pcall(WindowSetShowing, name, false)
+        StockPiler.TryCall("WindowSetShowing", WindowSetShowing, name, false)
+        if type(WindowUtils) == "table" and type(WindowUtils.RemoveFromOpenList) == "function" then
+            StockPiler.TryCallQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
+        end
     end
-    if type(SendCloseCrafting) == "function" then
-        pcall(SendCloseCrafting, apo)
+
+    D("apo session closed owned=" .. tostring(ownedSession)
+        .. " stealth=" .. tostring(stealth)
+        .. " skillActive=" .. tostring(apoSkillActive)
+        .. " playerVisible=" .. tostring(playerVisible))
+end
+
+local function BackpackWindowOpen()
+    local name = type(EA_Window_Backpack) == "table" and EA_Window_Backpack.windowName or nil
+    return type(name) == "string" and DoesWindowExist(name) and WindowGetShowing(name) == true
+end
+
+local function HideApothecaryWindowOnly()
+    -- Visual hide only — do NOT call ApothecaryWindow.Hide (that SendCloseCrafting).
+    local name = type(ApothecaryWindow) == "table" and ApothecaryWindow.windowName or nil
+    if type(name) == "string" and DoesWindowExist(name) and WindowGetShowing(name) then
+        StockPiler.TryCall("WindowSetShowing", WindowSetShowing, name, false)
+        if type(WindowUtils) == "table" and type(WindowUtils.RemoveFromOpenList) == "function" then
+            StockPiler.TryCallQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
+        end
+        return true
     end
+    return false
 end
 
 CraftingState = function()
@@ -643,7 +804,10 @@ end
 
 local function RefreshBrewAppearance()
     if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+        StockPilerMacro.RefreshMacroButtonAppearance()
+    end
+    if StockPilerTabAutoGrow and StockPilerTabAutoGrow.RefreshBrewUi then
+        StockPilerTabAutoGrow.RefreshBrewUi()
     end
 end
 
@@ -713,8 +877,8 @@ local function CurrentPlan(opts)
     if not StockPiler.Planner or not StockPiler.Planner.BuildPlan then
         return nil
     end
-    local ok, plan = pcall(StockPiler.Planner.BuildPlan, opts or { refresh = false })
-    if ok and type(plan) == "table" then
+    local plan = StockPiler.Planner.BuildPlan(opts or { refresh = false })
+    if type(plan) == "table" then
         return plan
     end
     return nil
@@ -762,6 +926,8 @@ function StockPiler.Brew.PickReadyWatch()
     then
         return nil
     end
+    -- Trust plan Craftable* (stable recipes). Do not invalidate bags or walk
+    -- the crafting bag here — this runs from glow/tooltip hot paths.
     local plan = CurrentPlan({ refresh = false })
     local rows = plan and plan.rows
     if type(rows) ~= "table" then
@@ -797,28 +963,177 @@ function StockPiler.Brew.HasReadyToCraft()
     return false
 end
 
+function StockPiler.Brew.IsMacroEnabled()
+    local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings() or StockPiler.Settings
+    return type(s) == "table" and s.brewMacroEnabled ~= false
+end
+
+function StockPiler.Brew.SetMacroEnabled(enabled)
+    local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings() or StockPiler.Settings
+    if type(s) ~= "table" then
+        return false
+    end
+    enabled = enabled == true
+    if enabled and StockPiler.Inventory and StockPiler.Inventory.IsApothecary
+        and not StockPiler.Inventory.IsApothecary()
+    then
+        if StockPiler.Print then
+            StockPiler.Print(L"Brew macro is only available to Apothecaries.")
+        end
+        enabled = false
+    end
+    local changed = (s.brewMacroEnabled ~= false) ~= enabled
+    s.brewMacroEnabled = enabled
+    if StockPiler.PersistActiveCharacterSettings then
+        StockPiler.PersistActiveCharacterSettings(s)
+    end
+    if changed then
+        if StockPiler.NotifyManual then
+            if enabled then
+                StockPiler.NotifyManual(L"Brew", L"one-click enabled.")
+            else
+                StockPiler.NotifyManual(L"Brew", L"one-click disabled.")
+            end
+        end
+    end
+    if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
+        StockPilerMacro.RefreshMacroButtonAppearance()
+    end
+    return enabled
+end
+
+function StockPiler.Brew.ToggleMacroEnabled()
+    return StockPiler.Brew.SetMacroEnabled(not StockPiler.Brew.IsMacroEnabled())
+end
+
+--- Row craft button: "brew" if this watch is loaded in apo, "load" if ready to craft, else "idle".
+function StockPiler.Brew.GetRowCraftUiState(row)
+    if type(row) ~= "table" then
+        return "idle"
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.IsApothecary
+        and not StockPiler.Inventory.IsApothecary()
+    then
+        return "idle"
+    end
+    if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
+        return "idle"
+    end
+    local session = GetSession()
+    if type(session) == "table" and RowMatchesSession(row, session) then
+        if session.phase == "loaded" or session.phase == "loading" then
+            return "brew"
+        end
+    end
+    if RowIsReadyToCraft(row) or row.canLoad == true or row.canBrew == true then
+        return "load"
+    end
+    return "idle"
+end
+
+--- Fire PerformCrafting for the current loaded apo session (same as brew macro).
+function StockPiler.Brew.FirePerform()
+    if not (StockPilerMacro and StockPilerMacro.FireApothecaryBrew) then
+        return false
+    end
+    StockPilerMacro._brewFired = false
+    local ok = StockPilerMacro.FireApothecaryBrew() == true
+    StockPilerMacro._brewFired = false
+    return ok
+end
+
+--- Watch-row Load/Brew click: brew if this row is loaded, else load materials for this row.
+function StockPiler.Brew.OnRowCraftClick(row)
+    if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
+        if StockPiler.Print then
+            StockPiler.Print(L"One-Click Brew is disabled.")
+        end
+        return false
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.IsApothecary
+        and not StockPiler.Inventory.IsApothecary()
+    then
+        if StockPiler.Print then
+            StockPiler.Print(L"Load is only available to Apothecaries.")
+        end
+        return false
+    end
+    if type(row) ~= "table" then
+        return false
+    end
+    local state = StockPiler.Brew.GetRowCraftUiState(row)
+    if state == "brew" then
+        local session = GetSession()
+        if session.phase == "loaded" and StockPiler.Brew.ValidateApothecaryPerform() == true then
+            D("row brew potion=" .. ToNarrow(row.name) .. " key=" .. RowKey(row))
+            return StockPiler.Brew.FirePerform()
+        end
+        if session.phase == "loading" then
+            return false
+        end
+        return false
+    end
+    if state == "load" then
+        return StockPiler.Brew.BeginForRow(row) == true
+    end
+    return false
+end
+
 function StockPiler.Brew.CancelSession()
     StockPiler.Brew._job = nil
     StockPiler.Brew._updateAccum = 0
     StockPiler.Brew._lastLoad = nil
     ClearSession()
+    if StockPiler.Brew._brewOpenedApo == true
+        or StockPiler.Brew._brewOpenedBackpack == true
+        or StockPiler.Brew._brewOwnedSession == true
+    then
+        CloseApothecarySession()
+    end
     if StockPiler.Print then
         StockPiler.Print(L"Brew session cancelled.")
     end
     RefreshBrewAppearance()
 end
 
+--- End One-Click Brew's engine session when the current board cannot brew.
+--- Do not wait for PickReadyWatch()==nil: stale Craftable* would leave soft-locks on.
+local function MaybeCloseBrewSessionIfIdle(reason)
+    if StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy() then
+        return false
+    end
+    if StockPiler.Brew._brewOpenedApo ~= true
+        and StockPiler.Brew._brewOpenedBackpack ~= true
+        and StockPiler.Brew._brewOwnedSession ~= true
+        and StockPiler.Brew._brewApoStealth ~= true
+    then
+        return false
+    end
+    local session = GetSession()
+    if session.phase == "loaded"
+        and StockPiler.Brew.ValidateApothecaryPerform
+        and StockPiler.Brew.ValidateApothecaryPerform() == true
+    then
+        return false
+    end
+    D("closing brew-owned apo session: " .. tostring(reason or "idle"))
+    ClearSession()
+    CloseApothecarySession()
+    return true
+end
+
 function StockPiler.Brew.RefreshSessionAfterBrew()
     local session = GetSession()
     if session.phase ~= "loaded" then
+        MaybeCloseBrewSessionIfIdle("after brew (no loaded session)")
         RefreshBrewAppearance()
         return
     end
     if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-        pcall(StockPiler.Planner.InvalidatePlanCache)
+        StockPiler.Planner.InvalidatePlanCache()
     end
     if StockPiler.Inventory and StockPiler.Inventory.InvalidateSnapshot then
-        pcall(StockPiler.Inventory.InvalidateSnapshot)
+        StockPiler.Inventory.InvalidateSnapshot()
     end
     local row = nil
     local plan = CurrentPlan({ refresh = true })
@@ -839,6 +1154,9 @@ function StockPiler.Brew.RefreshSessionAfterBrew()
             session.name = row.name
         end
     end
+    -- Last brew with nothing else ready: end headless/owned engine session now
+    -- (do not wait for an extra idle macro click).
+    MaybeCloseBrewSessionIfIdle("after brew nothing ready")
     RefreshBrewAppearance()
 end
 
@@ -851,20 +1169,18 @@ local function ChatBrewBlocked()
         end
         return
     end
-    StockPiler._lastProgressBlockSig = nil
-    local plan = CurrentPlan({ refresh = false })
-    local printed = false
-    if StockPiler.Planner and StockPiler.Planner.MaybeNotifyProgressBlockers then
-        local ok, did = pcall(StockPiler.Planner.MaybeNotifyProgressBlockers, plan)
-        printed = ok and did == true
-    end
-    if not printed and StockPiler.Print then
-        StockPiler.Print(L"No watches ready to craft.")
+    if not MaybeCloseBrewSessionIfIdle("macro idle") then
+        -- Still drop blue tint if a leftover headless session left locks.
+        D("idle: force apo lock release")
+        CloseApothecarySession()
     end
 end
 
 --- Returns "go" to fire PerformCrafting(APOTHECARY), or "blocked" to swallow the click.
 function StockPiler.Brew.TryBrewClick()
+    if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
+        return "blocked"
+    end
     if StockPiler.Inventory and StockPiler.Inventory.IsApothecary
         and not StockPiler.Inventory.IsApothecary()
     then
@@ -894,6 +1210,9 @@ function StockPiler.Brew.TryBrewClick()
         end
         StockPiler.Brew._lastLoad = nil
         ClearSession()
+        -- Always end headless session + clear bag locks before next Load / idle.
+        D("clearing apo before picking next watch")
+        CloseApothecarySession()
     end
 
     local nextRow = StockPiler.Brew.PickReadyWatch()
@@ -922,7 +1241,7 @@ function StockPiler.Brew.ShowBrewTooltip(anchorWindow, anchor)
     local title = L"<icon00529> StockPiler Brew"
     Tooltips.SetTooltipText(1, 1, title)
     if type(Tooltips.SetTooltipColor) == "function" then
-        pcall(Tooltips.SetTooltipColor, 1, 1, heading.r, heading.g, heading.b)
+        StockPiler.TryCall("Tooltips.SetTooltipColor", Tooltips.SetTooltipColor, 1, 1, heading.r, heading.g, heading.b)
     end
 
     local line = 2
@@ -973,7 +1292,10 @@ function StockPiler.Brew.ShowBrewTooltip(anchorWindow, anchor)
             end
         end
     end
-    body(L"Ctrl+click: cancel brew session.")
+    body(L"Ctrl+click: enable/disable one-click Brew.")
+    if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
+        body(L"One-click Brew is disabled.")
+    end
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_TOP)
 end
@@ -995,8 +1317,41 @@ local function FailJob(message)
     StockPiler.Brew._job = nil
     StockPiler.Brew._updateAccum = 0
     ClearSession()
-    if StockPilerTabAutoGrow and StockPilerTabAutoGrow.Refresh then
-        pcall(StockPilerTabAutoGrow.Refresh)
+    -- Partial / failed loads leave materials + soft-locks — end owned/headless session too.
+    if StockPiler.Brew._brewOpenedApo == true
+        or StockPiler.Brew._brewOwnedSession == true
+        or StockPiler.Brew._brewApoStealth == true
+        or ApothecaryWindowOpen()
+    then
+        D("closing apo after load fail")
+        CloseApothecarySession()
+    end
+    if StockPilerTabAutoGrow and StockPilerTabAutoGrow.RefreshBrewUi then
+        StockPilerTabAutoGrow.RefreshBrewUi()
+    elseif StockPilerTabAutoGrow and StockPilerTabAutoGrow.UpdateRows then
+        StockPilerTabAutoGrow.UpdateRows()
+    end
+    RefreshBrewAppearance()
+end
+
+--- Clear session and close Apothecary. No bag/plan invalidation (too heavy / unsafe on hot paths).
+local function AbortBrewStation(reason)
+    StockPiler.Brew._job = nil
+    StockPiler.Brew._updateAccum = 0
+    StockPiler.Brew._lastLoad = nil
+    ClearSession()
+    if StockPiler.Brew._brewOpenedApo == true
+        or StockPiler.Brew._brewOwnedSession == true
+        or StockPiler.Brew._brewApoStealth == true
+        or ApothecaryWindowOpen()
+    then
+        D("closing apo: " .. tostring(reason or "abort"))
+        CloseApothecarySession()
+    end
+    if StockPilerTabAutoGrow and StockPilerTabAutoGrow.RefreshBrewUi then
+        StockPilerTabAutoGrow.RefreshBrewUi()
+    elseif StockPilerTabAutoGrow and StockPilerTabAutoGrow.UpdateRows then
+        StockPilerTabAutoGrow.UpdateRows()
     end
     RefreshBrewAppearance()
 end
@@ -1049,7 +1404,7 @@ local function CompleteJob(message)
     StockPiler.Brew._job = nil
     StockPiler.Brew._updateAccum = 0
     if StockPilerTabAutoGrow and StockPilerTabAutoGrow.Refresh then
-        pcall(StockPilerTabAutoGrow.Refresh)
+        StockPilerTabAutoGrow.Refresh()
     end
     RefreshBrewAppearance()
 end
@@ -1345,18 +1700,88 @@ ApothecaryWindowOpen = function()
         and WindowGetShowing(ApothecaryWindow.windowName)
 end
 
+--- Start an Apothecary crafting session for One-Click Load without showing UI when possible.
+--- Engine AddCrafting* / PerformCrafting need SendInitCrafting, not a visible window.
 local function OpenApothecary()
     if StockPiler.EnsureApothecaryHook then
         StockPiler.EnsureApothecaryHook()
     end
+
+    -- Player (or us) already has Apo visible — reuse, do not claim stealth ownership.
     if ApothecaryWindowOpen() then
+        if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
+            StockPiler.TryCallQuiet(
+                "SetCurrentTradeSkill",
+                CraftingSystem.SetCurrentTradeSkill,
+                ApothecarySkill()
+            )
+        end
         return true
     end
-    if CraftingSystem and type(CraftingSystem.ToggleShowing) == "function" then
-        pcall(CraftingSystem.ToggleShowing, ApothecarySkill())
-        return ApothecaryWindowOpen()
+
+    -- Prefer headless init: same as ApothecaryWindow.Show() without WindowSetShowing / backpack.
+    if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
+        StockPiler.TryCallQuiet(
+            "SetCurrentTradeSkill",
+            CraftingSystem.SetCurrentTradeSkill,
+            ApothecarySkill()
+        )
     end
-    return false
+    if CraftingSystem and type(CraftingSystem.SetStaticData) == "function" then
+        StockPiler.TryCallQuiet("SetStaticData", CraftingSystem.SetStaticData)
+    end
+    if type(SendInitCrafting) == "function" then
+        StockPiler.TryCall("SendInitCrafting", SendInitCrafting, ApothecarySkill())
+    end
+    EnsureBrewApothecarySoftLocks(true)
+    StockPiler.Brew._brewOwnedSession = true
+    StockPiler.Brew._brewApoStealth = true
+    HideApothecaryWindowOnly()
+    D("apo session headless init skill=" .. tostring(CraftingSkillType())
+        .. " state=" .. CraftingStateLabel())
+    -- SessionReadyToFill is checked by RunSetupPhases; engine may take a tick.
+    if CraftingSkillType() == ApothecarySkill() then
+        return true
+    end
+
+    -- Fallback: stock ToggleShowing (may flash), then immediately hide UI without closing session.
+    if not (CraftingSystem and type(CraftingSystem.ToggleShowing) == "function") then
+        return CraftingSkillType() == ApothecarySkill()
+    end
+    local bagWasOpen = BackpackWindowOpen()
+    local mediator = EA_BackpackUtilsMediator
+    local savedShow = nil
+    if type(mediator) == "table" and type(mediator.ShowBackpack) == "function" then
+        savedShow = mediator.ShowBackpack
+        mediator.ShowBackpack = function()
+            return true
+        end
+    end
+    StockPiler.TryCall(
+        "CraftingSystem.ToggleShowing",
+        CraftingSystem.ToggleShowing,
+        ApothecarySkill()
+    )
+    if savedShow ~= nil then
+        mediator.ShowBackpack = savedShow
+    end
+
+    if CraftingSkillType() ~= ApothecarySkill() and not ApothecaryWindowOpen() then
+        return false
+    end
+
+    StockPiler.Brew._brewOwnedSession = true
+    StockPiler.Brew._brewOpenedApo = true
+    StockPiler.Brew._brewApoStealth = true
+    HideApothecaryWindowOnly()
+    if not bagWasOpen and BackpackWindowOpen() then
+        StockPiler.Brew._brewOpenedBackpack = true
+        if type(mediator) == "table" and type(mediator.HideBackpack) == "function" then
+            StockPiler.TryCall("EA_BackpackUtilsMediator.HideBackpack", mediator.HideBackpack)
+        end
+    end
+    D("apo session stealth-hide after ToggleShowing state=" .. CraftingStateLabel())
+    return true
 end
 
 local function ApothecaryHasItems()
@@ -1388,7 +1813,7 @@ local function GetSlottedItem(craftingSlot)
         and type(EA_Window_Backpack) == "table"
         and type(EA_Window_Backpack.GetItemsFromBackpack) == "function"
     then
-        local ok, slots = pcall(GetCraftingBackPackSlots, ApothecarySkill())
+        local ok, slots = StockPiler.TryCallQuiet("GetCraftingBackPackSlots", GetCraftingBackPackSlots, ApothecarySkill())
         if ok and type(slots) == "table" then
             local entry = slots[craftingSlot]
             if type(entry) == "table" and entry.slot and entry.backpack then
@@ -1417,7 +1842,7 @@ local function GetSlottedItem(craftingSlot)
             local objectId = tonumber(cd.objectId) or 0
             if objectId > 0 then
                 if type(GetDatabaseItemData) == "function" then
-                    local ok, data = pcall(GetDatabaseItemData, objectId)
+                    local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, objectId)
                     if ok and ItemValid(data) then
                         return data
                     end
@@ -1463,7 +1888,7 @@ local function AutoAddSlotForItem(item)
         return nil
     end
     local tryToAdd, craftingSlot
-    local ok = pcall(function()
+    local ok = StockPiler.TryCallQuiet("ApothecaryWindow.WouldBePossibleToAdd", function()
         tryToAdd, craftingSlot = ApothecaryWindow.WouldBePossibleToAdd(item)
     end)
     if ok and tryToAdd == true then
@@ -1784,7 +2209,7 @@ DumpApoBoard = function(tag)
     end
     local bp = ""
     if type(GetCraftingBackPackSlots) == "function" then
-        local ok, slots = pcall(GetCraftingBackPackSlots, ApothecarySkill())
+        local ok, slots = StockPiler.TryCallQuiet("GetCraftingBackPackSlots", GetCraftingBackPackSlots, ApothecarySkill())
         if ok and type(slots) == "table" then
             local bpParts = {}
             for i = 0, 4 do
@@ -1950,14 +2375,14 @@ local function IssueLoadStep(job, step)
     step.loadIssued = true
     local skill = ApothecarySkill()
     if step.role == "container" and type(AddCraftingContainer) == "function" then
-        local ok, err = pcall(AddCraftingContainer, skill, backpackSlot, backpackType)
+        local ok, err = StockPiler.TryCall("AddCraftingContainer", AddCraftingContainer, skill, backpackSlot, backpackType)
         D("AddCraftingContainer ok=" .. tostring(ok) .. " ret=" .. tostring(err)
             .. " skill=" .. tostring(skill)
             .. " bag=" .. tostring(backpackType) .. ":" .. tostring(backpackSlot))
         return true
     end
     if type(AddCraftingItem) == "function" then
-        local ok, err = pcall(AddCraftingItem, skill, addSlot, backpackSlot, backpackType)
+        local ok, err = StockPiler.TryCall("AddCraftingItem", AddCraftingItem, skill, addSlot, backpackSlot, backpackType)
         D("AddCraftingItem ok=" .. tostring(ok) .. " ret=" .. tostring(err)
             .. " skill=" .. tostring(skill)
             .. " craftSlot=" .. tostring(addSlot)
@@ -1965,7 +2390,7 @@ local function IssueLoadStep(job, step)
         return true
     end
     if type(ApothecaryWindow.AddItem) == "function" then
-        local ok, err = pcall(ApothecaryWindow.AddItem, backpackSlot, addSlot, backpackType)
+        local ok, err = StockPiler.TryCall("ApothecaryWindow.AddItem", ApothecaryWindow.AddItem, backpackSlot, addSlot, backpackType)
         D("AddItem-fallback ok=" .. tostring(ok) .. " ret=" .. tostring(err)
             .. " craftSlot=" .. tostring(addSlot)
             .. " bag=" .. tostring(backpackType) .. ":" .. tostring(backpackSlot))
@@ -1976,6 +2401,7 @@ local function IssueLoadStep(job, step)
 end
 
 local function BeginLoadSteps(job, reason)
+    ClaimBrewOwnedSession()
     SetPhase(job, "load", reason)
     job.stepIndex = 1
     job.usedBagSlots = job.usedBagSlots or {}
@@ -1987,16 +2413,14 @@ local function RunSetupPhases(job)
             job.didReset = true
             if not SessionReadyToFill() then
                 LogJob(job, "clear existing loadout")
-                CloseApothecarySession()
+                -- Clear board only — do not hide apo/backpack mid-load.
+                ClearServerApothecarySlots()
             end
         end
         if SessionReadyToFill() then
-            if ApothecaryWindowOpen() then
-                BeginLoadSteps(job, "slots empty, window open")
-            else
-                SetPhase(job, "open", "need window")
-            end
-        else
+            -- Engine session is enough; visible Apo UI is not required to AddCrafting*.
+            BeginLoadSteps(job, "slots empty, session ready")
+        elseif ServerHasCraftingItems() or ApothecaryHasItems() then
             if job.waitTicks == 1 or job.waitTicks % 8 == 0 then
                 LogJob(job, "waiting for empty ADDCONTAINER state=" .. CraftingStateLabel())
                 ClearServerApothecarySlots()
@@ -2005,6 +2429,8 @@ local function RunSetupPhases(job)
                 FailJob(L"Could not clear the Apothecary window.")
             end
             return false
+        else
+            SetPhase(job, "open", "need session")
         end
     end
 
@@ -2013,11 +2439,18 @@ local function RunSetupPhases(job)
             if job.waitTicks > OPEN_WAIT_TICKS then
                 FailJob(L"Could not open the Apothecary window.")
             elseif job.waitTicks == 1 or job.waitTicks % 10 == 0 then
-                LogJob(job, "waiting for Apothecary window")
+                LogJob(job, "waiting for Apothecary session")
             end
             return false
         end
-        SetPhase(job, "clear", "window open")
+        if StockPiler.Brew._brewApoStealth == true then
+            HideApothecaryWindowOnly()
+        end
+        if SessionReadyToFill() then
+            BeginLoadSteps(job, "session ready (stealth)")
+        else
+            SetPhase(job, "clear", "session init")
+        end
     end
 
     if job.phase == "clear" then
@@ -2103,6 +2536,8 @@ function StockPiler.Brew.BeginForRow(row)
                 StockPiler.Print(L"Move all recipe materials into the crafting bag first.")
             end
         end
+        -- Stale Craftable* often picks this path after a brew; clear leftover apo loadout.
+        AbortBrewStation("load blocked: materials not in crafting bag")
         return false
     end
     local steps = BuildLoadSteps(recipe)

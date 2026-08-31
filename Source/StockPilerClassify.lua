@@ -26,17 +26,7 @@ for effectKey, pbName in pairs(EFFECT_TO_PB) do
 end
 
 local function ToNarrow(name)
-    if name == nil then
-        return ""
-    end
-    if type(name) == "wstring" then
-        local ok, s = pcall(WStringToString, name)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(name)
+    return StockPiler.ToNarrow(name)
 end
 
 local function GetNumbers(aString, count)
@@ -155,8 +145,8 @@ function StockPiler.Classify.GetEffectKey(itemData)
     if PotionBar and type(PotionBar.getValues) == "function" then
         local abilityId = AbilityIdFromItem(itemData)
         if abilityId then
-            local ok, _value, _dur, pbType = pcall(
-                PotionBar.getValues,
+            local ok, _value, _dur, pbType = StockPiler.TryCallQuiet(
+                "PotionBar.getValues", PotionBar.getValues,
                 abilityId,
                 itemData.iLevel or itemData.level or 1,
                 itemData.name,
@@ -177,7 +167,7 @@ function StockPiler.Classify.GetEffectKey(itemData)
     local abilityId = AbilityIdFromItem(itemData)
     local description = ""
     if abilityId and type(GetAbilityDescription) == "function" then
-        local ok, desc = pcall(GetAbilityDescription, abilityId, itemData.iLevel or itemData.level or 1)
+        local ok, desc = StockPiler.TryCallQuiet("GetAbilityDescription", GetAbilityDescription, abilityId, itemData.iLevel or itemData.level or 1)
         if ok and desc then
             description = ToNarrow(desc)
         end
@@ -251,8 +241,8 @@ function StockPiler.Classify.GetPotionStats(itemData, catalogEntry)
     local uniqueID = itemData.uniqueID
 
     if PotionBar and type(PotionBar.getValues) == "function" and abilityId then
-        local ok, potionV, potionD = pcall(
-            PotionBar.getValues,
+        local ok, potionV, potionD = StockPiler.TryCallQuiet(
+            "PotionBar.getValues", PotionBar.getValues,
             abilityId,
             level,
             name,
@@ -263,7 +253,7 @@ function StockPiler.Classify.GetPotionStats(itemData, catalogEntry)
             local durationSec = tonumber(potionD) or 0
             local description = ""
             if type(GetAbilityDescription) == "function" then
-                local descOk, desc = pcall(GetAbilityDescription, abilityId, level)
+                local descOk, desc = StockPiler.TryCallQuiet("GetAbilityDescription", GetAbilityDescription, abilityId, level)
                 if descOk and desc then
                     description = ToNarrow(desc)
                 end
@@ -275,7 +265,7 @@ function StockPiler.Classify.GetPotionStats(itemData, catalogEntry)
 
     local description = ""
     if abilityId and type(GetAbilityDescription) == "function" then
-        local ok, desc = pcall(GetAbilityDescription, abilityId, level)
+        local ok, desc = StockPiler.TryCallQuiet("GetAbilityDescription", GetAbilityDescription, abilityId, level)
         if ok and desc then
             description = ToNarrow(desc)
         end

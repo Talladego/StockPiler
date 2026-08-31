@@ -30,17 +30,7 @@ local BUTCHER_HINTS = {
 }
 
 local function ToNarrow(text)
-    if text == nil then
-        return ""
-    end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(text)
+    return StockPiler.ToNarrow(text)
 end
 
 local function GetSettings()
@@ -578,8 +568,16 @@ local function ApplyCultivationDeficitStatus(row, slot, entry, s, demandTotals)
     local buyLabel, needKey, unitPlural, unitSingular = SeedShortageLabels(seed)
 
     if seed == nil or row.seedKey == "" then
-        row.statusKey = "restocking"
-        row.statusText = L"Restocking materials"
+        local wantsGrow = StockPiler.RecipeSpec
+            and StockPiler.RecipeSpec.ShouldAutoGrowPotion
+            and StockPiler.RecipeSpec.ShouldAutoGrowPotion(row.potionKey or row.id, nil) == true
+        if wantsGrow then
+            row.statusKey = "restocking"
+            row.statusText = L"Restocking materials"
+        else
+            row.statusKey = "need_materials"
+            row.statusText = L"Need materials"
+        end
         row.statusDetail = L"Need "
             .. towstring(tostring(slot.deficit))
             .. L" more "
@@ -633,9 +631,9 @@ local function ApplyCultivationDeficitStatus(row, slot, entry, s, demandTotals)
     end
 
     row.growable = potionAutoGrow == true
-    row.statusKey = "restocking"
-    row.statusText = L"Restocking materials"
     if potionAutoGrow then
+        row.statusKey = "restocking"
+        row.statusText = L"Restocking materials"
         local craftHint = L""
         if (row.craftsNeeded or 0) > 0 and (row.recipeYield or 0) > 0 then
             craftHint = L" ("
@@ -651,6 +649,8 @@ local function ApplyCultivationDeficitStatus(row, slot, entry, s, demandTotals)
             .. craftHint
             .. L"."
     else
+        row.statusKey = "need_materials"
+        row.statusText = L"Need materials"
         row.statusDetail = L"Need "
             .. towstring(tostring(slot.deficit))
             .. L" more "
@@ -1070,18 +1070,29 @@ local function BuildWatchedTargetsV6()
     local s = GetSettings()
     local RS = StockPiler.RecipeSpec
     local targets = {}
-    if not RS or type(s.knownPotions) ~= "table" or type(s.watches) ~= "table" then
+    if not RS or type(s.watches) ~= "table" then
         return targets
     end
-    for potionKey, watch in pairs(s.watches) do
+    if RS.MigrateWatchesToPotionRecipeKeys then
+        RS.MigrateWatchesToPotionRecipeKeys()
+    end
+    for watchKey, watch in pairs(s.watches) do
         if type(watch) == "table" and watch.enabled == true then
-            local potion = s.knownPotions[potionKey]
+            local resolved = RS.ResolveWatchPotion and RS.ResolveWatchPotion(watchKey)
+            local potion = resolved and resolved.potion
             if type(potion) == "table" then
                 local have = RS.PotionHaveCombined(potion)
                 local min = tonumber(watch.targetStock) or 0
+                local recipeLabel = L""
+                if resolved.recipeSpecKey and RS.RecipeLabelForKey then
+                    recipeLabel = RS.RecipeLabelForKey(resolved.recipeSpecKey, potion.outputUid) or L""
+                end
                 targets[#targets + 1] = {
-                    id = potionKey,
-                    potionKey = potionKey,
+                    id = watchKey,
+                    potionKey = watchKey,
+                    potionBaseKey = resolved.potionKey,
+                    recipeSpecKey = resolved.recipeSpecKey,
+                    recipeLabel = recipeLabel,
                     entry = potion,
                     uniqueID = potion.outputUid,
                     name = potion.name or towstring(tostring(potion.outputUid)),
@@ -1095,10 +1106,14 @@ local function BuildWatchedTargetsV6()
             end
         end
     end
-    -- Name order only. Deficit sort jumped rows when Target# crossed Stock
-    -- and the stepper moved out from under the click.
+    -- Name then recipe label. Deficit sort jumped rows when Target# crossed Stock.
     table.sort(targets, function(a, b)
-        return ToNarrow(a.name) < ToNarrow(b.name)
+        local na = ToNarrow(a.name)
+        local nb = ToNarrow(b.name)
+        if na ~= nb then
+            return na < nb
+        end
+        return ToNarrow(a.recipeLabel) < ToNarrow(b.recipeLabel)
     end)
     return targets
 end
@@ -1113,12 +1128,26 @@ local function WatchUnblockScore(row)
     return v
 end
 
---- Lowest Craftable watch first, then lowest craftsHave. No role ranking.
+-- Among watches this mat unblocks, prefer the one with lowest potion bag Stock.
+local function WatchStockScore(row)
+    local v = tonumber(row and row.minWatchStock)
+    if v == nil then
+        return 1000000
+    end
+    return v
+end
+
+--- Lowest Craftable watch first, then lowest potion Stock, then plant craftsHave.
 local function CompareGrowPriority(a, b)
     local ua = WatchUnblockScore(a)
     local ub = WatchUnblockScore(b)
     if ua ~= ub then
         return ua < ub
+    end
+    local sa = WatchStockScore(a)
+    local sb = WatchStockScore(b)
+    if sa ~= sb then
+        return sa < sb
     end
     local ca = tonumber(a.craftsHave) or 0
     local cb = tonumber(b.craftsHave) or 0
@@ -1139,6 +1168,41 @@ local function CompareGrowPriority(a, b)
 end
 
 StockPiler.Planner.CompareGrowPriority = CompareGrowPriority
+
+local function FormatGrowPriorityFields(row)
+    return string.format(
+        "minWatch=%s stock=%s craftsHave=%d craftsShort=%d deficit=%d",
+        tostring(row and row.minWatchCraftable),
+        tostring(row and row.minWatchStock),
+        tonumber(row and row.craftsHave) or 0,
+        tonumber(row and row.craftsShort) or 0,
+        tonumber(row and row.deficit) or 0
+    )
+end
+
+local function GrowTraceSpecLabel(row)
+    if type(row) ~= "table" then
+        return "?"
+    end
+    if type(row.spec) == "table" and StockPiler.MaterialSpec and StockPiler.MaterialSpec.Label then
+        local label = ToNarrow(StockPiler.MaterialSpec.Label(row.spec))
+        return label .. " [" .. tostring(row.specKey or "?") .. "]"
+    end
+    return tostring(row.specKey or "?")
+end
+
+local function SetMaterialsShortStatus(row, growable, detail)
+    if growable == true then
+        row.statusKey = "restocking"
+        row.statusText = L"Restocking materials"
+    else
+        row.statusKey = "need_materials"
+        row.statusText = L"Need materials"
+    end
+    if detail ~= nil then
+        row.statusDetail = detail
+    end
+end
 
 local function ApplySpecPlanStatus(row, target, recipe, demand)
     local RS = StockPiler.RecipeSpec
@@ -1191,6 +1255,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     row.recipeYield = yield
     row.stockYield = RS.WatchStockYield and RS.WatchStockYield(recipe) or 1
     row.craftsNeeded = craftsNeeded
+    local wantsGrow = RS and RS.ShouldAutoGrowPotion and RS.ShouldAutoGrowPotion(target.potionKey, nil) == true
     local slots = recipe.slots or {}
     local limiting = nil
     local containerShort = nil
@@ -1215,7 +1280,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
             local deficit = math.max(0, potionNeed - have)
             if deficit > 0 then
                 if StockPiler.SeedMap and StockPiler.SeedMap.MaybeLearnHarvestByproduct then
-                    pcall(StockPiler.SeedMap.MaybeLearnHarvestByproduct, nil, spec)
+                    StockPiler.SeedMap.MaybeLearnHarvestByproduct(nil, spec)
                 end
                 local byproduct = StockPiler.SeedMap
                     and StockPiler.SeedMap.IsHarvestByproduct
@@ -1289,6 +1354,9 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
             .. towstring(tostring(yield))
             .. L" is a best case; Potent / other rarities do not count.",
     }
+    if wantsGrow ~= true then
+        lines[#lines + 1] = L"AutoGrow is off for this watch - materials will not be planted."
+    end
     for i = 1, #plantShort do
         local entry = plantShort[i]
         local line = L"Plant " .. matName(entry) .. L" (" .. haveNeed(entry) .. L")"
@@ -1302,8 +1370,8 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     end
     for i = 1, #convertShort do
         local entry = convertShort[i]
-        lines[#lines + 1] = L"Convert plants for " .. matName(entry)
-            .. L" (" .. haveNeed(entry) .. L")"
+        lines[#lines + 1] = L"Grow recipe plants, then convert surplus for "
+            .. matName(entry) .. L" (" .. haveNeed(entry) .. L")"
     end
     for i = 1, #buyShort do
         local entry = buyShort[i]
@@ -1322,18 +1390,16 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     if byproductShort ~= nil
         and (limiting == nil or (byproductShort.craftsHave or 0) <= (limiting.craftsHave or 0))
     then
-        row.growable = RS and RS.ShouldAutoGrowPotion(target.potionKey, nil)
-        row.statusKey = "restocking"
-        row.statusText = L"Restocking materials"
-        row.statusDetail = lines[2] or lines[1]
+        row.growable = wantsGrow
+        SetMaterialsShortStatus(row, wantsGrow, lines[2] or lines[1])
         row.specDeficit = byproductShort
         return
     end
     if limiting ~= nil then
-        row.growable = RS and RS.ShouldAutoGrowPotion(target.potionKey, nil)
+        row.growable = wantsGrow
         row.specDeficit = limiting
         local converting = false
-        if row.growable == true
+        if wantsGrow == true
             and StockPiler.AutoGrow
             and StockPiler.AutoGrow.HasPendingRefine
             and StockPiler.SeedMap
@@ -1361,9 +1427,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
             end
         end
         if converting ~= true then
-            row.statusKey = "restocking"
-            row.statusText = L"Restocking materials"
-            row.statusDetail = lines[2] or lines[1]
+            SetMaterialsShortStatus(row, wantsGrow, lines[2] or lines[1])
         end
         return
     end
@@ -1402,16 +1466,19 @@ local function CollectWatchedRecipeGrowStates()
     local MS = StockPiler.MaterialSpec
     local s = GetSettings()
     local recipes = {}
-    if not RS or not MS or type(s.watches) ~= "table" or type(s.knownPotions) ~= "table" then
+    if not RS or not MS or type(s.watches) ~= "table" then
         return recipes
     end
-    for potionKey, watch in pairs(s.watches) do
+    for watchKey, watch in pairs(s.watches) do
         if RS.WatchContributesGrowDemand
-            and RS.WatchContributesGrowDemand(potionKey, watch)
+            and RS.WatchContributesGrowDemand(watchKey, watch)
         then
-            local potion = s.knownPotions[potionKey]
-            local recipe = RS.RecipeSpecForPotion(potionKey)
-            if type(potion) == "table" and type(recipe) == "table" and recipe.quality == "good" then
+            local resolved = RS.ResolveWatchPotion and RS.ResolveWatchPotion(watchKey)
+            local potion = resolved and resolved.potion
+            local recipe = RS.RecipeSpecForPotion(watchKey)
+            if type(potion) == "table" and type(recipe) == "table"
+                and (not RS.RecipeEligibleForGrow or RS.RecipeEligibleForGrow(recipe))
+            then
                 local target = tonumber(watch.targetStock) or 0
                 local havePot = RS.PotionHaveCombined(potion)
                 local deficit = math.max(0, target - havePot)
@@ -1440,7 +1507,7 @@ local function CollectWatchedRecipeGrowStates()
                                 possible = craftsHave
                             end
                             if StockPiler.SeedMap and StockPiler.SeedMap.MaybeLearnHarvestByproduct then
-                                pcall(StockPiler.SeedMap.MaybeLearnHarvestByproduct, nil, spec)
+                                StockPiler.SeedMap.MaybeLearnHarvestByproduct(nil, spec)
                             end
                             local byproduct = StockPiler.SeedMap
                                 and StockPiler.SeedMap.IsHarvestByproduct
@@ -1461,8 +1528,8 @@ local function CollectWatchedRecipeGrowStates()
                         end
                     end
                     recipes[#recipes + 1] = {
-                        potionKey = potionKey,
-                        name = potion.name or potionKey,
+                        potionKey = watchKey,
+                        name = potion.name or watchKey,
                         craftsNeeded = craftsNeeded,
                         craftsPossible = possible or 0,
                         slots = slots,
@@ -1491,7 +1558,14 @@ local function SpecIsGrowablePlant(spec)
 end
 
 local function PooledSpecDemand()
+    local cached = StockPiler.Planner._planCache
+    if type(cached) == "table" and type(cached.specDemand) == "table" then
+        return cached.specDemand
+    end
     local RS = StockPiler.RecipeSpec
+    if type(RS) == "table" and type(RS._demandCache) == "table" then
+        return RS._demandCache
+    end
     if RS and RS.BuildBalancedSpecDemand then
         return RS.BuildBalancedSpecDemand() or {}
     end
@@ -1536,8 +1610,9 @@ local function PlantUidForGrowSpec(spec)
     return plantUid
 end
 
---- How many of this plant are extra beyond pooled AutoGrow demand. 0 means do not
---- convert — those stacks are still needed for brewing. Unwatched plants return a large surplus.
+--- How many of this plant are extra beyond brew demand (not including extras
+--- grown only to convert for resin / refine byproducts). 0 means do not convert
+--- — those stacks are still needed for brewing. Unwatched plants return a large surplus.
 function StockPiler.Planner.WatchedPlantCraftSurplus(plantUid)
     plantUid = tonumber(plantUid) or 0
     if plantUid <= 0 then
@@ -1550,7 +1625,11 @@ function StockPiler.Planner.WatchedPlantCraftSurplus(plantUid)
             and SpecIsGrowablePlant(row.spec)
             and PlantUidForGrowSpec(row.spec) == plantUid
         then
-            local extra = (tonumber(row.have) or 0) - (tonumber(row.absolute) or 0)
+            local brewNeed = tonumber(row.brewAbsolute)
+            if brewNeed == nil then
+                brewNeed = tonumber(row.absolute) or 0
+            end
+            local extra = (tonumber(row.have) or 0) - brewNeed
             if surplus == nil or extra < surplus then
                 surplus = extra
             end
@@ -1602,7 +1681,7 @@ local function SeedRecordForUid(seedUid, plantUid)
         sample = item
     end
     if type(sample) ~= "table" and type(GetDatabaseItemData) == "function" then
-        local ok, data = pcall(GetDatabaseItemData, seedUid)
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, seedUid)
         if ok and type(data) == "table" then
             sample = data
         end
@@ -1649,17 +1728,22 @@ local function ForEachKnownSeedPlantPair(fn)
         fn(plantUid, seedUid)
     end
     local s = GetSettings()
-    if type(s.learnedSeedMap) == "table" then
-        for plantKey, learned in pairs(s.learnedSeedMap) do
-            if type(learned) == "table" then
-                emit(tonumber(plantKey) or learned.plantUid, learned.seedUid)
+    local refines = type(s.refines) == "table" and s.refines or nil
+    if type(refines) == "table" then
+        for plantKey, entry in pairs(refines) do
+            if type(entry) == "table" then
+                emit(tonumber(plantKey), entry.seedUid)
             end
         end
     end
-    if type(s.seedMap) == "table" then
-        for _, entry in pairs(s.seedMap) do
-            if type(entry) == "table" then
-                emit(entry.plantUidCache, entry.seedUidCache)
+    local grows = type(s.grows) == "table" and s.grows or nil
+    if type(grows) == "table" then
+        for seedKey, plants in pairs(grows) do
+            local seedUid = tonumber(seedKey) or 0
+            if type(plants) == "table" then
+                for plantKey in pairs(plants) do
+                    emit(tonumber(plantKey), seedUid)
+                end
             end
         end
     end
@@ -1679,7 +1763,7 @@ local function ForEachKnownSeedPlantPair(fn)
 end
 
 --- Plants in bags whose seed/spore stack is below the buffer.
---- Buffer is a refine target: convert plants even when they are also recipe stock.
+--- Only converts surplus above watched brew demand so Load stays possible.
 function StockPiler.Planner.CollectSeedBufferRefills()
     local buffer = StockPiler.Planner.GetSeedBufferMin()
     local jobs = {}
@@ -1689,16 +1773,23 @@ function StockPiler.Planner.CollectSeedBufferRefills()
             return
         end
         local plantHave = CountPlantInBags(plantUid)
+        local surplus = plantHave
+        if StockPiler.Planner.WatchedPlantCraftSurplus then
+            surplus = tonumber(StockPiler.Planner.WatchedPlantCraftSurplus(plantUid)) or 0
+        end
         local uses = buffer - seedHave
         if plantHave < uses then
             uses = plantHave
+        end
+        if surplus < uses then
+            uses = surplus
         end
         if uses > 0 then
             jobs[#jobs + 1] = {
                 plantUid = plantUid,
                 seedUid = seedUid,
                 seedHave = seedHave,
-                surplus = plantHave,
+                surplus = surplus,
                 uses = uses,
             }
         end
@@ -1720,9 +1811,6 @@ function StockPiler.Planner.CollectSeedBufferGrowJobs()
         local seedHave = 0
         if StockPiler.AutoGrow and StockPiler.AutoGrow.GetEffectiveSeedCount then
             seedHave = tonumber(StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)) or 0
-        end
-        if seedHave <= 0 then
-            seedHave = CountSeedInBags(seedUid)
         end
         local plantHave = CountPlantInBags(plantUid)
         if seedHave <= 0 or seedHave >= buffer or plantHave > 0 then
@@ -1772,16 +1860,22 @@ local function EffectiveSeedCount(seedUid)
     return 0
 end
 
---- Convert plants to seeds up to the buffer (or enough to fill empty plots).
---- Harvest yield is normally higher than refine yield, so converting some plants still
---- grows bag stock. Unlike surplus refills, this runs while the spec is still short.
+--- Convert plants to seeds up to the seed buffer, or enough to fill
+--- empty / soon-empty plots, whichever is larger. Do this before planting
+--- so a 1-seed + 2-plant bag becomes 3 seeds (buffer 4) then a plant wave.
 function StockPiler.Planner.CollectGrowCycleRefineJobs(emptyPlots)
     emptyPlots = tonumber(emptyPlots) or 0
     if emptyPlots < 0 then
         emptyPlots = 0
     end
-    local demand = PooledSpecDemand()
     local buffer = StockPiler.Planner.GetSeedBufferMin()
+    local demand = nil
+    local cached = StockPiler.Planner._planCache
+    if type(cached) == "table" and type(cached.specDemand) == "table" then
+        demand = cached.specDemand
+    else
+        demand = PooledSpecDemand()
+    end
     local bySeed = {}
     for _, row in pairs(demand) do
         if type(row) == "table"
@@ -1799,16 +1893,14 @@ function StockPiler.Planner.CollectGrowCycleRefineJobs(emptyPlots)
                 if plantUid <= 0 then
                     plantUid = PlantUidForGrowSpec(row.spec)
                 end
-                if seedUid > 0 and plantUid > 0 then
+                if seedUid > 0 then
                     local deficit = tonumber(row.deficit) or 0
-                    local extras = emptyPlots
-                    if extras > deficit then
-                        extras = deficit
+                    local wantSeeds = emptyPlots
+                    if buffer > wantSeeds then
+                        wantSeeds = buffer
                     end
-                    -- Buffer is a refine target. Planting may spend those seeds.
-                    local wantSeeds = buffer
-                    if extras > wantSeeds then
-                        wantSeeds = extras
+                    if wantSeeds > deficit then
+                        wantSeeds = deficit
                     end
                     local existing = bySeed[seedUid]
                     if existing == nil then
@@ -1907,15 +1999,11 @@ function StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, traceOut)
         if plantUid <= 0 and StockPiler.SeedMap.FindPlantUidForSpec then
             plantUid = StockPiler.SeedMap.FindPlantUidForSpec(spec) or 0
         end
+        -- Effective count only (live minus in-flight plants). Do not fall
+        -- back to raw bag count: that reassigned a seed already committed.
         local seedHave = 0
         if seedUid > 0 and StockPiler.AutoGrow and StockPiler.AutoGrow.GetEffectiveSeedCount then
             seedHave = tonumber(StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)) or 0
-        end
-        if seedHave <= 0 then
-            seedHave = tonumber(seed.count) or 0
-        end
-        if seedHave <= 0 and seedUid > 0 and StockPiler.AutoGrow and StockPiler.AutoGrow.GetRawSeedCount then
-            seedHave = StockPiler.AutoGrow.GetRawSeedCount(seedUid)
         end
         matHave = tonumber(matHave) or 0
         plantsShort = tonumber(plantsShort) or 0
@@ -2102,17 +2190,17 @@ function StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, traceOut)
                 traceOut[#traceOut + 1] = "mode=pooled spec demand (no growable deficit)"
             else
                 traceOut[#traceOut + 1] = "mode=pooled spec demand (all AutoGrow watches)"
+                traceOut[#traceOut + 1] = "priority=minWatchCraftable asc, minWatchStock asc, craftsHave asc, craftsShort desc, deficit desc"
             end
             for i = 1, #sorted do
                 local row = sorted[i]
                 traceOut[#traceOut + 1] = string.format(
-                    "  %s have=%d need=%d deficit=%d craftsHave=%d minWatch=%s",
-                    tostring(row.specKey),
+                    "  RANKED #%d %s have=%d need=%d %s",
+                    i,
+                    GrowTraceSpecLabel(row),
                     tonumber(row.have) or 0,
                     tonumber(row.absolute) or 0,
-                    tonumber(row.deficit) or 0,
-                    tonumber(row.craftsHave) or 0,
-                    tostring(row.minWatchCraftable)
+                    FormatGrowPriorityFields(row)
                 )
             end
         end
@@ -2123,17 +2211,30 @@ function StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, traceOut)
             if info then
                 infoByKey[row.specKey] = info
                 virtualHave[row.specKey] = tonumber(row.have) or 0
+                if type(traceOut) == "table" then
+                    traceOut[#traceOut + 1] = string.format(
+                        "  READY #%d %s seedUid=%d plantUid=%d plantable=%d seedHave=%d",
+                        i,
+                        GrowTraceSpecLabel(row),
+                        tonumber(info.seedUid) or 0,
+                        tonumber(info.plantUid) or 0,
+                        tonumber(info.plantable) or 0,
+                        tonumber(info.seedHave) or 0
+                    )
+                end
             else
                 if reason == "no_seeds" then
                     skipNoSeeds = true
                 end
                 if type(traceOut) == "table" then
                     traceOut[#traceOut + 1] = string.format(
-                        "  SKIP %s reason=%s have=%d deficit=%d",
-                        tostring(row.specKey),
+                        "  SKIP #%d %s reason=%s have=%d deficit=%d %s",
+                        i,
+                        GrowTraceSpecLabel(row),
                         tostring(reason),
                         tonumber(row.have) or 0,
-                        tonumber(row.deficit) or 0
+                        tonumber(row.deficit) or 0,
+                        FormatGrowPriorityFields(row)
                     )
                 end
             end
@@ -2144,6 +2245,9 @@ function StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, traceOut)
         for oi = 1, #plotOrder do
             local plotNum = plotOrder[oi]
             local best = nil
+            local bestRank = 0
+            local runner = nil
+            local runnerRank = 0
             for i = 1, #sorted do
                 local row = sorted[i]
                 local info = infoByKey[row.specKey]
@@ -2152,14 +2256,21 @@ function StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, traceOut)
                     local have = virtualHave[row.specKey] or 0
                     local need = tonumber(row.absolute) or 0
                     if n < assignLimit(info) and have < need then
-                        best = row
-                        break
+                        if best == nil then
+                            best = row
+                            bestRank = i
+                        elseif runner == nil then
+                            runner = row
+                            runnerRank = i
+                            break
+                        end
                     end
                 end
             end
             if best == nil then
                 if type(traceOut) == "table" then
-                    traceOut[#traceOut + 1] = "P" .. tostring(plotNum) .. " empty (no eligible seed)"
+                    traceOut[#traceOut + 1] = "ASSIGN P" .. tostring(plotNum)
+                        .. " empty (no eligible seed among ranked ready)"
                 end
                 break
             end
@@ -2168,14 +2279,26 @@ function StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, traceOut)
             virtualHave[best.specKey] = (virtualHave[best.specKey] or 0) + 1
             assignedSeedUids[tonumber(info.seedUid) or 0] = true
             if type(traceOut) == "table" then
-                traceOut[#traceOut + 1] = string.format(
-                    "ASSIGN P%d %s have=%d need=%d plantable=%d",
+                local line = string.format(
+                    "ASSIGN P%d #%d %s seedUid=%d plantable=%d afterHave=%d need=%d %s",
                     plotNum,
-                    tostring(best.specKey),
+                    bestRank,
+                    GrowTraceSpecLabel(best),
+                    tonumber(info.seedUid) or 0,
+                    tonumber(info.plantable) or 0,
                     virtualHave[best.specKey] or 0,
                     tonumber(best.absolute) or 0,
-                    info.plantable
+                    FormatGrowPriorityFields(best)
                 )
+                if runner ~= nil then
+                    line = line .. string.format(
+                        " | runnerUp=#%d %s %s",
+                        runnerRank,
+                        GrowTraceSpecLabel(runner),
+                        FormatGrowPriorityFields(runner)
+                    )
+                end
+                traceOut[#traceOut + 1] = line
             end
             queue[plotNum] = queueEntry(plotNum, info, best.specKey)
         end
@@ -2402,7 +2525,13 @@ function StockPiler.Planner.BuildPlanV6(opts)
     then
         return StockPiler.Planner._planCache
     end
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("BuildPlan")
+    end
     local function PlanLog(msg)
+        if StockPiler.DebugEnabled ~= true then
+            return
+        end
         if StockPiler._EmitLog and StockPiler._LogText then
             StockPiler._EmitLog("StockPiler| [Plan] " .. StockPiler._LogText(msg))
         elseif type(d) == "function" then
@@ -2436,6 +2565,10 @@ function StockPiler.Planner.BuildPlanV6(opts)
         }
         ApplySpecPlanStatus(row, target, recipe, specDemand)
         row.autoGrow = target.autoGrow == true -- per-potion checkbox; planting also requires global autoGrowEnabled
+        row.recipeLabel = target.recipeLabel
+        row.recipeSpecKey = target.recipeSpecKey
+        row.potionBaseKey = target.potionBaseKey
+        row.displayName = target.name
         local craftable = 0
         if recipe and RS.CountPotionsCraftable then
             craftable = RS.CountPotionsCraftable(recipe)
@@ -2449,12 +2582,16 @@ function StockPiler.Planner.BuildPlanV6(opts)
         if StockPiler.Inventory and StockPiler.Inventory.IsApothecary then
             canApo = StockPiler.Inventory.IsApothecary() == true
         end
+        -- Craftable already excludes seeds. Load click still checks the live
+        -- crafting bag. Do not scan the bag once per watch here (1s+ hitch).
         row.canLoad = canApo and row.hasRecipe == true and craftable > 0
         row.canBrew = row.canLoad
         rows[#rows + 1] = row
     end
-    local queue = StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand)
-    local plan = { rows = rows, queue = queue, specDemand = specDemand }
+    local queueTrace = {}
+    local queue = StockPiler.Planner.BuildGrowQueueFromSpecDeficits(specDemand, queueTrace)
+    local plan = { rows = rows, queue = queue, specDemand = specDemand, queueTrace = queueTrace }
+    StockPiler.Planner._lastQueueTrace = queueTrace
     StockPiler.Planner._planCache = plan
     StockPiler.Planner._planSnapshotGen = snapGen
     StockPiler.Planner._planAutoGrowEnabled = autoGrowOn
@@ -2495,10 +2632,10 @@ function StockPiler.Planner.BuildPlanV6(opts)
         end
     end
     if StockPiler.Planner.MaybeNotifyProgressBlockers then
-        pcall(StockPiler.Planner.MaybeNotifyProgressBlockers, plan)
+        StockPiler.Planner.MaybeNotifyProgressBlockers(plan)
     end
-    if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("BuildPlan")
     end
     return plan
 end
@@ -2587,10 +2724,7 @@ function StockPiler.Planner.BuildPlan(opts)
         queue = queue,
     }
     if StockPiler.Planner.MaybeNotifyProgressBlockers then
-        pcall(StockPiler.Planner.MaybeNotifyProgressBlockers, plan)
-    end
-    if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+        StockPiler.Planner.MaybeNotifyProgressBlockers(plan)
     end
     return plan
 end
@@ -2864,6 +2998,176 @@ function StockPiler.Planner.CollectProgressBlockers(plan)
     return blockers
 end
 
+local function SpecJobLabel(spec, context)
+    if StockPiler.MaterialSpec and StockPiler.MaterialSpec.NeedLabel then
+        return StockPiler.MaterialSpec.NeedLabel(spec, context)
+    end
+    return L"material"
+end
+
+local function ClassifyBuyKind(spec)
+    if StockPiler.SeedMap
+        and StockPiler.SeedMap.IsHarvestByproduct
+        and StockPiler.SeedMap.IsHarvestByproduct(spec) == true
+    then
+        return "convert"
+    end
+    if SpecIsGrowablePlant(spec) then
+        return "plant"
+    end
+    return "buy"
+end
+
+--- Vendor / chat buy list for every enabled watch below target.
+--- Count = ceil(potionDeficit / recipeYield) * perCraft, then minus bags.
+--- Perfect-brew yield only; Potent / other rarities do not add extra need.
+--- Shared specs pool need first, then subtract one bag count (do not sum deficits).
+--- Never plants or refine byproducts. Seeds only when bags have none.
+function StockPiler.Planner.CollectVendorBuyJobs()
+    local jobs = {}
+    if StockPiler.Inventory and StockPiler.Inventory._snapshotDone ~= true then
+        return jobs
+    end
+    local RS = StockPiler.RecipeSpec
+    local s = GetSettings()
+    if type(RS) ~= "table" or type(s) ~= "table" or type(s.watches) ~= "table" then
+        return jobs
+    end
+
+    local buyPool = {}
+    local seedSeen = {}
+
+    local function addSeedJob(spec, role)
+        if type(spec) ~= "table" or not (StockPiler.SeedMap and StockPiler.SeedMap.ResolveSeedForSpec) then
+            return
+        end
+        local seed = StockPiler.SeedMap.ResolveSeedForSpec(spec)
+        local seedUid = type(seed) == "table" and (tonumber(seed.uniqueID) or 0) or 0
+        if seedUid <= 0 or seedSeen[seedUid] then
+            return
+        end
+        seedSeen[seedUid] = true
+        local seedHave = CountSeedInBags(seedUid)
+        if seedHave > 0 then
+            return
+        end
+        local buffer = StockPiler.Planner.GetSeedBufferMin and StockPiler.Planner.GetSeedBufferMin() or 4
+        local label = SpecJobLabel(spec, { asSeed = true, seed = seed })
+        jobs[#jobs + 1] = {
+            kind = "seed",
+            spec = spec,
+            role = role or spec.role,
+            seed = seed,
+            seedUid = seedUid,
+            have = seedHave,
+            need = buffer,
+            deficit = math.max(1, buffer - seedHave),
+            specKey = "seed:" .. tostring(seedUid),
+            label = label,
+            name = label,
+        }
+    end
+
+    for watchKey, watch in pairs(s.watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local resolved = RS.ResolveWatchPotion and RS.ResolveWatchPotion(watchKey)
+            local potion = resolved and resolved.potion
+            local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey) or nil
+            if type(potion) == "table" and type(recipe) == "table" then
+                local target = tonumber(watch.targetStock) or 0
+                local havePot = RS.PotionHaveCombined and RS.PotionHaveCombined(potion) or 0
+                local potDeficit = math.max(0, target - havePot)
+                if potDeficit > 0
+                    and target > 0
+                    and not (RS.WatchCoveredByBagsAndCraftable
+                        and RS.WatchCoveredByBagsAndCraftable(potion, recipe, target))
+                then
+                    local craftsNeeded = RS.CraftsNeededForDeficit
+                        and RS.CraftsNeededForDeficit(potDeficit, recipe)
+                        or math.ceil(potDeficit / math.max(1, RS.RecipeOutputYield and RS.RecipeOutputYield(recipe) or 2))
+                    local slots = recipe.slots or {}
+                    for j = 1, #slots do
+                        local slot = slots[j]
+                        local spec = type(slot) == "table" and slot.spec or nil
+                        if type(spec) == "table" then
+                            local kind = ClassifyBuyKind(spec)
+                            if kind == "buy" then
+                                local specKey = ""
+                                if StockPiler.MaterialSpec and StockPiler.MaterialSpec.Key then
+                                    specKey = tostring(StockPiler.MaterialSpec.Key(spec) or "")
+                                end
+                                if specKey == "" then
+                                    specKey = ToNarrow(SpecJobLabel(spec))
+                                end
+                                local perCraft = 1
+                                if RS.EffectiveSpecPerCraft then
+                                    perCraft = tonumber(RS.EffectiveSpecPerCraft(slot, slots)) or 1
+                                end
+                                if perCraft < 1 then
+                                    perCraft = 1
+                                end
+                                local row = buyPool[specKey]
+                                if row == nil then
+                                    row = {
+                                        spec = spec,
+                                        role = slot.role or spec.role,
+                                        specKey = specKey,
+                                        absolute = 0,
+                                        label = SpecJobLabel(spec),
+                                    }
+                                    buyPool[specKey] = row
+                                end
+                                row.absolute = row.absolute + (craftsNeeded * perCraft)
+                            elseif kind == "plant" then
+                                addSeedJob(spec, slot.role or spec.role)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for specKey, row in pairs(buyPool) do
+        local have = 0
+        if RS.CountItemsMatchingSpec then
+            have = tonumber(RS.CountItemsMatchingSpec(row.spec)) or 0
+        end
+        local deficit = math.max(0, (tonumber(row.absolute) or 0) - have)
+        if deficit > 0 then
+            jobs[#jobs + 1] = {
+                kind = "buy",
+                spec = row.spec,
+                role = row.role,
+                have = have,
+                need = row.absolute,
+                deficit = deficit,
+                specKey = specKey,
+                label = row.label,
+                name = row.label,
+            }
+        end
+    end
+
+    table.sort(jobs, function(a, b)
+        local ar = (a and a.role) or ""
+        local br = (b and b.role) or ""
+        if ar == "container" and br ~= "container" then
+            return true
+        end
+        if br == "container" and ar ~= "container" then
+            return false
+        end
+        local al = ToNarrow(a and (a.label or a.name))
+        local bl = ToNarrow(b and (b.label or b.name))
+        if al ~= bl then
+            return al < bl
+        end
+        return (tonumber(a and a.deficit) or 0) > (tonumber(b and b.deficit) or 0)
+    end)
+    return jobs
+end
+
 function StockPiler.Planner.ProgressBlockerSignature(blockers)
     if type(blockers) ~= "table" then
         return ""
@@ -2897,6 +3201,9 @@ function StockPiler.Planner.MaybeNotifyProgressBlockers(plan)
     end
     if type(plan) ~= "table" then
         return false
+    end
+    if StockPiler.PrintMaterialsToBuy then
+        return StockPiler.PrintMaterialsToBuy(StockPiler.Planner.CollectVendorBuyJobs(), { dedupe = true }) == true
     end
     if StockPiler.NotifyProgressBlocked then
         return StockPiler.NotifyProgressBlocked(StockPiler.Planner.CollectProgressBlockers(plan)) == true
@@ -2939,7 +3246,6 @@ function StockPiler.Planner.BuildGrowQueueFromRows(rows, demandTotals, allocById
         if seedKey == "" then
             return nil
         end
-        local seedHave = seed.count or 0
         local seedUid = tonumber(seed.uniqueID) or 0
         local plantUid = tonumber(mat.uniqueID) or tonumber(seed.plantUid) or 0
         if seedUid <= 0 and StockPiler.AutoGrow and StockPiler.AutoGrow.ResolveSeedUid then
@@ -2948,8 +3254,9 @@ function StockPiler.Planner.BuildGrowQueueFromRows(rows, demandTotals, allocById
                 seedName = seed.name,
             })
         end
-        if seedHave <= 0 and seedUid > 0 and StockPiler.AutoGrow and StockPiler.AutoGrow.GetRawSeedCount then
-            seedHave = StockPiler.AutoGrow.GetRawSeedCount(seedUid)
+        local seedHave = 0
+        if seedUid > 0 and StockPiler.AutoGrow and StockPiler.AutoGrow.GetEffectiveSeedCount then
+            seedHave = tonumber(StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)) or 0
         end
         local plantable = StockPiler.Planner.ComputeSeedPlantable(seedHave, seedBuffer, matHave, tonumber(matDeficit) or 0)
         if plantable <= 0 then

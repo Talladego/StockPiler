@@ -19,7 +19,7 @@
             <Windows>
                 <Window name="$parentBanner">
                     <Size>
-                        <AbsPoint x="500" y="56" />
+                        <AbsPoint x="500" y="70" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
@@ -37,17 +37,17 @@
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="12" y="6" />
+                                    <AbsPoint x="12" y="4" />
                                 </Anchor>
                             </Anchors>
                         </Label>
-                        <Label name="$parentText" font="font_chat_text" maxchars="256" textalign="leftcenter" handleinput="false" wordwrap="true">
+                        <Label name="$parentText" font="font_chat_text" maxchars="256" textalign="left" handleinput="false" wordwrap="true">
                             <Size>
-                                <AbsPoint x="900" y="22" />
+                                <AbsPoint x="960" y="40" />
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="12" y="28" />
+                                    <AbsPoint x="12" y="26" />
                                 </Anchor>
                             </Anchors>
                         </Label>
@@ -61,7 +61,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="58" />
+                            <AbsPoint x="0" y="74" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -71,7 +71,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="58" y="58" />
+                            <AbsPoint x="58" y="74" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -84,14 +84,14 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="162" y="58" />
+                            <AbsPoint x="162" y="74" />
                         </Anchor>
                     </Anchors>
                 </Label>
                 <ComboBox name="$parentEffectCombo" inherits="EA_ComboBox_DefaultResizableSmall" handleinput="true">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="218" y="58" />
+                            <AbsPoint x="218" y="74" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -104,7 +104,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="351" y="62" />
+                            <AbsPoint x="351" y="78" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -117,19 +117,19 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="375" y="58" />
+                            <AbsPoint x="375" y="74" />
                         </Anchor>
                     </Anchors>
                 </Label>
 
-                <!-- Headers: x/width must match StockPilerPotionRow columns. Recipe/Forget are display-only. -->
-                <Button name="$parentSortWatch" inherits="StockPiler_SortHeader" id="7">
+                <!-- Headers: x/width must match StockPilerPotionRow (chrome spans Watch..Forget). -->
+                <Button name="$parentSortWatch" inherits="StockPiler_SortHeader" id="8">
                     <Size>
-                        <AbsPoint x="48" y="28" />
+                        <AbsPoint x="40" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="98" />
+                            <AbsPoint x="0" y="114" />
                         </Anchor>
                     </Anchors>
                     <Windows>
@@ -146,7 +146,7 @@
                         <DynamicImage name="$parentUpArrow" inherits="EA_ListSortUpArrow">
                             <Anchors>
                                 <Anchor point="right" relativePoint="right">
-                                    <AbsPoint x="-12" y="0" />
+                                    <AbsPoint x="-4" y="0" />
                                 </Anchor>
                             </Anchors>
                         </DynamicImage>
@@ -161,87 +161,100 @@
                 </Button>
                 <Button name="$parentSortName" inherits="StockPiler_SortHeader" id="1" textalign="left">
                     <Size>
-                        <AbsPoint x="370" y="28" />
+                        <AbsPoint x="348" y="28" />
                     </Size>
                     <TextOffset x="8" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="48" y="98" />
+                            <AbsPoint x="40" y="114" />
                         </Anchor>
                     </Anchors>
                 </Button>
                 <Button name="$parentSortEffect" inherits="StockPiler_SortHeader" id="2" textalign="left">
                     <Size>
-                        <AbsPoint x="92" y="28" />
-                    </Size>
-                    <TextOffset x="4" y="4" />
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="418" y="98" />
-                        </Anchor>
-                    </Anchors>
-                </Button>
-                <Button name="$parentSortRank" inherits="StockPiler_SortHeader" id="3" textalign="left">
-                    <Size>
                         <AbsPoint x="72" y="28" />
                     </Size>
                     <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="510" y="98" />
+                            <AbsPoint x="388" y="114" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentSortBuff" inherits="StockPiler_SortHeader" id="4" textalign="left">
-                    <Size>
-                        <AbsPoint x="72" y="28" />
-                    </Size>
-                    <TextOffset x="4" y="4" />
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="582" y="98" />
-                        </Anchor>
-                    </Anchors>
-                </Button>
-                <Button name="$parentSortDuration" inherits="StockPiler_SortHeader" id="5" textalign="left">
+                <Button name="$parentSortPower" inherits="StockPiler_SortHeader" id="3" textalign="left">
                     <Size>
                         <AbsPoint x="68" y="28" />
                     </Size>
                     <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="654" y="98" />
+                            <AbsPoint x="460" y="114" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentSortHave" inherits="StockPiler_SortHeader" id="6" textalign="left">
+                <Button name="$parentSortStability" inherits="StockPiler_SortHeader" id="4" textalign="left">
+                    <Size>
+                        <AbsPoint x="92" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="528" y="114" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortSuperCrit" inherits="StockPiler_SortHeader" id="5" textalign="left">
+                    <Size>
+                        <AbsPoint x="100" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="620" y="114" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortYield" inherits="StockPiler_SortHeader" id="6" textalign="left">
+                    <Size>
+                        <AbsPoint x="64" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="720" y="114" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortHave" inherits="StockPiler_SortHeader" id="7" textalign="left">
+                    <Size>
+                        <AbsPoint x="68" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="784" y="114" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortRecipe" inherits="StockPiler_StaticHeader">
                     <Size>
                         <AbsPoint x="80" y="28" />
                     </Size>
                     <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="722" y="98" />
-                        </Anchor>
-                    </Anchors>
-                </Button>
-                <Button name="$parentSortRecipe" inherits="StockPiler_StaticHeader">
-                    <Size>
-                        <AbsPoint x="70" y="28" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="802" y="98" />
+                            <AbsPoint x="852" y="114" />
                         </Anchor>
                     </Anchors>
                 </Button>
                 <Button name="$parentSortForget" inherits="StockPiler_StaticHeader">
                     <Size>
-                        <AbsPoint x="70" y="28" />
+                        <AbsPoint x="68" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="872" y="98" />
+                            <AbsPoint x="932" y="114" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -249,7 +262,7 @@
                 <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPilerPotionRow" visiblerows="12" rowspacing="2">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="128" />
+                            <AbsPoint x="0" y="144" />
                         </Anchor>
                         <Anchor point="bottomright" relativePoint="bottomright">
                             <AbsPoint x="-6" y="-8" />
@@ -259,9 +272,10 @@
                         <ListColumns>
                             <ListColumn windowname="Name" variable="name" format="wstring" />
                             <ListColumn windowname="Effect" variable="effectText" format="wstring" />
-                            <ListColumn windowname="Rank" variable="rankText" format="wstring" />
-                            <ListColumn windowname="Buff" variable="buffText" format="wstring" />
-                            <ListColumn windowname="Duration" variable="durationText" format="wstring" />
+                            <ListColumn windowname="Power" variable="powerText" format="wstring" />
+                            <ListColumn windowname="Stability" variable="stabilityText" format="wstring" />
+                            <ListColumn windowname="SuperCrit" variable="superCritText" format="wstring" />
+                            <ListColumn windowname="Yield" variable="yieldText" format="wstring" />
                             <ListColumn windowname="Have" variable="haveText" format="wstring" />
                         </ListColumns>
                     </ListData>

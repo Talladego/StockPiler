@@ -17,6 +17,9 @@ local TICK_INTERVAL_SEC = 1
 -- stack is this small (failed harvest can lose the line).
 local LAST_SEED_WARN_MAX = 4
 
+-- Forward-declared: DecisionLog helpers below call this before the body is assigned.
+local NumPlots
+
 StockPiler.AutoGrow._plotCache = {}
 StockPiler.AutoGrow._pendingPlant = {}
 StockPiler.AutoGrow._pendingAdditive = {}
@@ -34,6 +37,8 @@ StockPiler.AutoGrow._syncedEnabled = nil
 StockPiler.AutoGrow._plotInfoRequested = false
 StockPiler.AutoGrow._cachedPlantQueue = nil
 StockPiler.AutoGrow._plantQueueDirty = true
+StockPiler.AutoGrow._queueAssigned = 0
+StockPiler.AutoGrow._queueSnapGen = nil
 StockPiler.AutoGrow._suppressInvTicks = 0
 StockPiler.AutoGrow._pendingHarvestNotify = nil
 StockPiler.AutoGrow._lastTickTrace = nil
@@ -42,18 +47,201 @@ StockPiler.AutoGrow._seedCommitted = {}
 StockPiler.AutoGrow._seedLastLive = {}
 StockPiler.AutoGrow._lastSeedExhaustWarn = {}
 
+-- In-memory decision ring for /stp growwhy (not SavedVariables).
+local DECISION_LOG_MAX = 40
+StockPiler.AutoGrow.DecisionLog = StockPiler.AutoGrow.DecisionLog or {}
+StockPiler.AutoGrow._lastQueueDecision = nil
+StockPiler.AutoGrow._lastPlantDecision = nil
+StockPiler.AutoGrow._lastRefineDecision = nil
+
 local function ToNarrow(text)
-    if text == nil then
-        return ""
+    return StockPiler.ToNarrow(text)
+end
+
+local function DecisionNow()
+    if type(GetGameTime) == "function" then
+        return tonumber(GetGameTime()) or 0
     end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
+    return 0
+end
+
+--- Append a structured AutoGrow decision (ring buffer). Always stored for growwhy;
+--- also written to uilog when /stp growtrace, /stp debug, or forceLog (one-shot dumps).
+function StockPiler.AutoGrow.RecordDecision(kind, summary, lines, forceLog)
+    kind = tostring(kind or "event")
+    summary = tostring(summary or "")
+    local event = {
+        t = DecisionNow(),
+        kind = kind,
+        summary = summary,
+        lines = type(lines) == "table" and lines or nil,
+    }
+    local log = StockPiler.AutoGrow.DecisionLog
+    if type(log) ~= "table" then
+        log = {}
+        StockPiler.AutoGrow.DecisionLog = log
+    end
+    log[#log + 1] = event
+    while #log > DECISION_LOG_MAX do
+        table.remove(log, 1)
+    end
+    if kind == "queue_build" then
+        StockPiler.AutoGrow._lastQueueDecision = event
+    elseif kind == "plant" then
+        StockPiler.AutoGrow._lastPlantDecision = event
+    elseif kind == "refine" then
+        StockPiler.AutoGrow._lastRefineDecision = event
+    end
+    local shouldLog = forceLog == true or StockPiler.AutoGrow.ShouldTraceGrow()
+    if not shouldLog then
+        return event
+    end
+    StockPiler.AutoGrow.EmitGrowTrace("decision " .. kind .. ": " .. summary, forceLog == true)
+    if type(lines) == "table" then
+        for i = 1, #lines do
+            StockPiler.AutoGrow.EmitGrowTrace("  " .. tostring(lines[i]), forceLog == true)
         end
-        return ""
     end
-    return tostring(text)
+    return event
+end
+
+local function SpecDecisionLabel(spec, specKey)
+    if type(spec) == "table" and StockPiler.MaterialSpec and StockPiler.MaterialSpec.Label then
+        local label = ToNarrow(StockPiler.MaterialSpec.Label(spec))
+        local key = specKey or (StockPiler.MaterialSpec.Key and StockPiler.MaterialSpec.Key(spec)) or "?"
+        return label .. " [" .. tostring(key) .. "]"
+    end
+    return tostring(specKey or "?")
+end
+
+function StockPiler.AutoGrow.RecordQueueBuildDecision(plan)
+    local lines = {}
+    local queue = type(plan) == "table" and plan.queue or nil
+    local trace = type(plan) == "table" and plan.queueTrace or nil
+    if type(trace) ~= "table" or #trace == 0 then
+        trace = StockPiler.Planner and StockPiler.Planner._lastQueueTrace or nil
+    end
+    if type(trace) == "table" then
+        for i = 1, #trace do
+            lines[#lines + 1] = tostring(trace[i])
+        end
+    end
+    local assigned = 0
+    local bufferGrow = 0
+    if type(queue) == "table" then
+        for plotNum = 1, NumPlots() do
+            local entry = queue[plotNum]
+            if type(entry) == "table" then
+                assigned = assigned + 1
+                if entry.bufferGrow == true then
+                    bufferGrow = bufferGrow + 1
+                end
+                lines[#lines + 1] = string.format(
+                    "PLOT P%d %s seedUid=%d plantUid=%d plantable=%d reason=%s%s",
+                    plotNum,
+                    ToNarrow(entry.seedName or entry.seedKey or "?"),
+                    tonumber(entry.seedUid) or 0,
+                    tonumber(entry.plantUid) or 0,
+                    tonumber(entry.seedPlantable) or 0,
+                    tostring(entry.plantReason or "?"),
+                    entry.bufferGrow == true and " bufferGrow" or ""
+                )
+            end
+        end
+        if type(queue.emptyReason) == "wstring" or type(queue.emptyReason) == "string" then
+            lines[#lines + 1] = "emptyReason=" .. ToNarrow(queue.emptyReason)
+        end
+    end
+    local summary = "assigned=" .. tostring(assigned)
+        .. " bufferGrow=" .. tostring(bufferGrow)
+        .. " lines=" .. tostring(#lines)
+    -- Always force uilog when growtrace is on; growwhy will force separately.
+    StockPiler.AutoGrow.RecordDecision("queue_build", summary, lines, false)
+end
+
+--- Competitors still queued on other empty plots (for plant decision context).
+function StockPiler.AutoGrow.QueuedPlantCompetitors(exceptPlot)
+    exceptPlot = tonumber(exceptPlot) or 0
+    local list = {}
+    local queue = StockPiler.AutoGrow._cachedPlantQueue
+    if type(queue) ~= "table" then
+        return list
+    end
+    for plotNum = 1, NumPlots() do
+        if plotNum ~= exceptPlot then
+            local entry = queue[plotNum]
+            if type(entry) == "table" then
+                list[#list + 1] = string.format(
+                    "P%d %s seedUid=%d plantable=%d%s",
+                    plotNum,
+                    ToNarrow(entry.seedName or entry.specKey or "?"),
+                    tonumber(entry.seedUid) or 0,
+                    tonumber(entry.seedPlantable) or 0,
+                    entry.bufferGrow == true and " buffer" or ""
+                )
+            end
+        end
+    end
+    return list
+end
+
+--- Dump last queue/plant/refine decisions to chat + uilog.
+function StockPiler.AutoGrow.DumpDecisionWhy(opts)
+    opts = opts or {}
+    local force = opts.force ~= false
+    local function emitLog(msg)
+        StockPiler.AutoGrow.EmitGrowTrace(msg, force)
+    end
+    local function emitChat(msg)
+        if StockPiler.Print then
+            StockPiler.Print(towstring(tostring(msg)))
+        end
+    end
+    emitLog("=== AutoGrow growwhy ===")
+    emitChat(L"=== AutoGrow growwhy (full detail in uilog.log) ===")
+    local function dumpEvent(label, event)
+        if type(event) ~= "table" then
+            emitLog(label .. ": (none yet)")
+            emitChat(towstring(label) .. L": (none yet)")
+            return
+        end
+        local head = label .. " t=" .. tostring(event.t or 0) .. " " .. tostring(event.summary or "")
+        emitLog(head)
+        emitChat(towstring(head))
+        if type(event.lines) == "table" then
+            local chatMax = 8
+            for i = 1, #event.lines do
+                emitLog("  " .. tostring(event.lines[i]))
+                if i <= chatMax then
+                    emitChat(L"  " .. towstring(tostring(event.lines[i])))
+                end
+            end
+            if #event.lines > chatMax then
+                local more = "  ... +" .. tostring(#event.lines - chatMax) .. " more in uilog"
+                emitLog(more)
+                emitChat(towstring(more))
+            end
+        end
+    end
+    dumpEvent("queue_build", StockPiler.AutoGrow._lastQueueDecision)
+    dumpEvent("plant", StockPiler.AutoGrow._lastPlantDecision)
+    dumpEvent("refine", StockPiler.AutoGrow._lastRefineDecision)
+    local log = StockPiler.AutoGrow.DecisionLog
+    if type(log) == "table" and #log > 0 then
+        emitLog("--- recent DecisionLog (" .. tostring(#log) .. ") ---")
+        local start = math.max(1, #log - 11)
+        for i = start, #log do
+            local e = log[i]
+            emitLog(string.format(
+                "  #%d %s t=%s %s",
+                i,
+                tostring(e.kind),
+                tostring(e.t or 0),
+                tostring(e.summary or "")
+            ))
+        end
+    end
+    emitLog("=== end growwhy ===")
 end
 
 local function AsWString(text)
@@ -82,7 +270,7 @@ local function D(msg)
     end
 end
 
-local function NumPlots()
+NumPlots = function()
     if StockPiler.Inventory and StockPiler.Inventory.GetLocalCultivator then
         local info = StockPiler.Inventory.GetLocalCultivator()
         return math.max(0, tonumber(info and info.plots) or 0)
@@ -147,23 +335,18 @@ function StockPiler.AutoGrow.ShouldTraceGrow()
         or StockPiler.DebugEnabled == true
 end
 
+--- AutoGrow uilog line. Live traces need /stp debug or /stp growtrace.
+--- force=true is only for one-shot user dumps (/stp growplan, /stp growwhy).
 function StockPiler.AutoGrow.EmitGrowTrace(msg, force)
+    if force ~= true and not StockPiler.AutoGrow.ShouldTraceGrow() then
+        return
+    end
     local text = "AutoGrow| " .. tostring(msg)
-    if force then
-        if StockPiler._EmitLog and StockPiler._LogText then
-            StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(text))
-        elseif type(d) == "function" then
-            d("StockPiler| " .. text)
-        end
-        return
-    end
-    if not StockPiler.AutoGrow.ShouldTraceGrow() then
-        return
-    end
-    if StockPiler.Trace then
-        StockPiler.Trace(text)
-    else
-        D(text)
+    -- Emit directly: StockPiler.Trace/D are debug-only and would drop growtrace-only.
+    if StockPiler._EmitLog and StockPiler._LogText then
+        StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(text))
+    elseif type(d) == "function" then
+        d("StockPiler| " .. text)
     end
 end
 
@@ -212,7 +395,7 @@ function StockPiler.AutoGrow.DumpGrowPlan(opts)
         .. " seedBuffer=" .. tostring(buffer))
 
     if StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
-        pcall(StockPiler.Inventory.RefreshAllIfNeeded)
+        StockPiler.Inventory.RefreshAllIfNeeded()
     end
 
     local RS = StockPiler.RecipeSpec
@@ -232,7 +415,12 @@ function StockPiler.AutoGrow.DumpGrowPlan(opts)
         local row = targets[i]
         local recipe = row.specRecipe
         local quality = recipe and recipe.quality or "?"
-        local yield = recipe and tonumber(recipe.recipeYield) or 0
+        local yield = 0
+        if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RecipeOutputYield then
+            yield = StockPiler.RecipeSpec.RecipeOutputYield(recipe)
+        else
+            yield = recipe and tonumber(recipe.recipeYield) or 0
+        end
         local crafts = row.craftsNeeded or 0
         emit(string.format(
             "  %s have=%d target=%d deficit=%d recipe=%s yield=%d crafts=%d autoGrow=%s growable=%s status=%s",
@@ -276,7 +464,7 @@ function StockPiler.AutoGrow.DumpGrowPlan(opts)
         local growable = StockPiler.MaterialSpec
             and StockPiler.MaterialSpec.IsGrowable(row.spec)
         emit(string.format(
-            "  %s have=%d need=%d deficit=%d craftsHave=%d craftsShort=%d minWatch=%s role=%s weighted=%.3f growable=%s",
+            "  %s have=%d need=%d deficit=%d craftsHave=%d craftsShort=%d minWatch=%s stock=%s role=%s weighted=%.3f growable=%s",
             SpecTraceLabel(row.spec, row.specKey),
             tonumber(row.have) or 0,
             tonumber(row.absolute) or 0,
@@ -284,6 +472,7 @@ function StockPiler.AutoGrow.DumpGrowPlan(opts)
             tonumber(row.craftsHave) or 0,
             tonumber(row.craftsShort) or 0,
             tostring(row.minWatchCraftable),
+            tostring(row.minWatchStock),
             tostring(row.role or "?"),
             tonumber(row.weighted) or 0,
             tostring(growable == true)
@@ -306,6 +495,12 @@ function StockPiler.AutoGrow.DumpGrowPlan(opts)
     end
     if #traceLines == 0 then
         emit("  (no growable deficits with plantable seeds)")
+    end
+    if StockPiler.AutoGrow.RecordQueueBuildDecision then
+        StockPiler.AutoGrow.RecordQueueBuildDecision({
+            queue = queue,
+            queueTrace = traceLines,
+        })
     end
 
     emit("--- plot queue ---")
@@ -353,17 +548,11 @@ function StockPiler.AutoGrow.DumpGrowPlan(opts)
         ))
     end
 
-    if type(s.growProducers) == "table" then
-        local prodCount = 0
-        for _ in pairs(s.growProducers) do
-            prodCount = prodCount + 1
-        end
-        emit("--- grow producers (" .. tostring(prodCount) .. ") ---")
-        for plantKey, prod in pairs(s.growProducers) do
-            local seeds = type(prod.seedSpecKeys) == "table" and table.concat(prod.seedSpecKeys, ",") or ""
-            emit("  " .. tostring(plantKey) .. " seeds=[" .. seeds .. "]")
-        end
+    local growPairs = 0
+    if StockPiler.SeedMap and StockPiler.SeedMap.CountLearnedGrowPairs then
+        growPairs = StockPiler.SeedMap.CountLearnedGrowPairs() or 0
     end
+    emit("--- learned grow pairs (" .. tostring(growPairs) .. ") ---")
 
     local ready = StockPiler.AutoGrow.GetReadyHarvestPlots()
     emit("--- runtime ---")
@@ -436,7 +625,7 @@ local function FlushWatchUiIfDirty()
     end
     StockPiler.AutoGrow._watchUiDirty = false
     if StockPilerTabAutoGrow and StockPilerTabAutoGrow.Refresh then
-        pcall(StockPilerTabAutoGrow.Refresh)
+        StockPilerTabAutoGrow.Refresh()
     end
 end
 
@@ -475,11 +664,30 @@ end
 function StockPiler.AutoGrow.InvalidatePlantQueue()
     local already = StockPiler.AutoGrow._plantQueueDirty == true
     StockPiler.AutoGrow._plantQueueDirty = true
-    StockPiler.AutoGrow._cachedPlantQueue = nil
-    StockPiler.AutoGrow._queueSnapGen = nil
-    if already ~= true then
-        StockPiler.AutoGrow.EmitGrowTrace("queue invalidated", true)
+    -- Keep the last queue during a harvest/loot debounce so GetPlantQueue
+    -- does not rebuild while bags are still changing.
+    if not (StockPiler.BagWorkPending and StockPiler.BagWorkPending()) then
+        StockPiler.AutoGrow._cachedPlantQueue = nil
+        StockPiler.AutoGrow._queueSnapGen = nil
     end
+    if already ~= true then
+        LogGrow("queue invalidated")
+    end
+end
+
+function StockPiler.AutoGrow.RefineCheckDue()
+    if StockPiler.AutoGrow._refineDirty == true then
+        return true
+    end
+    return (tonumber(StockPiler.AutoGrow._refineWaitTicks) or 0) <= 0
+end
+
+function StockPiler.AutoGrow.MarkRefineDue()
+    StockPiler.AutoGrow._refineDirty = true
+end
+
+function StockPiler.AutoGrow.MarkAdditiveDue()
+    StockPiler.AutoGrow._additiveDirty = true
 end
 
 -- Watch list, per-potion AutoGrow, or target changed. Rebuild the queue and
@@ -487,16 +695,18 @@ end
 function StockPiler.AutoGrow.OnDemandChanged()
     StockPiler.AutoGrow.InvalidatePlantQueue()
     if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-        pcall(StockPiler.Planner.InvalidatePlanCache)
+        StockPiler.Planner.InvalidatePlanCache()
     end
     if not IsEnabled() then
         return
     end
     StockPiler.AutoGrow._lastTickTrace = nil
     StockPiler.AutoGrow.MarkAllPlotsWantFill()
+    -- Convert plants to seeds before planting so empty plots can all fill.
+    StockPiler.AutoGrow.MarkRefineDue()
     -- Seed buffer / target changes must refine immediately, not wait 1s.
     StockPiler.AutoGrow._updateAccum = TICK_INTERVAL_SEC
-    pcall(StockPiler.AutoGrow.ProcessTick)
+    StockPiler.AutoGrow.ProcessTick()
 end
 
 local function SuppressInventorySideEffects()
@@ -510,15 +720,37 @@ local function DecaySuppressInventorySideEffects()
     end
 end
 
+local _bagCache = nil
+local _bagCacheAt = 0
+
+local function NowSec()
+    if type(GetGameTime) == "function" then
+        return tonumber(GetGameTime()) or 0
+    end
+    return 0
+end
+
 local function ReadBagTables()
+    local now = NowSec()
+    if type(_bagCache) == "table" and (now - _bagCacheAt) < 0.25 then
+        return _bagCache.craft, _bagCache.inv
+    end
     local craftBag = nil
     local invBag = nil
     if DataUtils and DataUtils.GetCraftingItems then
-        craftBag = DataUtils.GetCraftingItems()
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetCraftingItems", DataUtils.GetCraftingItems)
+        if ok then
+            craftBag = data
+        end
     end
     if DataUtils and DataUtils.GetItems then
-        invBag = DataUtils.GetItems()
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetItems", DataUtils.GetItems)
+        if ok then
+            invBag = data
+        end
     end
+    _bagCache = { craft = craftBag, inv = invBag }
+    _bagCacheAt = now
     return craftBag, invBag
 end
 
@@ -534,7 +766,7 @@ local function BindCultivationHarvestAction(windowName)
     end
     local cult = GameData and GameData.TradeSkills and GameData.TradeSkills.CULTIVATION or 3
     local action = GameData and GameData.PlayerActions and GameData.PlayerActions.PERFORM_CRAFTING or 8
-    local ok, err = pcall(WindowSetGameActionData, windowName, action, cult, L"")
+    local ok, err = StockPiler.TryCall("WindowSetGameActionData", WindowSetGameActionData, windowName, action, cult, L"")
     if not ok then
         D("BindCultivationHarvestAction failed win=" .. tostring(windowName) .. " err=" .. tostring(err))
         return false
@@ -679,6 +911,11 @@ function StockPiler.AutoGrow.ResolveSeedUid(entry)
     return 0
 end
 
+function StockPiler.AutoGrow.InvalidateBagCache()
+    _bagCache = nil
+    _bagCacheAt = 0
+end
+
 local function CountSeedsInLiveBags(seedUid)
     seedUid = tonumber(seedUid) or 0
     if seedUid <= 0 then
@@ -699,6 +936,11 @@ local function CountSeedsInLiveBags(seedUid)
     end
     local craftBag, invBag = ReadBagTables()
     return sumBag(craftBag) + sumBag(invBag)
+end
+
+--- Seeds physically in bags right now. Ignores snapshot and in-flight commits.
+function StockPiler.AutoGrow.GetLiveSeedCount(seedUid)
+    return CountSeedsInLiveBags(seedUid)
 end
 
 function StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)
@@ -829,7 +1071,7 @@ end
 
 local function ItemRarityColor(itemData)
     if itemData and DataUtils and DataUtils.GetItemRarityColor then
-        local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
+        local ok, color = StockPiler.TryCallQuiet("DataUtils.GetItemRarityColor", DataUtils.GetItemRarityColor, itemData)
         if ok and type(color) == "table" then
             return color
         end
@@ -1034,7 +1276,7 @@ function StockPiler.AutoGrow.EnsureHarvestTooltipRows()
     for rowNum = have + 1, HARVEST_TOOLTIP_ROWS do
         local rowName = "DefaultTooltipRow" .. tostring(rowNum)
         if not DoesWindowExist(rowName) then
-            local ok = pcall(CreateWindowFromTemplate, rowName, "TooltipRow", "DefaultTooltip")
+            local ok = StockPiler.TryCall("CreateWindowFromTemplate", CreateWindowFromTemplate, rowName, "TooltipRow", "DefaultTooltip")
             if not ok or not DoesWindowExist(rowName) then
                 return false
             end
@@ -1084,10 +1326,7 @@ function StockPiler.AutoGrow.ShowHarvestTooltip(anchorWindow, anchor)
     if StockPiler.Planner and StockPiler.Planner.FormatGrowQueueText then
         local plan = nil
         if StockPiler.Planner.BuildPlan then
-            local ok, built = pcall(StockPiler.Planner.BuildPlan, { refresh = false })
-            if ok then
-                plan = built
-            end
+            plan = StockPiler.Planner.BuildPlan({ refresh = false })
         end
         local summary = StockPiler.Planner.FormatGrowQueueText(plan and plan.queue, 4)
         if summary and summary ~= L"" then
@@ -1112,6 +1351,9 @@ function StockPiler.AutoGrow.FindRefinablePlantSlot(plantUid)
         if type(item) ~= "table" or tonumber(item.uniqueID) ~= plantUid then
             return false
         end
+        if StockPiler.SeedMap and StockPiler.SeedMap.ItemLooksLikeRefinablePlant then
+            return StockPiler.SeedMap.ItemLooksLikeRefinablePlant(item)
+        end
         if item.isRefinable ~= true then
             return false
         end
@@ -1148,6 +1390,77 @@ function StockPiler.AutoGrow.FindRefinablePlantSlot(plantUid)
         return slot, item, bagType
     end
     return scanBag(invBag, InventoryBackpackType())
+end
+
+--- Refinable plant that produces this seed (UID may differ from the seed map cache).
+function StockPiler.AutoGrow.FindRefinablePlantSlotForSeed(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 or not StockPiler.SeedMap then
+        return 0, nil, nil
+    end
+    local plantUid = 0
+    if StockPiler.SeedMap.GetPlantUidForSeed then
+        plantUid = tonumber(StockPiler.SeedMap.GetPlantUidForSeed(seedUid)) or 0
+    end
+    if plantUid > 0 then
+        local slot, item, bagType = StockPiler.AutoGrow.FindRefinablePlantSlot(plantUid)
+        if slot > 0 then
+            return slot, item, bagType
+        end
+    end
+    if type(StockPiler.SeedMap.ResolveSeedForPlantUid) ~= "function" then
+        return 0, nil, nil
+    end
+    local seedType = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.SEED) or 1
+    local sporeType = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.SPORE) or 5
+    local bestSlot, bestItem, bestBag = 0, nil, nil
+    local function consider(slot, item, backpackType)
+        if type(item) ~= "table" then
+            return
+        end
+        if StockPiler.SeedMap and StockPiler.SeedMap.ItemLooksLikeRefinablePlant then
+            if not StockPiler.SeedMap.ItemLooksLikeRefinablePlant(item) then
+                return
+            end
+        elseif item.isRefinable ~= true then
+            return
+        else
+            local cultType = tonumber(item.cultivationType) or 0
+            if cultType == seedType or cultType == sporeType then
+                return
+            end
+        end
+        local uid = tonumber(item.uniqueID) or 0
+        if uid <= 0 then
+            return
+        end
+        local seed = StockPiler.SeedMap.ResolveSeedForPlantUid(uid)
+        if type(seed) == "table" and (tonumber(seed.uniqueID) or 0) == seedUid then
+            bestSlot = slot
+            bestItem = item
+            bestBag = backpackType
+        end
+    end
+    local craftBag, invBag = ReadBagTables()
+    local craftType = CraftingBackpackType()
+    local invType = InventoryBackpackType()
+    if type(craftBag) == "table" then
+        for slot, item in pairs(craftBag) do
+            consider(slot, item, craftType)
+            if bestSlot > 0 then
+                return bestSlot, bestItem, bestBag
+            end
+        end
+    end
+    if type(invBag) == "table" then
+        for slot, item in pairs(invBag) do
+            consider(slot, item, invType)
+            if bestSlot > 0 then
+                return bestSlot, bestItem, bestBag
+            end
+        end
+    end
+    return 0, nil, nil
 end
 
 --- Any refinable plant (not seed/spore). Used when converting for refine byproducts
@@ -1160,6 +1473,9 @@ function StockPiler.AutoGrow.FindAnyRefinablePlantSlot()
         if type(item) ~= "table" then
             return false
         end
+        if StockPiler.SeedMap and StockPiler.SeedMap.ItemLooksLikeRefinablePlant then
+            return StockPiler.SeedMap.ItemLooksLikeRefinablePlant(item)
+        end
         if item.isRefinable ~= true then
             return false
         end
@@ -1198,7 +1514,7 @@ function StockPiler.AutoGrow.FindAnyRefinablePlantSlot()
     return scanBag(invBag, InventoryBackpackType())
 end
 
-function StockPiler.AutoGrow.RefinePlantSlot(slot, item, backpackType, entry, uses)
+function StockPiler.AutoGrow.RefinePlantSlot(slot, item, backpackType, entry, uses, decisionKind)
     if SendUseItem == nil or type(item) ~= "table" then
         return false
     end
@@ -1223,34 +1539,67 @@ function StockPiler.AutoGrow.RefinePlantSlot(slot, item, backpackType, entry, us
     end
 
     if StockPiler.SeedMap and StockPiler.SeedMap.BeginPendingRefine then
-        pcall(StockPiler.SeedMap.BeginPendingRefine, item)
+        StockPiler.SeedMap.BeginPendingRefine(item)
     end
 
     local location = EA_Window_Backpack.GetCursorForBackpack(backpackType or CraftingBackpackType())
     local sent = 0
+    StockPiler.AutoGrow._refineBatchActive = true
+    SuppressInventorySideEffects()
     for _ = 1, uses do
-        local ok, err = pcall(SendUseItem, location, slot, 0, 0, 0)
+        local ok, err = StockPiler.TryCall("SendUseItem", SendUseItem, location, slot, 0, 0, 0)
         if not ok then
             D("AutoGrow refine failed slot=" .. tostring(slot) .. " err=" .. tostring(err))
             break
         end
         sent = sent + 1
     end
+    StockPiler.AutoGrow._refineBatchActive = false
     if sent <= 0 then
         return false
     end
 
-    SuppressInventorySideEffects()
     StockPiler.AutoGrow._pendingRefine[plantUid] = pending + sent
-    StockPiler.AutoGrow.InvalidatePlantQueue()
     D("AutoGrow refining plantUid=" .. tostring(plantUid)
         .. " slot=" .. tostring(slot) .. " uses=" .. tostring(sent)
         .. " seed=" .. tostring(entry and entry.seedKey or ""))
-    RefreshWatchStatusIfOpen()
+    do
+        local seedUid = tonumber(entry and entry.seedUid) or 0
+        local lines = {
+            "bucket=" .. tostring(decisionKind or "refine"),
+            "plantUid=" .. tostring(plantUid),
+            "seedUid=" .. tostring(seedUid),
+            "uses=" .. tostring(sent),
+            "name=" .. ToNarrow(item.name),
+        }
+        if type(entry) == "table" then
+            lines[#lines + 1] = "queueSpec=" .. tostring(entry.specKey or "?")
+                .. " plantable=" .. tostring(entry.seedPlantable or 0)
+        end
+        StockPiler.AutoGrow.RecordDecision(
+            "refine",
+            tostring(decisionKind or "refine")
+                .. " plantUid=" .. tostring(plantUid)
+                .. " uses=" .. tostring(sent),
+            lines,
+            false
+        )
+    end
+    if StockPiler.ScheduleBagWork then
+        StockPiler.ScheduleBagWork(false)
+    else
+        RefreshWatchStatusIfOpen()
+    end
     return true
 end
 
 function StockPiler.AutoGrow.MaybeAutoRefine()
+    if StockPiler.BagWorkPending and StockPiler.BagWorkPending() then
+        return false
+    end
+    if StockPiler.Perf and StockPiler.Perf.Mark then
+        StockPiler.Perf.Mark("MaybeAutoRefine")
+    end
     if not IsEnabled() then
         return false
     end
@@ -1261,10 +1610,12 @@ function StockPiler.AutoGrow.MaybeAutoRefine()
     end
     local seen = {}
     local plots = NumPlots()
+    -- Build the plan once so CollectGrowCycleRefineJobs can reuse specDemand.
+    StockPiler.AutoGrow.GetPlantQueue()
 
-    -- Grow cycle: convert plants up to the seed buffer (and enough to fill
-    -- empty plots). Planting may spend those seeds down to 0. Include
-    -- harvest-ready plots so refine can start before you harvest.
+    -- Grow cycle: hit the seed buffer first, then fill empty plots.
+    -- 1 seed + 2 plants with buffer 4 → refine both plants (3 seeds), then plant.
+    -- After harvest the same check runs before the next plant wave.
     if StockPiler.Planner and StockPiler.Planner.CollectGrowCycleRefineJobs then
         local emptyPlots = 0
         for plotNum = 1, plots do
@@ -1285,15 +1636,21 @@ function StockPiler.AutoGrow.MaybeAutoRefine()
             for i = 1, #jobs do
                 local job = jobs[i]
                 local plantUid = tonumber(job.plantUid) or 0
-                if plantUid > 0 and seen[plantUid] ~= true then
-                    seen[plantUid] = true
-                    local pending = tonumber(StockPiler.AutoGrow._pendingRefine[plantUid]) or 0
+                local seenKey = plantUid > 0 and plantUid or (tonumber(job.seedUid) or 0)
+                if seenKey > 0 and seen[seenKey] ~= true then
+                    seen[seenKey] = true
+                    local pending = plantUid > 0
+                        and (tonumber(StockPiler.AutoGrow._pendingRefine[plantUid]) or 0)
+                        or 0
                     if pending > 0 then
                         LogGrow("refine grow-cycle wait plantUid=" .. tostring(plantUid)
                             .. " pending=" .. tostring(pending))
                     else
                         local uses = tonumber(job.uses) or 0
                         local slot, item, bagType = StockPiler.AutoGrow.FindRefinablePlantSlot(plantUid)
+                        if slot <= 0 and job.seedUid and StockPiler.AutoGrow.FindRefinablePlantSlotForSeed then
+                            slot, item, bagType = StockPiler.AutoGrow.FindRefinablePlantSlotForSeed(job.seedUid)
+                        end
                         if uses > 0 and slot > 0 and type(item) == "table" then
                             LogGrow("refine grow-cycle plantUid=" .. tostring(plantUid)
                                 .. " seedUid=" .. tostring(job.seedUid or 0)
@@ -1305,7 +1662,7 @@ function StockPiler.AutoGrow.MaybeAutoRefine()
                                 .. " deficit=" .. tostring(job.deficit or 0)
                                 .. " uses=" .. tostring(uses))
                             StockPiler.AutoGrow.MarkAllPlotsWantFill()
-                            return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, nil, uses)
+                            return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, nil, uses, "grow-cycle")
                         end
                         if uses > 0 then
                             LogGrow("refine grow-cycle skip plantUid=" .. tostring(plantUid)
@@ -1337,38 +1694,51 @@ function StockPiler.AutoGrow.MaybeAutoRefine()
             if seedUid > 0 and plantUid > 0 and seen[plantUid] ~= true then
                 seen[plantUid] = true
                 local seedHave = StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)
-                if seedHave < buffer then
-                    local pending = tonumber(StockPiler.AutoGrow._pendingRefine[plantUid]) or 0
-                    if pending < MAX_PENDING_REFINE then
-                        -- Buffer is a refine target. Convert plants in bags even
-                        -- when those stacks are also recipe ingredients.
-                        local need = buffer - seedHave
-                        if need <= 0 then
-                            LogGrow("refine skip P" .. tostring(plotNum)
-                                .. " plantUid=" .. tostring(plantUid)
-                                .. " seedUid=" .. tostring(seedUid)
-                                .. " seedHave=" .. tostring(seedHave)
-                                .. " target=" .. tostring(buffer)
-                                .. " reason=already at buffer")
-                        else
-                            local slot, item, bagType = StockPiler.AutoGrow.FindRefinablePlantSlot(plantUid)
-                            if slot > 0 and type(item) == "table" then
-                                LogGrow("refine queue P" .. tostring(plotNum)
-                                    .. " plantUid=" .. tostring(plantUid)
-                                    .. " seedUid=" .. tostring(seedUid)
-                                    .. " seedHave=" .. tostring(seedHave)
-                                    .. " buffer=" .. tostring(buffer)
-                                    .. " need=" .. tostring(need))
-                                return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, entry, need)
-                            end
-                            LogGrow("refine skip P" .. tostring(plotNum)
-                                .. " plantUid=" .. tostring(plantUid)
-                                .. " seedUid=" .. tostring(seedUid)
-                                .. " seedHave=" .. tostring(seedHave)
-                                .. " target=" .. tostring(buffer)
-                                .. " reason=no plant in bags")
-                        end
+                local emptyPlots = 0
+                for n = 1, plots do
+                    if StockPiler.AutoGrow.CanPlantPlot(n) then
+                        emptyPlots = emptyPlots + 1
                     end
+                end
+                local surplus = 0
+                if StockPiler.Planner and StockPiler.Planner.WatchedPlantCraftSurplus then
+                    surplus = tonumber(StockPiler.Planner.WatchedPlantCraftSurplus(plantUid)) or 0
+                end
+                local need = 0
+                if seedHave < emptyPlots then
+                    need = emptyPlots - seedHave
+                end
+                local bufferGap = buffer - seedHave
+                if bufferGap > 0 and surplus > 0 then
+                    local fromSurplus = bufferGap
+                    if fromSurplus > surplus then
+                        fromSurplus = surplus
+                    end
+                    if fromSurplus > need then
+                        need = fromSurplus
+                    end
+                end
+                local pendingRefine = tonumber(StockPiler.AutoGrow._pendingRefine[plantUid]) or 0
+                if need > 0 and pendingRefine < MAX_PENDING_REFINE then
+                    local slot, item, bagType = StockPiler.AutoGrow.FindRefinablePlantSlot(plantUid)
+                    if slot <= 0 and seedUid > 0 and StockPiler.AutoGrow.FindRefinablePlantSlotForSeed then
+                        slot, item, bagType = StockPiler.AutoGrow.FindRefinablePlantSlotForSeed(seedUid)
+                    end
+                    if slot > 0 and type(item) == "table" then
+                        LogGrow("refine queue P" .. tostring(plotNum)
+                            .. " plantUid=" .. tostring(plantUid)
+                            .. " seedUid=" .. tostring(seedUid)
+                            .. " seedHave=" .. tostring(seedHave)
+                            .. " emptyPlots=" .. tostring(emptyPlots)
+                            .. " surplus=" .. tostring(surplus)
+                            .. " need=" .. tostring(need))
+                        return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, entry, need, "queue")
+                    end
+                    LogGrow("refine skip P" .. tostring(plotNum)
+                        .. " plantUid=" .. tostring(plantUid)
+                        .. " seedUid=" .. tostring(seedUid)
+                        .. " seedHave=" .. tostring(seedHave)
+                        .. " reason=no plant in bags")
                 end
             end
         end
@@ -1394,7 +1764,7 @@ function StockPiler.AutoGrow.MaybeAutoRefine()
                                 .. " seedHave=" .. tostring(job.seedHave or 0)
                                 .. " surplus=" .. tostring(job.surplus or 0)
                                 .. " uses=" .. tostring(uses))
-                            return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, nil, uses)
+                            return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, nil, uses, "seed-buffer")
                         end
                     end
                 end
@@ -1451,7 +1821,7 @@ function StockPiler.AutoGrow.MaybeAutoRefine()
             LogGrow("refine byproduct need=" .. tostring(extraNeed)
                 .. " uses=" .. tostring(uses)
                 .. " plantUid=" .. tostring(item.uniqueID or 0))
-            return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, entry, uses)
+            return StockPiler.AutoGrow.RefinePlantSlot(slot, item, bagType, entry, uses, "byproduct-resin")
         end
         LogGrow("refine byproduct skip need=" .. tostring(extraNeed)
             .. " reason=no surplus plant in bags")
@@ -1465,10 +1835,17 @@ function StockPiler.AutoGrow.OnRefineComplete(plantUid, seedUid)
     if type(pending) == "table" and StockPiler.NotifyAutoGrowRefined then
         StockPiler.NotifyAutoGrowRefined(plantUid, seedUid)
     end
-    StockPiler.AutoGrow.InvalidatePlantQueue()
+    if StockPiler.AutoGrow._refineBatchActive == true then
+        return
+    end
     if IsEnabled() then
         StockPiler.AutoGrow.MarkAllPlotsWantFill()
-        pcall(StockPiler.AutoGrow.ProcessTick)
+        StockPiler.AutoGrow.MarkRefineDue()
+    end
+    if StockPiler.ScheduleBagWork then
+        StockPiler.ScheduleBagWork(false)
+    else
+        RefreshWatchStatusIfOpen()
     end
 end
 
@@ -1499,27 +1876,52 @@ function StockPiler.AutoGrow.GetPlantQueue()
     if StockPiler.AutoGrow._buildingPlantQueue == true then
         return StockPiler.AutoGrow._cachedPlantQueue or {}
     end
+    -- Harvest burst: keep the last queue until FlushBagWork runs once.
+    if StockPiler.BagWorkPending and StockPiler.BagWorkPending() then
+        return StockPiler.AutoGrow._cachedPlantQueue or {}
+    end
     local snapGen = StockPiler.Inventory and tonumber(StockPiler.Inventory._snapshotGen) or 0
+    -- Reuse the cached queue until something explicitly dirties it.
+    -- Snap gen changes on every plant bag tick and must not rebuild the plan
+    -- once plots are assigned. An empty assignment after /reloadui is often
+    -- the first incomplete bag snap; rebuild when bags change so we do not
+    -- sit idle until AutoGrow is toggled.
     if StockPiler.AutoGrow._plantQueueDirty ~= true
         and type(StockPiler.AutoGrow._cachedPlantQueue) == "table"
-        and tonumber(StockPiler.AutoGrow._queueSnapGen) == snapGen
     then
-        return StockPiler.AutoGrow._cachedPlantQueue
+        local emptyStuck = (tonumber(StockPiler.AutoGrow._queueAssigned) or 0) <= 0
+            and IsEnabled()
+            and StockPiler.AutoGrow.HasEmptyPlotWantingFill()
+            and snapGen ~= (tonumber(StockPiler.AutoGrow._queueSnapGen) or -1)
+        if emptyStuck ~= true then
+            return StockPiler.AutoGrow._cachedPlantQueue
+        end
+        LogGrow("queue retry after empty assign snap=" .. tostring(snapGen))
+        if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+            StockPiler.Planner.InvalidatePlanCache()
+        end
     end
     if not (StockPiler.Planner and StockPiler.Planner.BuildPlan) then
         return {}
     end
     StockPiler.AutoGrow._buildingPlantQueue = true
-    local ok, plan = pcall(StockPiler.Planner.BuildPlan, { refresh = false })
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("GetPlantQueue")
+    end
+    local plan = StockPiler.Planner.BuildPlan({ refresh = false })
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("GetPlantQueue")
+    end
     StockPiler.AutoGrow._buildingPlantQueue = false
-    if not ok then
-        LogGrow("queue build failed err=" .. tostring(plan))
+    if type(plan) ~= "table" then
+        LogGrow("queue build failed")
         return StockPiler.AutoGrow._cachedPlantQueue or {}
     end
     local queue = (type(plan) == "table" and type(plan.queue) == "table") and plan.queue or {}
     StockPiler.AutoGrow._cachedPlantQueue = queue
     StockPiler.AutoGrow._plantQueueDirty = false
     StockPiler.AutoGrow._queueSnapGen = snapGen
+    StockPiler.AutoGrow._queueAssigned = 0
     StockPiler.AutoGrow._lastPlantSkip = nil
     local assigned = 0
     local bufferGrow = 0
@@ -1531,13 +1933,16 @@ function StockPiler.AutoGrow.GetPlantQueue()
             end
         end
     end
-    StockPiler.AutoGrow.EmitGrowTrace(
+    StockPiler.AutoGrow._queueAssigned = assigned
+    LogGrow(
         "queue rebuilt snap=" .. tostring(snapGen)
             .. " assigned=" .. tostring(assigned)
             .. " bufferGrow=" .. tostring(bufferGrow)
-            .. " emptyWantFill=" .. tostring(StockPiler.AutoGrow.CountEmptyPlotsWantingFill()),
-        true
+            .. " emptyWantFill=" .. tostring(StockPiler.AutoGrow.CountEmptyPlotsWantingFill())
     )
+    if StockPiler.AutoGrow.RecordQueueBuildDecision then
+        StockPiler.AutoGrow.RecordQueueBuildDecision(plan)
+    end
     if StockPiler.AutoGrow.LogGrowQueueSummary then
         StockPiler.AutoGrow.LogGrowQueueSummary(plan)
     end
@@ -1633,7 +2038,7 @@ function StockPiler.AutoGrow.RequestAllPlotInfo()
     local cult = CultivationTradeSkill()
     local plots = NumPlots()
     for plotNum = 1, plots do
-        pcall(UpdateCraftingStatus, cult, 4, plotNum)
+        StockPiler.TryCall("UpdateCraftingStatus", UpdateCraftingStatus, cult, 4, plotNum)
     end
 end
 
@@ -1653,10 +2058,10 @@ end
 -- Cheap local read; safe to call on cultivation events. Do not pair with RequestAllPlotInfo in loops.
 function StockPiler.AutoGrow.RefreshHarvestButtonFromCache()
     if StockPilerTabAutoGrow and StockPilerTabAutoGrow.RefreshHarvestButton then
-        pcall(StockPilerTabAutoGrow.RefreshHarvestButton)
+        StockPilerTabAutoGrow.RefreshHarvestButton()
     end
     if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+        StockPilerMacro.RefreshMacroButtonAppearance()
     end
 end
 
@@ -1711,23 +2116,22 @@ function StockPiler.AutoGrow.MaybeWarnLastSeeds(seedUid, seedName, plotNum)
         return
     end
     StockPiler.AutoGrow._lastSeedExhaustWarn[seedUid] = true
-    StockPiler.AutoGrow.EmitGrowTrace(
+    LogGrow(
         "last-seed warning seedUid=" .. tostring(seedUid)
             .. " have=" .. tostring(have)
-            .. " queued=" .. tostring(queued),
-        true
+            .. " queued=" .. tostring(queued)
     )
     if StockPiler.NotifyAutoGrowLastSeeds then
-        pcall(StockPiler.NotifyAutoGrowLastSeeds, seedName, have)
+        StockPiler.NotifyAutoGrowLastSeeds(seedName, have)
     elseif StockPiler.Print then
-        pcall(StockPiler.Print, L"Warning: AutoGrow is planting all remaining seeds ("
+        StockPiler.Print(L"Warning: AutoGrow is planting all remaining seeds ("
             .. towstring(tostring(have)) .. L").")
     end
 end
 
 function StockPiler.AutoGrow.NotifyPlanted(plotNum, entry, reason)
     if StockPiler.NotifyAutoGrowPlanted then
-        pcall(StockPiler.NotifyAutoGrowPlanted, plotNum, entry, reason)
+        StockPiler.NotifyAutoGrowPlanted(plotNum, entry, reason)
         return
     end
     if not (StockPiler.NotifyFeature and StockPiler.StatusMessagesEnabled and StockPiler.StatusMessagesEnabled()) then
@@ -1805,10 +2209,12 @@ function StockPiler.AutoGrow.TryPlantPlot(plotNum, reason)
                 .. " queuedHave=" .. tostring(raw.seedHave or 0)
                 .. " plantable=" .. tostring(raw.seedPlantable or 0)
                 .. " specKey=" .. tostring(raw.specKey or "?")
+            -- Do not invalidate the plan here. That rebuilt BuildPlan every
+            -- second (~1.4s hitch) while waiting for a seed.
         end
         if StockPiler.AutoGrow._lastPlantSkip ~= skipMsg then
             StockPiler.AutoGrow._lastPlantSkip = skipMsg
-            StockPiler.AutoGrow.EmitGrowTrace(skipMsg, true)
+            LogGrow(skipMsg)
         end
         return false
     end
@@ -1829,22 +2235,51 @@ function StockPiler.AutoGrow.TryPlantPlot(plotNum, reason)
 
     local cult = CultivationTradeSkill()
     backpackType = backpackType or CraftingBackpackType()
-    local ok, err = pcall(AddCraftingItem, cult, plotNum, slot, backpackType)
+    -- Engine bag/plot events fire inside AddCraftingItem; arm suppress first.
+    SuppressInventorySideEffects()
+    StockPiler.AutoGrow._pendingPlant[plotNum] = (tonumber(StockPiler.AutoGrow._pendingPlant[plotNum]) or 0) + 1
+    StockPiler.AutoGrow._wantFill[plotNum] = false
+    StockPiler.AutoGrow.MarkAdditiveDue()
+    local ok, err = StockPiler.TryCall("AddCraftingItem", AddCraftingItem, cult, plotNum, slot, backpackType)
     if not ok then
+        StockPiler.AutoGrow._pendingPlant[plotNum] = 0
+        StockPiler.AutoGrow._wantFill[plotNum] = true
         D("AutoGrow AddCraftingItem failed plot=" .. tostring(plotNum) .. " err=" .. tostring(err))
         return false
     end
 
-    SuppressInventorySideEffects()
     StockPiler.AutoGrow.MaybeWarnLastSeeds(seedUid, entry and entry.seedName or seedKey, plotNum)
     StockPiler.AutoGrow.NoteSeedPlanted(seedUid)
     if StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid) <= 0 then
         StockPiler.AutoGrow._lastSeedExhaustWarn[seedUid] = nil
     end
-    StockPiler.AutoGrow._pendingPlant[plotNum] = (tonumber(StockPiler.AutoGrow._pendingPlant[plotNum]) or 0) + 1
-    StockPiler.AutoGrow._wantFill[plotNum] = false
     D("AutoGrow planted plot=" .. tostring(plotNum) .. " seedUid=" .. tostring(seedUid)
         .. " slot=" .. tostring(slot) .. " reason=" .. tostring(reason or ""))
+    do
+        local lines = {
+            "plot=P" .. tostring(plotNum),
+            "seedUid=" .. tostring(seedUid),
+            "seed=" .. ToNarrow(entry.seedName or seedKey),
+            "specKey=" .. tostring(entry.specKey or "?"),
+            "plantUid=" .. tostring(entry.plantUid or 0),
+            "plantable=" .. tostring(entry.seedPlantable or 0),
+            "plantReason=" .. tostring(entry.plantReason or reason or "?"),
+            "effectiveSeedsLeft=" .. tostring(StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)),
+        }
+        local comps = StockPiler.AutoGrow.QueuedPlantCompetitors(plotNum)
+        if #comps > 0 then
+            lines[#lines + 1] = "otherQueued=" .. table.concat(comps, " | ")
+        else
+            lines[#lines + 1] = "otherQueued=(none)"
+        end
+        StockPiler.AutoGrow.RecordDecision(
+            "plant",
+            "P" .. tostring(plotNum) .. " " .. ToNarrow(entry.seedName or seedKey)
+                .. " uid=" .. tostring(seedUid),
+            lines,
+            false
+        )
+    end
     StockPiler.AutoGrow.NotifyPlanted(plotNum, entry, reason)
     return true
 end
@@ -1929,6 +2364,33 @@ function StockPiler.AutoGrow.HasEmptyPlotWantingFill()
     return StockPiler.AutoGrow.CountEmptyPlotsWantingFill() > 0
 end
 
+--- True when a growing plot is missing the additive for its current stage.
+--- Soil = Germination, Watering = Seedling, Nutrient = Flowering.
+function StockPiler.AutoGrow.NeedsCurrentStageAdditive()
+    if not IsEnabled() then
+        return false
+    end
+    if not (StockPiler.Additives and StockPiler.Additives.IsEnabled and StockPiler.Additives.IsEnabled()) then
+        return false
+    end
+    if not (StockPiler.Additives.CultTypeForStage and StockPiler.Additives.PlotHasAdditive) then
+        return false
+    end
+    local plots = NumPlots()
+    for plotNum = 1, plots do
+        if (tonumber(StockPiler.AutoGrow._pendingAdditive[plotNum]) or 0) < 1 then
+            local plotData = StockPiler.AutoGrow._plotCache[plotNum]
+            if type(plotData) == "table" then
+                local cultType = StockPiler.Additives.CultTypeForStage(NormalizeStage(plotData.StageNum))
+                if cultType and not StockPiler.Additives.PlotHasAdditive(plotData, cultType) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 function StockPiler.AutoGrow.TryApplyNextAdditive()
     if not IsEnabled() then
         return false
@@ -1964,15 +2426,16 @@ function StockPiler.AutoGrow.TryApplyNextAdditive()
                         end
                         local cult = CultivationTradeSkill()
                         backpackType = backpackType or CraftingBackpackType()
-                        local ok, err = pcall(AddCraftingItem, cult, plotNum, slot, backpackType)
+                        SuppressInventorySideEffects()
+                        StockPiler.AutoGrow._pendingAdditive[plotNum] =
+                            (tonumber(StockPiler.AutoGrow._pendingAdditive[plotNum]) or 0) + 1
+                        local ok, err = StockPiler.TryCall("AddCraftingItem", AddCraftingItem, cult, plotNum, slot, backpackType)
                         if not ok then
+                            StockPiler.AutoGrow._pendingAdditive[plotNum] = 0
                             D("AutoGrow AddCraftingItem additive failed plot=" .. tostring(plotNum)
                                 .. " err=" .. tostring(err))
                             return false
                         end
-                        SuppressInventorySideEffects()
-                        StockPiler.AutoGrow._pendingAdditive[plotNum] =
-                            (tonumber(StockPiler.AutoGrow._pendingAdditive[plotNum]) or 0) + 1
                         StockPiler.AutoGrow._additiveCursor = (plotNum % plots) + 1
                         local info = StockPiler.Additives.Classify(item)
                         local role = info and info.role or "?"
@@ -1981,7 +2444,7 @@ function StockPiler.AutoGrow.TryApplyNextAdditive()
                             .. " uid=" .. tostring(item.uniqueID)
                             .. " slot=" .. tostring(slot))
                         if StockPiler.NotifyAutoGrowAdditive then
-                            pcall(StockPiler.NotifyAutoGrowAdditive, plotNum, item, info)
+                            StockPiler.NotifyAutoGrowAdditive(plotNum, item, info)
                         end
                         return true
                     end
@@ -1997,6 +2460,10 @@ function StockPiler.AutoGrow.ProcessTick()
         LogTickOnce("disabled")
         return
     end
+    if StockPiler.BagWorkPending and StockPiler.BagWorkPending() then
+        LogTickOnce("bag work pending")
+        return
+    end
     if StockPiler.Brew and StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy() then
         LogTickOnce("brew busy")
         return
@@ -2007,37 +2474,39 @@ function StockPiler.AutoGrow.ProcessTick()
         LogTickOnce("harvest in progress")
         return
     end
-    -- Snapshot harvest bags once when a plot first becomes ready, not every tick.
-    local pendingHarvest = StockPiler.SeedMap and StockPiler.SeedMap._pendingHarvest
-    if StockPiler.SeedMap and StockPiler.SeedMap.RefreshHarvestWatch
-        and type(pendingHarvest) ~= "table"
-    then
-        local ready = StockPiler.AutoGrow.GetReadyHarvestPlots()
-        for i = 1, #ready do
-            local plotNum = ready[i]
-            local plotData = StockPiler.AutoGrow._plotCache[plotNum]
-            if type(plotData) == "table" then
-                pcall(StockPiler.SeedMap.RefreshHarvestWatch, plotNum, plotData)
-                break
-            end
+    local wait = tonumber(StockPiler.AutoGrow._refineWaitTicks) or 0
+    if wait > 0 then
+        StockPiler.AutoGrow._refineWaitTicks = wait - 1
+    end
+    local wantFill = StockPiler.AutoGrow.HasEmptyPlotWantingFill()
+    local additiveDue = StockPiler.AutoGrow._additiveDirty == true
+
+    -- Seed buffer first, then plant. Also after harvest (plot empty sets
+    -- refineDirty). Throttle with refineWaitTicks so we do not rescan every tick.
+    local refineDue = StockPiler.AutoGrow._refineDirty == true
+    if not refineDue and wait <= 0 then
+        refineDue = true
+    end
+    if refineDue then
+        StockPiler.AutoGrow._refineDirty = false
+        StockPiler.AutoGrow._refineWaitTicks = 5
+        if StockPiler.AutoGrow.MaybeAutoRefine() then
+            LogTickOnce("started auto-refine")
+            return
         end
     end
-    if StockPiler.AutoGrow.MaybeAutoRefine() then
-        LogTickOnce("started auto-refine")
-        return
+    if additiveDue then
+        if StockPiler.AutoGrow.TryApplyNextAdditive() then
+            LogTickOnce("applied additive")
+            return
+        end
+        StockPiler.AutoGrow._additiveDirty = false
     end
-    -- Current-stage additives first — grow-time cuts make the window short.
-    if StockPiler.AutoGrow.TryApplyNextAdditive() then
-        LogTickOnce("applied additive")
-        return
-    end
-    if not StockPiler.AutoGrow.HasEmptyPlotWantingFill() then
+
+    if not wantFill then
         local recovered = StockPiler.AutoGrow.RecoverStuckEmptyPlots()
         if recovered > 0 then
-            StockPiler.AutoGrow.EmitGrowTrace(
-                "recovered wantFill on " .. tostring(recovered) .. " empty plots",
-                true
-            )
+            LogGrow("recovered wantFill on " .. tostring(recovered) .. " empty plots")
         end
     end
     if not StockPiler.AutoGrow.HasEmptyPlotWantingFill() then
@@ -2048,9 +2517,8 @@ function StockPiler.AutoGrow.ProcessTick()
         elseif emptyN > 0 then
             if StockPiler.AutoGrow._lastTickTrace ~= "empty no wantFill" then
                 StockPiler.AutoGrow._lastTickTrace = "empty no wantFill"
-                StockPiler.AutoGrow.EmitGrowTrace(
-                    "empty plots=" .. tostring(emptyN) .. " none want fill (pending or blocked)",
-                    true
+                LogGrow(
+                    "empty plots=" .. tostring(emptyN) .. " none want fill (pending or blocked)"
                 )
             end
         else
@@ -2061,6 +2529,9 @@ function StockPiler.AutoGrow.ProcessTick()
     -- One plant per second (GatherButton: do not burst AddCraftingItem on all plots).
     if StockPiler.AutoGrow.TryPlantNextEmptyPlot() then
         StockPiler.AutoGrow._lastTickTrace = nil
+        if StockPiler.AutoGrow.HasEmptyPlotWantingFill() then
+            StockPiler.AutoGrow.MarkRefineDue()
+        end
     else
         if StockPiler.AutoGrow._lastTickTrace ~= "plant no progress" then
             StockPiler.AutoGrow._lastTickTrace = "plant no progress"
@@ -2073,15 +2544,14 @@ function StockPiler.AutoGrow.ProcessTick()
                     end
                 end
             end
-            StockPiler.AutoGrow.EmitGrowTrace(
+            LogGrow(
                 "plant no progress emptyWantFill="
                     .. tostring(StockPiler.AutoGrow.CountEmptyPlotsWantingFill())
                     .. " queueAssigned=" .. tostring(assigned)
-                    .. " brewBusy=" .. tostring(StockPiler.Brew and StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy()),
-                true
+                    .. " brewBusy=" .. tostring(StockPiler.Brew and StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy())
             )
             if StockPiler.Planner and StockPiler.Planner.MaybeNotifyProgressBlockers then
-                pcall(StockPiler.Planner.MaybeNotifyProgressBlockers)
+                StockPiler.Planner.MaybeNotifyProgressBlockers()
             end
         end
     end
@@ -2100,7 +2570,7 @@ function StockPiler.AutoGrow.OnPlotUpdated(plotNum, plotData)
     StockPiler.AutoGrow.NotifyStageChange(plotNum, plotData, stage)
     StockPiler.AutoGrow._plotCache[plotNum] = plotData
     if plotNum == 1 and StockPiler.Inventory and StockPiler.Inventory.EnforceProfessionGates then
-        pcall(StockPiler.Inventory.EnforceProfessionGates)
+        StockPiler.Inventory.EnforceProfessionGates()
     end
 
     local pending = StockPiler.AutoGrow._pendingHarvestNotify
@@ -2125,16 +2595,34 @@ function StockPiler.AutoGrow.OnPlotUpdated(plotNum, plotData)
         and StockPiler.SeedMap
         and StockPiler.SeedMap.RefreshHarvestWatch
     then
-        pcall(StockPiler.SeedMap.RefreshHarvestWatch, plotNum, plotData)
+        StockPiler.SeedMap.RefreshHarvestWatch(plotNum, plotData)
     end
 
     if stage ~= StageEmpty() then
+        local wePlanted = (tonumber(StockPiler.AutoGrow._pendingPlant[plotNum]) or 0) > 0
         StockPiler.AutoGrow._pendingPlant[plotNum] = 0
         StockPiler.AutoGrow._wantFill[plotNum] = false
-        if prevStage == nil or prevStage == StageEmpty() then
+        -- Our own plant must not rebuild the grow plan; other empty plots
+        -- keep their queue assignments.
+        if not wePlanted and (prevStage == nil or prevStage == StageEmpty()) then
             StockPiler.AutoGrow.InvalidatePlantQueue()
             if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-                pcall(StockPiler.Planner.InvalidatePlanCache)
+                StockPiler.Planner.InvalidatePlanCache()
+            end
+        end
+        -- Soil is applied at plant time. Watering and Nutrient only become
+        -- legal at Seedling / Flowering, so re-arm when the stage changes.
+        if IsEnabled()
+            and StockPiler.Additives
+            and StockPiler.Additives.IsEnabled
+            and StockPiler.Additives.IsEnabled()
+            and (prevStage == nil or prevStage ~= stage)
+            and StockPiler.Additives.CultTypeForStage
+            and StockPiler.Additives.PlotHasAdditive
+        then
+            local cultType = StockPiler.Additives.CultTypeForStage(stage)
+            if cultType and not StockPiler.Additives.PlotHasAdditive(plotData, cultType) then
+                StockPiler.AutoGrow.MarkAdditiveDue()
             end
         end
         return
@@ -2142,9 +2630,12 @@ function StockPiler.AutoGrow.OnPlotUpdated(plotNum, plotData)
 
     local becameEmpty = prevStage ~= nil and prevStage ~= StageEmpty()
     if becameEmpty then
-        StockPiler.AutoGrow.InvalidatePlantQueue()
-        if StockPiler.Inventory and StockPiler.Inventory.InvalidateSnapshot then
-            pcall(StockPiler.Inventory.InvalidateSnapshot)
+        if StockPiler.Perf and StockPiler.Perf.Mark then
+            StockPiler.Perf.Mark("plotEmpty")
+        end
+        StockPiler.AutoGrow.MarkRefineDue()
+        if StockPiler.ScheduleBagWork then
+            StockPiler.ScheduleBagWork()
         end
     end
 
@@ -2165,7 +2656,7 @@ function StockPiler.AutoGrow.UpdatePlot(plotNum)
     if plotNum <= 0 or GetCultivationInfo == nil then
         return
     end
-    local ok, plotData = pcall(GetCultivationInfo, plotNum)
+    local ok, plotData = StockPiler.TryCallQuiet("GetCultivationInfo", GetCultivationInfo, plotNum)
     if ok and type(plotData) == "table" then
         StockPiler.AutoGrow.OnPlotUpdated(plotNum, plotData)
     end
@@ -2304,7 +2795,7 @@ end
 --- Structured tooltip rows for cultivation plots.
 function StockPiler.AutoGrow.GetPlotTooltipEntries(refresh)
     if refresh == true and StockPiler.AutoGrow.SyncAllPlots then
-        pcall(StockPiler.AutoGrow.SyncAllPlots)
+        StockPiler.AutoGrow.SyncAllPlots()
     end
     local entries = {}
     local plots = NumPlots()
@@ -2312,7 +2803,7 @@ function StockPiler.AutoGrow.GetPlotTooltipEntries(refresh)
     for plotNum = 1, plots do
         local plotData = CachedPlot(plotNum)
         if type(plotData) ~= "table" and refresh == true and GetCultivationInfo then
-            local ok, data = pcall(GetCultivationInfo, plotNum)
+            local ok, data = StockPiler.TryCallQuiet("GetCultivationInfo", GetCultivationInfo, plotNum)
             if ok and type(data) == "table" then
                 plotData = data
                 StockPiler.AutoGrow._plotCache[plotNum] = data
@@ -2414,7 +2905,7 @@ function StockPiler.AutoGrow.SelectHarvestPlot(manual)
         manual = manual == true,
     }
     if StockPiler.SeedMap and StockPiler.SeedMap.BeginPendingHarvest then
-        pcall(StockPiler.SeedMap.BeginPendingHarvest, plotNum, plotData)
+        StockPiler.SeedMap.BeginPendingHarvest(plotNum, plotData)
     end
     return true
 end
@@ -2430,6 +2921,9 @@ function StockPiler.AutoGrow.PrepareHarvestPlot(manual)
 end
 
 function StockPiler.AutoGrow.ExecuteHarvest(manual)
+    if StockPiler.Perf and StockPiler.Perf.Mark then
+        StockPiler.Perf.Mark("harvestClick")
+    end
     if not StockPiler.AutoGrow.PrepareHarvestPlot(manual) then
         return false
     end
@@ -2438,7 +2932,7 @@ function StockPiler.AutoGrow.ExecuteHarvest(manual)
 
     if WindowGameAction then
         if DoesWindowExist(HARVEST_ACTION_WIN) then
-            local ok = pcall(WindowGameAction, HARVEST_ACTION_WIN)
+            local ok = StockPiler.TryCall("WindowGameAction", WindowGameAction, HARVEST_ACTION_WIN)
             if ok then
                 D("AutoGrow harvest game action plot manual=" .. tostring(manual == true))
                 return true
@@ -2446,7 +2940,7 @@ function StockPiler.AutoGrow.ExecuteHarvest(manual)
         end
         if DoesWindowExist(CULTIVATION_HARVEST_WIN) then
             BindCultivationHarvestAction(CULTIVATION_HARVEST_WIN)
-            local ok = pcall(WindowGameAction, CULTIVATION_HARVEST_WIN)
+            local ok = StockPiler.TryCall("WindowGameAction", WindowGameAction, CULTIVATION_HARVEST_WIN)
             if ok then
                 D("AutoGrow harvest via CultivationWindowHarvest manual=" .. tostring(manual == true))
                 return true
@@ -2455,7 +2949,7 @@ function StockPiler.AutoGrow.ExecuteHarvest(manual)
     end
 
     if PerformCrafting then
-        local ok, err = pcall(PerformCrafting, CultivationTradeSkill(), 1)
+        local ok, err = StockPiler.TryCall("PerformCrafting", PerformCrafting, CultivationTradeSkill(), 1)
         if ok then
             D("AutoGrow harvest via PerformCrafting manual=" .. tostring(manual == true))
             return true
@@ -2473,9 +2967,15 @@ function StockPiler.AutoGrow.TryHarvestNextPlot(manual)
 end
 
 function StockPiler.AutoGrow.OnUpdate(timeElapsed)
+    if StockPiler.Perf and StockPiler.Perf.OnFrame then
+        StockPiler.Perf.OnFrame(timeElapsed)
+    end
+    if StockPiler.FlushBagWorkIfDue then
+        StockPiler.FlushBagWorkIfDue()
+    end
     if StockPiler.Brew and StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy() then
         if StockPiler.Brew.OnUpdate then
-            pcall(StockPiler.Brew.OnUpdate, timeElapsed)
+            StockPiler.Brew.OnUpdate(timeElapsed)
         end
     end
     StockPiler.AutoGrow._updateAccum = (StockPiler.AutoGrow._updateAccum or 0) + (tonumber(timeElapsed) or 0)
@@ -2486,7 +2986,7 @@ function StockPiler.AutoGrow.OnUpdate(timeElapsed)
     DecaySuppressInventorySideEffects()
     StockPiler.AutoGrow.DecayPendingRequests()
     if StockPiler.ProcessDeferredInventoryWork then
-        pcall(StockPiler.ProcessDeferredInventoryWork)
+        StockPiler.ProcessDeferredInventoryWork()
     end
     if StockPiler.AutoGrow._plotsNeedSync == true then
         StockPiler.AutoGrow._plotsNeedSync = false
@@ -2494,6 +2994,9 @@ function StockPiler.AutoGrow.OnUpdate(timeElapsed)
     end
     if IsEnabled() then
         StockPiler.AutoGrow.ProcessTick()
+    end
+    if StockPiler.Buy and StockPiler.Buy.OnTick then
+        StockPiler.Buy.OnTick()
     end
     if StockPiler.AutoGrow._harvestUiDirty == true then
         StockPiler.AutoGrow._harvestUiDirty = false
@@ -2537,27 +3040,32 @@ function StockPiler.AutoGrow.OnCraftingSlotUpdated()
     end
 end
 
+-- Same kick as toggling AutoGrow on: reset caches, fill empty plots, refine.
+function StockPiler.AutoGrow.ResumeAfterLoad()
+    if not IsEnabled() then
+        return
+    end
+    StockPiler.AutoGrow.OnEnabledChanged(true)
+    StockPiler.AutoGrow._updateAccum = TICK_INTERVAL_SEC
+end
+
 function StockPiler.AutoGrow.OnLoadingEnd()
     if StockPiler.Inventory and StockPiler.Inventory.EnforceProfessionGates then
-        pcall(StockPiler.Inventory.EnforceProfessionGates)
+        StockPiler.Inventory.EnforceProfessionGates()
     end
     if StockPiler.SeedMap and StockPiler.SeedMap.EnsureSpecBootstrap then
-        pcall(StockPiler.SeedMap.EnsureSpecBootstrap)
+        StockPiler.SeedMap.EnsureSpecBootstrap()
     end
     if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-        pcall(StockPiler.Planner.InvalidatePlanCache)
+        StockPiler.Planner.InvalidatePlanCache()
     end
     StockPiler.AutoGrow.ResetPlotInfoRequest()
-    if IsEnabled() then
-        StockPiler.AutoGrow.InvalidatePlantQueue()
-        StockPiler.AutoGrow.SyncAllPlots()
-        StockPiler.AutoGrow.MarkAllPlotsWantFill()
-    end
+    StockPiler.AutoGrow.ResumeAfterLoad()
     StockPiler.AutoGrow.RequestPlotInfoOnce()
     StockPiler.AutoGrow._harvestUiDirty = true
     StockPiler.AutoGrow.RefreshHarvestButtonFromCache()
     if StockPilerMacro and StockPilerMacro.UpdateMacro then
-        pcall(StockPilerMacro.UpdateMacro)
+        StockPilerMacro.UpdateMacro()
     end
 end
 
@@ -2592,10 +3100,10 @@ function StockPiler.AutoGrow.SetEnabled(enabled)
         end
     end
     if StockPilerTabAutoGrow and StockPilerTabAutoGrow.Refresh then
-        pcall(StockPilerTabAutoGrow.Refresh)
+        StockPilerTabAutoGrow.Refresh()
     end
     if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+        StockPilerMacro.RefreshMacroButtonAppearance()
     end
     return enabled
 end
@@ -2626,17 +3134,18 @@ function StockPiler.AutoGrow.OnEnabledChanged(enabled)
         StockPiler.AutoGrow._lastNotifiedStage = {}
         StockPiler.AutoGrow.InvalidatePlantQueue()
         if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-            pcall(StockPiler.Planner.InvalidatePlanCache)
+            StockPiler.Planner.InvalidatePlanCache()
         end
         StockPiler.AutoGrow.SyncAllPlots()
         StockPiler.AutoGrow.MarkAllPlotsWantFill()
+        StockPiler.AutoGrow.MarkRefineDue()
         if StockPiler.AutoGrow.ShouldTraceGrow() then
             StockPiler.AutoGrow.DumpGrowPlan({ force = true })
         end
         StockPiler.AutoGrow._harvestUiDirty = true
     else
         if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-            pcall(StockPiler.Planner.InvalidatePlanCache)
+            StockPiler.Planner.InvalidatePlanCache()
         end
         StockPiler.AutoGrow.Stop()
         StockPiler.AutoGrow.RefreshHarvestButtonFromCache()
@@ -2661,21 +3170,16 @@ function StockPiler.AutoGrow.Initialize()
     StockPiler.AutoGrow._initialized = true
     D("AutoGrow Initialize")
     if StockPiler.Inventory and StockPiler.Inventory.EnforceProfessionGates then
-        pcall(StockPiler.Inventory.EnforceProfessionGates)
+        StockPiler.Inventory.EnforceProfessionGates()
     end
     if IsEnabled() then
-        StockPiler.AutoGrow.InvalidatePlantQueue()
-        if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-            pcall(StockPiler.Planner.InvalidatePlanCache)
-        end
-        StockPiler.AutoGrow.SyncAllPlots()
-        StockPiler.AutoGrow.MarkAllPlotsWantFill()
+        StockPiler.AutoGrow.ResumeAfterLoad()
     else
         StockPiler.AutoGrow.Stop()
     end
     StockPiler.AutoGrow.RequestPlotInfoOnce()
     StockPiler.AutoGrow._harvestUiDirty = true
-    pcall(StockPiler.AutoGrow.EnsureHarvestTooltipRows)
+    StockPiler.AutoGrow.EnsureHarvestTooltipRows()
 end
 
 function StockPiler.AutoGrow.Shutdown()

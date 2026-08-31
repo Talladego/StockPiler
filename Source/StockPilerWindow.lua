@@ -65,7 +65,7 @@ function StockPilerWindow.Initialize()
         ButtonSetText(tab.name, tab.label)
     end
 
-    pcall(StockPilerWindow.SelectTab, StockPilerWindow.SelectedTab)
+    StockPilerWindow.SelectTab(StockPilerWindow.SelectedTab)
 end
 
 function StockPilerWindow.OnShow()
@@ -90,9 +90,15 @@ function StockPilerWindow.OnRefresh()
 end
 
 function StockPilerWindow.RefreshActiveTab()
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("RefreshWatch")
+    end
     local tab = StockPilerWindow.Tabs[StockPilerWindow.SelectedTab]
     if tab and tab.refresh then
         tab.refresh()
+    end
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("RefreshWatch")
     end
 end
 

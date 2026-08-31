@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPilerSeedMap - seed/spore resolution via CraftValueTip + learning
+-- StockPilerSeedMap - seed/spore resolution via plant/harvest/refine learning
 ----------------------------------------------------------------
 
 StockPiler.SeedMap = StockPiler.SeedMap or {}
@@ -21,24 +21,84 @@ local BUTCHER_HINTS = {
 }
 
 local function ToNarrow(text)
-    if text == nil then
-        return ""
+    return StockPiler.ToNarrow(text)
+end
+
+--- WAR Lua has no `os` library. GetGameTime is seconds.
+local function NowSec()
+    if type(GetGameTime) == "function" then
+        return tonumber(GetGameTime()) or 0
     end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(text)
+    return 0
 end
 
 local function GetSettings()
     if StockPiler.EnsureSettings then
         return StockPiler.EnsureSettings()
     end
+    if type(StockPiler.Settings) ~= "table" then
+        StockPiler.Settings = {}
+    end
+    if StockPiler.BindAccountIntoSettings then
+        StockPiler.BindAccountIntoSettings(StockPiler.Settings)
+    end
     return StockPiler.Settings
+end
+
+--- Always the Account table for this key (same reference Settings aliases).
+local function AccountTable(key)
+    if StockPiler.ClearAccountTable and type(StockPiler.Account) == "table"
+        and type(StockPiler.Account[key]) ~= "table"
+    then
+        return StockPiler.ClearAccountTable(key)
+    end
+    local a = StockPiler.EnsureAccount and StockPiler.EnsureAccount() or StockPiler.Account
+    if type(a) ~= "table" then
+        a = {}
+        StockPiler.Account = a
+    end
+    if type(a[key]) ~= "table" then
+        a[key] = {}
+    end
+    local s = GetSettings()
+    if type(s) == "table" then
+        s[key] = a[key]
+    end
+    return a[key]
+end
+
+local function ClearAccountTable(key)
+    if StockPiler.ClearAccountTable then
+        return StockPiler.ClearAccountTable(key)
+    end
+    local tbl = AccountTable(key)
+    for k in pairs(tbl) do
+        tbl[k] = nil
+    end
+    return tbl
+end
+
+local function RecordStat(bucket, uid, count, sampled)
+    uid = tonumber(uid) or 0
+    count = tonumber(count) or 0
+    if uid <= 0 then
+        return false
+    end
+    local key = tostring(uid)
+    local row = bucket[key]
+    if type(row) ~= "table" then
+        row = { samples = 0, countSum = 0, last = 0 }
+    end
+    if sampled ~= false and count > 0 then
+        row.samples = (tonumber(row.samples) or 0) + 1
+        row.countSum = (tonumber(row.countSum) or 0) + count
+        row.last = count
+    elseif sampled == false then
+        -- Known pair without a counted sample.
+        row.last = tonumber(row.last) or 0
+    end
+    bucket[key] = row
+    return true
 end
 
 local function CultivationSeedType()
@@ -57,12 +117,27 @@ end
 
 local function NormalizeGrowName(nameNarrow)
     local s = string.lower(nameNarrow or "")
+    s = string.gsub(s, "%s+seed%s+packet$", "")
+    s = string.gsub(s, "%s+spore%s+packet$", "")
     s = string.gsub(s, "%s+seed$", "")
     s = string.gsub(s, "%s+spore$", "")
     s = string.gsub(s, "%s+", " ")
     s = string.gsub(s, "^%s+", "")
     s = string.gsub(s, "%s+$", "")
     return s
+end
+
+--- Harvested plant and its seed share a stem: "Glossy Spumepetal" / "Glossy Spumepetal Seed".
+function StockPiler.SeedMap.GrowNamesRelated(plantName, seedName)
+    local a = NormalizeGrowName(ToNarrow(plantName))
+    local b = NormalizeGrowName(ToNarrow(seedName))
+    if a == "" or b == "" then
+        return false
+    end
+    if a == b then
+        return true
+    end
+    return string.gsub(a, " ", "") == string.gsub(b, " ", "")
 end
 
 local function LooksButchering(nameNarrow)
@@ -81,26 +156,9 @@ local function D(msg)
     end
 end
 
+--- CraftValueTip is no longer used; knowledge comes from planting/harvest/refine.
 function StockPiler.SeedMap.CvtAvailable()
-    if type(CraftItemInfo) == "table"
-        and type(CraftItemInfo.GetSeedsToProduce) == "function"
-        and type(CraftValueTip) == "table"
-        and type(CraftValueTip.SeedList) == "table"
-    then
-        return true
-    end
-    if type(CraftValueTip) == "table" and type(CraftValueTip.SeedList) == "table" then
-        return true
-    end
     return false
-end
-
-local function CvtSeedListEntry(seedUid)
-    seedUid = tonumber(seedUid) or 0
-    if seedUid <= 0 or type(CraftValueTip) ~= "table" or type(CraftValueTip.SeedList) ~= "table" then
-        return nil
-    end
-    return CraftValueTip.SeedList[seedUid]
 end
 
 local function AddUniqueUid(list, seen, uid)
@@ -119,34 +177,20 @@ function StockPiler.SeedMap.GetSeedUidsForPlant(plantUid)
         return uids
     end
 
+    -- Optional live API (not CraftValueTip); never persisted.
     if type(CraftItemInfo) == "table" and type(CraftItemInfo.GetSeedsToProduce) == "function" then
-        local ok, list = pcall(CraftItemInfo.GetSeedsToProduce, plantUid)
+        local ok, list = StockPiler.TryCallQuiet("CraftItemInfo.GetSeedsToProduce", CraftItemInfo.GetSeedsToProduce, plantUid)
         if ok and type(list) == "table" then
             for i = 1, #list do
                 AddUniqueUid(uids, seen, list[i])
             end
         end
-    elseif type(CraftValueTip) == "table" and type(CraftValueTip.SeedList) == "table" then
-        for seedUid, row in pairs(CraftValueTip.SeedList) do
-            if type(row) == "table" and (row[4] == plantUid or row[5] == plantUid) then
-                AddUniqueUid(uids, seen, seedUid)
-            end
-        end
     end
 
-    local s = GetSettings()
-    if type(s.learnedSeedMap) == "table" then
-        local learned = s.learnedSeedMap[tostring(plantUid)]
-        if type(learned) == "table" then
-            AddUniqueUid(uids, seen, learned.seedUid)
-        end
-    end
-    if type(s.seedMap) == "table" then
-        for _, entry in pairs(s.seedMap) do
-            if type(entry) == "table" and tonumber(entry.plantUidCache) == plantUid then
-                AddUniqueUid(uids, seen, entry.seedUidCache)
-            end
-        end
+    local refines = AccountTable("refines")
+    local entry = refines[tostring(plantUid)]
+    if type(entry) == "table" then
+        AddUniqueUid(uids, seen, entry.seedUid)
     end
 
     return uids
@@ -169,17 +213,9 @@ function StockPiler.SeedMap.PickBestSeedUid(plantUid, seedUids)
     end
 
     if type(CraftItemInfo) == "table" and type(CraftItemInfo.GetSeedFromPlant) == "function" then
-        local ok, seedUid = pcall(CraftItemInfo.GetSeedFromPlant, plantUid)
+        local ok, seedUid = StockPiler.TryCallQuiet("CraftItemInfo.GetSeedFromPlant", CraftItemInfo.GetSeedFromPlant, plantUid)
         if ok then
             add(seedUid)
-        end
-    end
-
-    if type(CraftValueTip) == "table" and type(CraftValueTip.SeedList) == "table" then
-        for seedUid, row in pairs(CraftValueTip.SeedList) do
-            if type(row) == "table" and row[4] == plantUid and row[1] == "std" then
-                add(seedUid)
-            end
         end
     end
 
@@ -215,31 +251,17 @@ function StockPiler.SeedMap.GetPlantUidForSeed(seedUid)
         return 0
     end
 
-    if type(CraftValueTip) == "table" and type(CraftValueTip.SeedList) == "table" then
-        local row = CraftValueTip.SeedList[seedUid]
-        if type(row) == "table" then
-            local plantUid = tonumber(row[4]) or tonumber(row[5]) or 0
-            if plantUid > 0 then
-                return plantUid
-            end
-        end
+    local harvested = StockPiler.SeedMap.PrimaryPlantForSeed(seedUid)
+    if harvested > 0 then
+        return harvested
     end
 
-    local s = GetSettings()
-    if type(s.learnedSeedMap) == "table" then
-        for plantKey, learned in pairs(s.learnedSeedMap) do
-            if type(learned) == "table" and tonumber(learned.seedUid) == seedUid then
-                return tonumber(plantKey) or tonumber(learned.plantUid) or 0
-            end
-        end
-    end
-    if type(s.seedMap) == "table" then
-        for _, entry in pairs(s.seedMap) do
-            if type(entry) == "table" and tonumber(entry.seedUidCache) == seedUid then
-                local plantUid = tonumber(entry.plantUidCache) or 0
-                if plantUid > 0 then
-                    return plantUid
-                end
+    local refines = AccountTable("refines")
+    for plantKey, entry in pairs(refines) do
+        if type(entry) == "table" and tonumber(entry.seedUid) == seedUid then
+            local plantUid = tonumber(plantKey) or 0
+            if plantUid > 0 then
+                return plantUid
             end
         end
     end
@@ -254,21 +276,31 @@ function StockPiler.SeedMap.LearnMapping(plantUid, seedUid, source)
         return false
     end
 
-    local s = GetSettings()
-    if type(s.learnedSeedMap) ~= "table" then
-        s.learnedSeedMap = {}
+    if StockPiler.SeedMap.IsResinUid and StockPiler.SeedMap.IsResinUid(plantUid) then
+        return false
     end
-
-    local key = tostring(plantUid)
-    local existing = s.learnedSeedMap[key]
-    if type(existing) == "table" and tonumber(existing.seedUid) == seedUid then
+    if StockPiler.SeedMap.PairLooksLikePlantAndSeed
+        and not StockPiler.SeedMap.PairLooksLikePlantAndSeed(plantUid, seedUid)
+    then
         return false
     end
 
-    s.learnedSeedMap[key] = {
-        seedUid = seedUid,
-        source = source or "learned",
-    }
+    local already = false
+    if source == "harvest" then
+        local grows = AccountTable("grows")
+        local bucket = grows[tostring(seedUid)]
+        already = type(bucket) == "table" and type(bucket[tostring(plantUid)]) == "table"
+        StockPiler.SeedMap.NoteKnownHarvestPair(seedUid, plantUid)
+    else
+        local refines = AccountTable("refines")
+        local entry = refines[tostring(plantUid)]
+        already = type(entry) == "table" and tonumber(entry.seedUid) == seedUid
+        StockPiler.SeedMap.NoteKnownRefinePair(plantUid, seedUid)
+    end
+
+    if already then
+        return false
+    end
     if StockPiler.NotifySeedLearned then
         StockPiler.NotifySeedLearned(plantUid, seedUid, source)
     end
@@ -280,14 +312,10 @@ local function ObservedMatRecord(uid)
     if uid <= 0 then
         return nil
     end
-    local s = GetSettings()
-    if type(s.observedMats) ~= "table" then
-        return nil
+    if StockPiler.Items and StockPiler.Items.Get then
+        return StockPiler.Items.Get(uid)
     end
-    if StockPiler.Inventory and StockPiler.Inventory.ObservedId then
-        return s.observedMats[StockPiler.Inventory.ObservedId(uid)]
-    end
-    return s.observedMats["uid:" .. tostring(uid)]
+    return nil
 end
 
 local function LookupItemData(uid)
@@ -301,24 +329,644 @@ local function LookupItemData(uid)
             return sample
         end
     end
-    if StockPiler.Inventory and type(StockPiler.Inventory._learnedMatData) == "table" then
-        local cached = StockPiler.Inventory._learnedMatData["uid:" .. tostring(uid)]
-        if type(cached) == "table" then
-            return cached
+    local cached = nil
+    if StockPiler.Items and StockPiler.Items.AsItemData then
+        cached = StockPiler.Items.AsItemData(uid)
+    end
+    -- Account rows often had itemType=0 before type was persisted from GameData.type.
+    -- Prefer database when cache type is missing/NONE so CRAFTING checks stay accurate.
+    local cachedType = type(cached) == "table"
+        and (tonumber(cached.type) or tonumber(cached.itemType))
+        or nil
+    if GetDatabaseItemData ~= nil and (cached == nil or cachedType == nil or cachedType == 0) then
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, uid)
+        if ok and type(data) == "table" then
+            return data
         end
     end
-    local obs = ObservedMatRecord(uid)
-    if type(obs) == "table" and type(obs.itemData) == "table" then
-        return obs.itemData
-    end
-    if GetDatabaseItemData == nil then
-        return nil
-    end
-    local ok, data = pcall(GetDatabaseItemData, uid)
-    if ok and type(data) == "table" then
-        return data
+    if type(cached) == "table" then
+        return cached
     end
     return nil
+end
+
+local function UpsertItem(itemData, kindHint)
+    if type(itemData) ~= "table" or not (StockPiler.Items and StockPiler.Items.UpsertFromItemData) then
+        return nil
+    end
+    return StockPiler.Items.UpsertFromItemData(itemData, kindHint)
+end
+
+function StockPiler.SeedMap.PairLooksLikePlantAndSeed(plantUid, seedUid)
+    plantUid = tonumber(plantUid) or 0
+    seedUid = tonumber(seedUid) or 0
+    if plantUid <= 0 or seedUid <= 0 then
+        return false
+    end
+    local plantData = LookupItemData(plantUid)
+    local seedData = LookupItemData(seedUid)
+    if type(plantData) ~= "table" or type(seedData) ~= "table" then
+        return true
+    end
+    if StockPiler.SeedMap.GrowNamesRelated(plantData.name, seedData.name) then
+        return true
+    end
+    D("SeedMap reject unrelated plantUid=" .. tostring(plantUid)
+        .. " seedUid=" .. tostring(seedUid)
+        .. " plant=" .. ToNarrow(plantData.name)
+        .. " seed=" .. ToNarrow(seedData.name))
+    return false
+end
+
+local function ItemNameLooksLikeResin(itemData)
+    local n = string.lower(ToNarrow(itemData and itemData.name))
+    return n ~= "" and string.find(n, "resin", 1, true) ~= nil
+end
+
+--- GameData.ItemTypes.CRAFTING = 34. Live bags use itemData.type; Account cache uses itemType.
+--- Failed harvest trash (e.g. Wilted Wild Weed) is typically NONE (0), not CRAFTING.
+local function CraftingItemType()
+    if GameData and GameData.ItemTypes and GameData.ItemTypes.CRAFTING then
+        return GameData.ItemTypes.CRAFTING
+    end
+    return 34
+end
+
+local function IsCraftingItem(itemData)
+    if type(itemData) ~= "table" then
+        return false
+    end
+    local t = tonumber(itemData.type) or tonumber(itemData.itemType)
+    if t == nil then
+        return false
+    end
+    return t == CraftingItemType()
+end
+
+local function ProductKindForItem(itemData)
+    if type(itemData) ~= "table" then
+        return "other"
+    end
+    if ItemNameLooksLikeResin(itemData) then
+        return "resin"
+    end
+    local cultType = tonumber(itemData.cultivationType) or 0
+    if cultType == CultivationSporeType() then
+        return "spore"
+    end
+    if cultType == CultivationSeedType() then
+        return "seed"
+    end
+    local n = string.lower(ToNarrow(itemData.name))
+    if string.find(n, "spore", 1, true) then
+        return "spore"
+    end
+    if string.find(n, "seed", 1, true) then
+        return "seed"
+    end
+    return "plant"
+end
+
+local function OutcomeAvg(prod)
+    if type(prod) ~= "table" then
+        return 0
+    end
+    local samples = tonumber(prod.samples) or 0
+    if samples > 0 then
+        return (tonumber(prod.countSum) or 0) / samples
+    end
+    return tonumber(prod.last) or 0
+end
+
+local function EnsureGrowsBucket(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return nil
+    end
+    local grows = AccountTable("grows")
+    local key = tostring(seedUid)
+    local bucket = grows[key]
+    if type(bucket) ~= "table" then
+        bucket = {}
+        grows[key] = bucket
+    end
+    return bucket
+end
+
+local function EnsureRefineEntry(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        return nil
+    end
+    local refines = AccountTable("refines")
+    local key = tostring(plantUid)
+    local entry = refines[key]
+    if type(entry) ~= "table" then
+        entry = { seedUid = 0, seedKind = "seed", byproducts = {} }
+        refines[key] = entry
+    end
+    if type(entry.byproducts) ~= "table" then
+        entry.byproducts = {}
+    end
+    return entry
+end
+
+local function StatRowToProduct(uid, kind, row)
+    row = type(row) == "table" and row or {}
+    return {
+        uid = tonumber(uid) or 0,
+        kind = kind or "other",
+        samples = tonumber(row.samples) or 0,
+        countSum = tonumber(row.countSum) or 0,
+        last = tonumber(row.last) or 0,
+    }
+end
+
+local function SortedProductList(list)
+    table.sort(list, function(a, b)
+        local ka = a.kind == "seed" or a.kind == "spore"
+        local kb = b.kind == "seed" or b.kind == "spore"
+        if ka ~= kb then
+            return ka
+        end
+        if (a.kind or "") ~= (b.kind or "") then
+            return tostring(a.kind) < tostring(b.kind)
+        end
+        return (tonumber(a.uid) or 0) < (tonumber(b.uid) or 0)
+    end)
+    return list
+end
+
+--- Seed/spore -> plants gained when that plot is harvested.
+function StockPiler.SeedMap.ObserveHarvest(seedUid, products, sampled)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 or type(products) ~= "table" then
+        return false
+    end
+    local bucket = EnsureGrowsBucket(seedUid)
+    if type(bucket) ~= "table" then
+        return false
+    end
+    local seedData = LookupItemData(seedUid)
+    if type(seedData) == "table" then
+        local kind = ProductKindForItem(seedData)
+        UpsertItem(seedData, (kind == "spore") and "spore" or "seed")
+    end
+    local changed = false
+    for uid, count in pairs(products) do
+        uid = tonumber(uid) or 0
+        count = tonumber(count) or 0
+        if uid > 0 and uid ~= seedUid and not StockPiler.SeedMap.IsResinUid(uid) then
+            local item = LookupItemData(uid)
+            if not IsCraftingItem(item) then
+                -- Ignore harvest trash (Wilted Wild Weed, etc.).
+            else
+                local kind = ProductKindForItem(item)
+                if kind ~= "seed" and kind ~= "spore" and kind ~= "resin" then
+                    -- Multi-plot harvest deltas can mix plants; only keep name-related pairs
+                    -- (e.g. reject Gobswort Spore → Majestic Goldweed).
+                    if type(seedData) == "table" and type(item) == "table"
+                        and not StockPiler.SeedMap.GrowNamesRelated(item.name, seedData.name)
+                    then
+                        D("SeedMap ObserveHarvest skip unrelated plantUid=" .. tostring(uid)
+                            .. " seedUid=" .. tostring(seedUid)
+                            .. " plant=" .. ToNarrow(item.name)
+                            .. " seed=" .. ToNarrow(seedData.name))
+                    elseif RecordStat(bucket, uid, count, sampled ~= false) then
+                        changed = true
+                        if type(item) == "table" then
+                            UpsertItem(item, "mat")
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return changed
+end
+
+--- Record Crafting-chat Critical Success / Failure against a seed grow bucket.
+--- Does not change AutoGrow; used for seed-buffer insight later.
+function StockPiler.SeedMap.RecordHarvestChatCues(seedUid, cues, pending)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return
+    end
+    local bucket = EnsureGrowsBucket(seedUid)
+    if type(bucket) ~= "table" then
+        return
+    end
+    bucket.harvestAttempts = (tonumber(bucket.harvestAttempts) or 0) + 1
+    local critOk = false
+    local critFail = false
+    if type(pending) == "table" then
+        critOk = pending.chatCriticalSuccess == true
+        critFail = pending.chatCriticalFailure == true
+    end
+    if type(cues) == "table" then
+        if cues.criticalSuccess == true then
+            critOk = true
+        end
+        if cues.criticalFailure == true then
+            critFail = true
+        end
+    end
+    if critOk then
+        bucket.chatCriticalSuccess = (tonumber(bucket.chatCriticalSuccess) or 0) + 1
+    end
+    if critFail then
+        bucket.chatCriticalFailure = (tonumber(bucket.chatCriticalFailure) or 0) + 1
+    end
+    D("SeedMap harvest chat seedUid=" .. tostring(seedUid)
+        .. " attempts=" .. tostring(bucket.harvestAttempts)
+        .. " critOk=" .. tostring(critOk)
+        .. " critFail=" .. tostring(critFail))
+end
+
+--- Critical Failure with no bag gain: clear locked harvest watch and record seed lost.
+function StockPiler.SeedMap.CompletePendingHarvestFromChat(cues)
+    local pending = StockPiler.SeedMap._pendingHarvest
+    if type(pending) ~= "table" or pending.locked ~= true then
+        return false
+    end
+    local seedUid = tonumber(pending.seedUid) or 0
+    StockPiler.SeedMap.RecordHarvestChatCues(seedUid, cues, pending)
+    StockPiler.SeedMap._pendingHarvest = nil
+    if StockPiler.CraftChat and StockPiler.CraftChat.TakeCues then
+        StockPiler.CraftChat.TakeCues()
+    end
+    D("SeedMap harvest chat Critical Failure cleared pending seedUid=" .. tostring(seedUid))
+    return true
+end
+
+--- Plant convert -> seed/spore plus extras (Arboreal Resin is expected on every convert).
+function StockPiler.SeedMap.ObserveRefine(plantUid, products, sampled)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 or type(products) ~= "table" then
+        return false
+    end
+    local entry = EnsureRefineEntry(plantUid)
+    if type(entry) ~= "table" then
+        return false
+    end
+    local plantData = LookupItemData(plantUid)
+    if type(plantData) == "table" then
+        UpsertItem(plantData, "mat")
+    end
+    local changed = false
+    for uid, count in pairs(products) do
+        uid = tonumber(uid) or 0
+        count = tonumber(count) or 0
+        if uid > 0 and uid ~= plantUid then
+            local item = LookupItemData(uid)
+            local kind = ProductKindForItem(item)
+            if kind == "seed" or kind == "spore" then
+                local seedName = string.lower(ToNarrow(item and item.name))
+                if string.find(seedName, "packet", 1, true) then
+                    -- Vendor packets are not convert output.
+                elseif StockPiler.SeedMap.PairLooksLikePlantAndSeed(plantUid, uid) then
+                    entry.seedUid = uid
+                    entry.seedKind = kind
+                    changed = true
+                    if type(item) == "table" then
+                        UpsertItem(item, kind)
+                    end
+                end
+            else
+                -- Non-seed convert gain: Arboreal Resin (level-matched to the plant).
+                if RecordStat(entry.byproducts, uid, count, sampled ~= false) then
+                    changed = true
+                    if type(item) == "table" then
+                        UpsertItem(item, "resin")
+                    elseif StockPiler.Items and StockPiler.Items.Upsert then
+                        StockPiler.Items.Upsert(uid, { kind = "resin", uniqueID = uid })
+                    end
+                    if StockPiler.MaterialSpec and type(item) == "table" then
+                        local spec = StockPiler.MaterialSpec.FromItemData(item)
+                        if type(spec) == "table" then
+                            StockPiler.SeedMap.MarkHarvestByproduct(spec, "refine", uid)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return changed
+end
+
+function StockPiler.SeedMap.NoteKnownHarvestPair(seedUid, plantUid)
+    seedUid = tonumber(seedUid) or 0
+    plantUid = tonumber(plantUid) or 0
+    if seedUid <= 0 or plantUid <= 0 then
+        return false
+    end
+    return StockPiler.SeedMap.ObserveHarvest(seedUid, { [plantUid] = 0 }, false)
+end
+
+function StockPiler.SeedMap.NoteKnownRefinePair(plantUid, productUid)
+    plantUid = tonumber(plantUid) or 0
+    productUid = tonumber(productUid) or 0
+    if plantUid <= 0 or productUid <= 0 then
+        return false
+    end
+    return StockPiler.SeedMap.ObserveRefine(plantUid, { [productUid] = 0 }, false)
+end
+
+function StockPiler.SeedMap.HarvestProducts(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    local list = {}
+    if seedUid <= 0 then
+        return list
+    end
+    local grows = AccountTable("grows")
+    local bucket = grows[tostring(seedUid)]
+    if type(bucket) ~= "table" then
+        return list
+    end
+    for plantKey, row in pairs(bucket) do
+        if type(row) == "table" then
+            list[#list + 1] = StatRowToProduct(plantKey, "plant", row)
+        end
+    end
+    return SortedProductList(list)
+end
+
+function StockPiler.SeedMap.RefineProducts(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    local list = {}
+    if plantUid <= 0 then
+        return list
+    end
+    local refines = AccountTable("refines")
+    local entry = refines[tostring(plantUid)]
+    if type(entry) ~= "table" then
+        return list
+    end
+    local seedUid = tonumber(entry.seedUid) or 0
+    if seedUid > 0 then
+        list[#list + 1] = StatRowToProduct(seedUid, entry.seedKind or "seed", {
+            samples = 0,
+            countSum = 0,
+            last = 0,
+        })
+    end
+    if type(entry.byproducts) == "table" then
+        for resinKey, row in pairs(entry.byproducts) do
+            if type(row) == "table" then
+                list[#list + 1] = StatRowToProduct(resinKey, "resin", row)
+            end
+        end
+    end
+    return SortedProductList(list)
+end
+
+function StockPiler.SeedMap.PrimaryPlantForSeed(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    local products = StockPiler.SeedMap.HarvestProducts(seedUid)
+    if #products == 0 then
+        return 0
+    end
+    local seedData = seedUid > 0 and LookupItemData(seedUid) or nil
+    local bestUid = 0
+    local bestSamples = -1
+    for i = 1, #products do
+        local plantUid = tonumber(products[i].uid) or 0
+        if plantUid > 0 then
+            local plantData = LookupItemData(plantUid)
+            if type(seedData) == "table" and type(plantData) == "table"
+                and not StockPiler.SeedMap.GrowNamesRelated(plantData.name, seedData.name)
+            then
+                -- Stale/wrong grows row (mixed harvest learn).
+            else
+                local samples = tonumber(products[i].samples) or 0
+                if samples > bestSamples then
+                    bestSamples = samples
+                    bestUid = plantUid
+                end
+            end
+        end
+    end
+    return bestUid
+end
+
+function StockPiler.SeedMap.IsResinUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return false
+    end
+    if StockPiler.Items and StockPiler.Items.Get then
+        local row = StockPiler.Items.Get(uid)
+        if type(row) == "table" and row.kind == "resin" then
+            return true
+        end
+    end
+    if ItemNameLooksLikeResin(LookupItemData(uid)) then
+        return true
+    end
+    local refines = AccountTable("refines")
+    local key = tostring(uid)
+    for _, entry in pairs(refines) do
+        if type(entry) == "table" and type(entry.byproducts) == "table"
+            and type(entry.byproducts[key]) == "table"
+        then
+            return true
+        end
+    end
+    return false
+end
+
+--- When a recipe has no growable ingredients but needs resin (etc.), pick a plant
+--- to grow and convert. Prefers same-level extenders (Cultivating-only), then any
+--- plantable seed already in bags at that crafting level.
+function StockPiler.SeedMap.FindByproductConvertGrowSpec(skillLevel)
+    skillLevel = tonumber(skillLevel) or 0
+    if skillLevel <= 0 or not StockPiler.MaterialSpec then
+        return nil
+    end
+    local MS = StockPiler.MaterialSpec
+    local bestSpec = nil
+    local bestScore = -1
+    local bestSeedHave = -1
+    local seenPlant = {}
+
+    local function seedHaveOf(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        if seedUid <= 0 then
+            return 0
+        end
+        if StockPiler.AutoGrow and StockPiler.AutoGrow.GetEffectiveSeedCount then
+            return tonumber(StockPiler.AutoGrow.GetEffectiveSeedCount(seedUid)) or 0
+        end
+        if StockPiler.Inventory and StockPiler.Inventory.CountByUniqueId then
+            return tonumber(StockPiler.Inventory.CountByUniqueId(seedUid)) or 0
+        end
+        return 0
+    end
+
+    local function canUseSeed(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        if seedUid <= 0 then
+            return false
+        end
+        if StockPiler.Inventory and StockPiler.Inventory.CanUseUniqueId then
+            return StockPiler.Inventory.CanUseUniqueId(seedUid) == true
+        end
+        return true
+    end
+
+    local function plantSpecForUid(plantUid)
+        plantUid = tonumber(plantUid) or 0
+        if plantUid <= 0 then
+            return nil
+        end
+        local itemData = nil
+        if StockPiler.Inventory and StockPiler.Inventory.CountByUniqueId then
+            local _, sample = StockPiler.Inventory.CountByUniqueId(plantUid)
+            itemData = sample
+        end
+        if type(itemData) ~= "table" then
+            itemData = LookupItemData(plantUid)
+        end
+        if type(itemData) == "table" and MS.FromItemData then
+            local spec = MS.FromItemData(itemData)
+            if type(spec) == "table" then
+                return spec
+            end
+        end
+        if StockPiler.Items and StockPiler.Items.ToSpec then
+            return StockPiler.Items.ToSpec(plantUid)
+        end
+        return nil
+    end
+
+    local function consider(plantUid, seedUid)
+        plantUid = tonumber(plantUid) or 0
+        seedUid = tonumber(seedUid) or 0
+        if plantUid <= 0 or seenPlant[plantUid] == true then
+            return
+        end
+        if StockPiler.SeedMap.IsResinUid(plantUid) then
+            return
+        end
+        if seedUid <= 0 and StockPiler.SeedMap.ResolveSeedForPlantUid then
+            local seed = StockPiler.SeedMap.ResolveSeedForPlantUid(plantUid)
+            if type(seed) == "table" then
+                seedUid = tonumber(seed.uniqueID) or 0
+            end
+        end
+        if seedUid <= 0 then
+            return
+        end
+        local spec = plantSpecForUid(plantUid)
+        if type(spec) ~= "table" then
+            return
+        end
+        if (tonumber(spec.skillLevel) or 0) ~= skillLevel then
+            return
+        end
+        if StockPiler.SeedMap.IsHarvestByproduct
+            and StockPiler.SeedMap.IsHarvestByproduct(spec) == true
+        then
+            return
+        end
+        local role = spec.role or ""
+        local seedHave = seedHaveOf(seedUid)
+        local usable = canUseSeed(seedUid)
+        -- Extenders first (even with 0 seeds); other roles only if a seed is in bags.
+        local score
+        if role == "extender" then
+            score = 300
+            if seedHave > 0 then
+                score = score + 20
+            end
+        elseif seedHave > 0 then
+            score = 100
+        else
+            return
+        end
+        if usable then
+            score = score + 1
+        end
+        seenPlant[plantUid] = true
+        if score > bestScore
+            or (score == bestScore and seedHave > bestSeedHave)
+        then
+            bestScore = score
+            bestSeedHave = seedHave
+            bestSpec = spec
+        end
+    end
+
+    local refines = AccountTable("refines")
+    for plantKey, entry in pairs(refines) do
+        if type(entry) == "table" then
+            consider(tonumber(plantKey), entry.seedUid)
+        end
+    end
+    local grows = AccountTable("grows")
+    for seedKey, plants in pairs(grows) do
+        local seedUid = tonumber(seedKey) or 0
+        if type(plants) == "table" then
+            for plantKey in pairs(plants) do
+                consider(tonumber(plantKey), seedUid)
+            end
+        end
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.ForEachItem then
+        local seedType = CultivationSeedType()
+        local sporeType = CultivationSporeType()
+        StockPiler.Inventory.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            local cultType = tonumber(item.cultivationType) or 0
+            if cultType ~= seedType and cultType ~= sporeType then
+                return
+            end
+            local seedUid = tonumber(item.uniqueID) or 0
+            local plantUid = 0
+            if seedUid > 0 and StockPiler.SeedMap.GetPlantUidForSeed then
+                plantUid = tonumber(StockPiler.SeedMap.GetPlantUidForSeed(seedUid)) or 0
+            end
+            if plantUid > 0 then
+                consider(plantUid, seedUid)
+            end
+        end)
+    end
+    return bestSpec
+end
+
+function StockPiler.SeedMap.PlantsThatYieldResin(resinUid)
+    resinUid = tonumber(resinUid) or 0
+    local plants = {}
+    if resinUid <= 0 then
+        return plants
+    end
+    local refines = AccountTable("refines")
+    local key = tostring(resinUid)
+    for plantKey, entry in pairs(refines) do
+        if type(entry) == "table" and type(entry.byproducts) == "table"
+            and type(entry.byproducts[key]) == "table"
+        then
+            plants[#plants + 1] = tonumber(plantKey) or 0
+        end
+    end
+    return plants
+end
+
+function StockPiler.SeedMap.CountLearnedGrowPairs()
+    local grows = AccountTable("grows")
+    local n = 0
+    for _, plants in pairs(grows) do
+        if type(plants) == "table" then
+            for _, row in pairs(plants) do
+                if type(row) == "table" then
+                    n = n + 1
+                end
+            end
+        end
+    end
+    return n
 end
 
 local function SeedKindFromItem(itemData, seedUid)
@@ -384,10 +1032,9 @@ local function BuildSeedRecord(seedUid, source, plantUid)
         iconNum = tonumber(itemData.iconNum) or 0
     end
 
-    local reaps = false
-    local entry = CvtSeedListEntry(seedUid)
-    if type(entry) == "table" then
-        reaps = entry[1] == "std" and entry[2] == true
+    local asItem = itemData
+    if type(asItem) ~= "table" and StockPiler.Items and StockPiler.Items.AsItemData then
+        asItem = StockPiler.Items.AsItemData(seedUid)
     end
 
     return {
@@ -398,11 +1045,11 @@ local function BuildSeedRecord(seedUid, source, plantUid)
         match = nameNarrow,
         count = count,
         iconNum = iconNum,
-        itemData = itemData or (obs and obs.itemData),
+        itemData = asItem,
         source = source or "unknown",
         seedKind = kind,
         isSpore = isSpore,
-        reaps = reaps,
+        reaps = false,
     }
 end
 
@@ -411,17 +1058,17 @@ local function FindObservedSeed(baseNameNarrow)
     if baseNameNarrow == "" then
         return nil
     end
-    local s = GetSettings()
-    if type(s.observedMats) ~= "table" then
-        return nil
-    end
+    local items = AccountTable("items")
     local seedType = CultivationSeedType()
     local sporeType = CultivationSporeType()
     local best = nil
-    for _, obs in pairs(s.observedMats) do
+    for _, obs in pairs(items) do
         if type(obs) == "table" then
             local cultType = tonumber(obs.cultivationType) or 0
-            if cultType == seedType or cultType == sporeType then
+            local kind = obs.kind
+            if cultType == seedType or cultType == sporeType
+                or kind == "seed" or kind == "spore"
+            then
                 local obsBase = NormalizeGrowName(obs.nameNarrow or ToNarrow(obs.name))
                 if obsBase == baseNameNarrow
                     or string.find(obsBase, baseNameNarrow, 1, true)
@@ -624,13 +1271,11 @@ function StockPiler.SeedMap.ResolveSeedForMaterial(mat, catalogEntry)
         local seedUids = StockPiler.SeedMap.GetSeedUidsForPlant(plantUid)
         local seedUid = StockPiler.SeedMap.PickBestSeedUid(plantUid, seedUids)
         if seedUid > 0 then
-            local source = "cvt"
-            if type(CraftItemInfo) ~= "table" or type(CraftItemInfo.GetSeedsToProduce) ~= "function" then
-                local s = GetSettings()
-                local learned = type(s.learnedSeedMap) == "table" and s.learnedSeedMap[tostring(plantUid)]
-                if type(learned) == "table" and tonumber(learned.seedUid) == seedUid then
-                    source = learned.source or "learned"
-                end
+            local source = "learned"
+            local refines = AccountTable("refines")
+            local entry = refines[tostring(plantUid)]
+            if type(entry) == "table" and tonumber(entry.seedUid) == seedUid then
+                source = "refine"
             end
             local record = BuildSeedRecord(seedUid, source, plantUid)
             if type(record) == "table" then
@@ -654,6 +1299,30 @@ local function IsSeedOrSporeItem(itemData)
     return cultType == CultivationSeedType() or cultType == CultivationSporeType()
 end
 
+-- Plants that convert to seeds are often ct=0 apo mains. Molotov convert
+-- junk (Smoking Pyre Ivy) is also isRefinable with ct=0.
+function StockPiler.SeedMap.ItemLooksLikeRefinablePlant(itemData)
+    if type(itemData) ~= "table" then
+        return false
+    end
+    if itemData.isRefinable ~= true then
+        return false
+    end
+    if IsSeedOrSporeItem(itemData) then
+        return false
+    end
+    if StockPiler.MaterialSpec and StockPiler.MaterialSpec.FromItemData then
+        local spec = StockPiler.MaterialSpec.FromItemData(itemData)
+        local role = spec and spec.role or ""
+        if role == "main" or role == "stabilizer" or role == "goldweed"
+            or role == "extender" or role == "multiplier" or role == "stimulant"
+        then
+            return true
+        end
+    end
+    return false
+end
+
 local function IsPotionBagItem(itemData)
     if type(itemData) ~= "table" then
         return false
@@ -674,7 +1343,8 @@ local function SnapshotCraftingMatCounts()
             return
         end
         for _, item in pairs(bag) do
-            if type(item) == "table" and not IsPotionBagItem(item) then
+            -- Only CRAFTING (34): skip inventory trash like Wilted Wild Weed (NONE).
+            if type(item) == "table" and IsCraftingItem(item) and not IsPotionBagItem(item) then
                 local uid = tonumber(item.uniqueID) or 0
                 if uid > 0 then
                     counts[uid] = (counts[uid] or 0) + ItemStackCount(item)
@@ -683,23 +1353,23 @@ local function SnapshotCraftingMatCounts()
         end
     end
     if DataUtils and type(DataUtils.GetItems) == "function" then
-        local ok, data = pcall(DataUtils.GetItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetItems", DataUtils.GetItems)
         if ok then
             addBag(data)
         end
     elseif type(GetInventoryItemData) == "function" then
-        local ok, data = pcall(GetInventoryItemData)
+        local ok, data = StockPiler.TryCallQuiet("GetInventoryItemData", GetInventoryItemData)
         if ok then
             addBag(data)
         end
     end
     if DataUtils and type(DataUtils.GetCraftingItems) == "function" then
-        local ok, data = pcall(DataUtils.GetCraftingItems)
+        local ok, data = StockPiler.TryCallQuiet("DataUtils.GetCraftingItems", DataUtils.GetCraftingItems)
         if ok then
             addBag(data)
         end
     elseif type(GetCraftingItemData) == "function" then
-        local ok, data = pcall(GetCraftingItemData)
+        local ok, data = StockPiler.TryCallQuiet("GetCraftingItemData", GetCraftingItemData)
         if ok then
             addBag(data)
         end
@@ -717,8 +1387,7 @@ function StockPiler.SeedMap.BeginPendingRefine(itemData)
         StockPiler.SeedMap._pendingRefine = nil
         return
     end
-    local cultType = tonumber(itemData.cultivationType) or 0
-    if cultType == CultivationSeedType() or cultType == CultivationSporeType() then
+    if not StockPiler.SeedMap.ItemLooksLikeRefinablePlant(itemData) then
         StockPiler.SeedMap._pendingRefine = nil
         return
     end
@@ -734,7 +1403,7 @@ function StockPiler.SeedMap.BeginPendingRefine(itemData)
         plantName = ToNarrow(itemData.name),
         expectedSeeds = expected,
         countsBefore = SnapshotCraftingMatCounts(),
-        started = os.time and os.time() or 0,
+        started = NowSec(),
     }
 end
 
@@ -744,7 +1413,7 @@ function StockPiler.SeedMap.MaybeCompletePendingRefine()
         return false
     end
     local started = tonumber(pending.started) or 0
-    local now = os.time and os.time() or 0
+    local now = NowSec()
     if started > 0 and now > 0 and (now - started) > 8 then
         StockPiler.SeedMap._pendingRefine = nil
         return false
@@ -769,11 +1438,11 @@ function StockPiler.SeedMap.MaybeCompletePendingRefine()
         end
     end
 
-    local seedUid = 0
-    local delta = 0
+    local seedUid = tonumber(pending.confirmedSeedUid) or 0
+    local delta = tonumber(pending.confirmedSeedDelta) or 0
     local expectedSeedUid = 0
     local expectedDelta = 0
-    local extras = {}
+    local extras = type(pending.extras) == "table" and pending.extras or {}
 
     for uid, afterCount in pairs(countsAfter) do
         uid = tonumber(uid) or 0
@@ -791,7 +1460,10 @@ function StockPiler.SeedMap.MaybeCompletePendingRefine()
                     expectedSeedUid = uid
                 end
             elseif uid ~= plantUid then
-                extras[uid] = change
+                local prev = tonumber(extras[uid]) or 0
+                if change > prev then
+                    extras[uid] = change
+                end
             end
         end
     end
@@ -804,26 +1476,85 @@ function StockPiler.SeedMap.MaybeCompletePendingRefine()
         return false
     end
 
-    StockPiler.SeedMap._pendingRefine = nil
+    local plantAfter = tonumber(countsAfter[plantUid]) or 0
+    local plantBefore = tonumber(before[plantUid]) or 0
+    if plantAfter >= plantBefore then
+        return false
+    end
 
-    if StockPiler.MaterialSpec then
-        for uid, change in pairs(extras) do
-            local item = LookupItemData(uid)
-            if type(item) == "table" and not IsSeedOrSporeItem(item) then
-                local spec = StockPiler.MaterialSpec.FromItemData(item)
-                if type(spec) == "table" then
-                    StockPiler.SeedMap.MarkHarvestByproduct(spec, "refine", uid)
-                    D("SeedMap refine extra uid=" .. tostring(uid)
-                        .. " +" .. tostring(change)
-                        .. " spec=" .. tostring(StockPiler.MaterialSpec.Key(spec)))
+    -- Seed often lands one inventory event before Arboreal Resin. Hold the
+    -- watch briefly so the byproduct delta is included in the same observe.
+    local hasResin = false
+    for uid, _ in pairs(extras) do
+        local item = LookupItemData(uid)
+        if ItemNameLooksLikeResin(item)
+            or (StockPiler.SeedMap.IsResinUid and StockPiler.SeedMap.IsResinUid(uid))
+            or (type(item) == "table" and not IsSeedOrSporeItem(item))
+        then
+            hasResin = true
+            break
+        end
+    end
+    if not hasResin then
+        if pending.confirmedSeedUid == nil then
+            pending.confirmedSeedUid = seedUid
+            pending.confirmedSeedDelta = delta
+            pending.seedSeenAt = now
+            pending.extras = extras
+            D("SeedMap refine waiting for resin plantUid=" .. tostring(plantUid)
+                .. " seedUid=" .. tostring(seedUid))
+        else
+            pending.extras = extras
+        end
+        local seenAt = tonumber(pending.seedSeenAt) or now
+        if now > 0 and (now - seenAt) < 2.5 then
+            return false
+        end
+        -- Timed out waiting for resin; still record the seed.
+        seedUid = tonumber(pending.confirmedSeedUid) or seedUid
+        delta = tonumber(pending.confirmedSeedDelta) or delta
+    else
+        seedUid = tonumber(pending.confirmedSeedUid) or seedUid
+        delta = tonumber(pending.confirmedSeedDelta) or delta
+        if type(pending.extras) == "table" then
+            for uid, change in pairs(pending.extras) do
+                local cur = tonumber(extras[uid]) or 0
+                if change > cur then
+                    extras[uid] = change
                 end
             end
         end
     end
 
+    StockPiler.SeedMap._pendingRefine = nil
+
+    local refineProducts = { [seedUid] = delta }
+    for uid, change in pairs(extras) do
+        uid = tonumber(uid) or 0
+        change = tonumber(change) or 0
+        if uid > 0 and change > 0 and uid ~= plantUid and uid ~= seedUid then
+            local item = LookupItemData(uid)
+            if not IsSeedOrSporeItem(item) then
+                refineProducts[uid] = change
+                if StockPiler.MaterialSpec and type(item) == "table" then
+                    local spec = StockPiler.MaterialSpec.FromItemData(item)
+                    if type(spec) == "table" then
+                        StockPiler.SeedMap.MarkHarvestByproduct(spec, "refine", uid)
+                        D("SeedMap refine extra uid=" .. tostring(uid)
+                            .. " +" .. tostring(change)
+                            .. " spec=" .. tostring(StockPiler.MaterialSpec.Key(spec)))
+                    end
+                else
+                    D("SeedMap refine extra uid=" .. tostring(uid) .. " +" .. tostring(change))
+                end
+            end
+        end
+    end
+    StockPiler.SeedMap.ObserveRefine(plantUid, refineProducts, true)
+
     local learned = StockPiler.SeedMap.LearnMapping(plantUid, seedUid, "refine")
     if learned and StockPiler.SeedMap.ObserveMatFromRefine then
-        pcall(StockPiler.SeedMap.ObserveMatFromRefine, plantUid, seedUid)
+        StockPiler.SeedMap.ObserveMatFromRefine(plantUid, seedUid)
     end
     return { plantUid = plantUid, seedUid = seedUid, learned = learned }
 end
@@ -842,7 +1573,7 @@ function StockPiler.SeedMap.BeginPendingHarvest(plotNum, plotData)
         plotNum = plotNum,
         seedUid = seedUid,
         countsBefore = SnapshotCraftingMatCounts(),
-        started = os.time and os.time() or 0,
+        started = NowSec(),
         locked = true,
     }
     D("SeedMap harvest watch plot=" .. tostring(plotNum) .. " seedUid=" .. tostring(seedUid))
@@ -856,7 +1587,7 @@ function StockPiler.SeedMap.RefreshHarvestWatchAfterBagChange()
         return
     end
     pending.countsBefore = SnapshotCraftingMatCounts()
-    pending.started = os.time and os.time() or pending.started
+    pending.started = NowSec()
 end
 
 --- Keep a pre-harvest bag snapshot while a plot is grown (GatherButton / other harvesters).
@@ -890,7 +1621,7 @@ function StockPiler.SeedMap.RefreshHarvestWatch(plotNum, plotData)
         seedUid = seedUid > 0 and seedUid or (pending and pending.seedUid) or 0,
         seedsByPlot = seedsByPlot,
         countsBefore = SnapshotCraftingMatCounts(),
-        started = os.time and os.time() or 0,
+        started = NowSec(),
         locked = false,
     }
 end
@@ -898,12 +1629,6 @@ end
 function StockPiler.SeedMap.MaybeCompletePendingHarvest()
     local pending = StockPiler.SeedMap._pendingHarvest
     if type(pending) ~= "table" then
-        return false
-    end
-    local started = tonumber(pending.started) or 0
-    local now = os.time and os.time() or 0
-    if started > 0 and now > 0 and (now - started) > 12 then
-        StockPiler.SeedMap._pendingHarvest = nil
         return false
     end
     local before = pending.countsBefore or {}
@@ -994,14 +1719,34 @@ function StockPiler.SeedMap.MaybeCompletePendingHarvest()
     StockPiler.SeedMap._pendingHarvest = nil
 
     if seedUid > 0 then
-        local learned = StockPiler.SeedMap.LearnMapping(primaryUid, seedUid, "harvest")
-        local plantData = LookupItemData(primaryUid)
-        if type(plantData) == "table" then
-            StockPiler.SeedMap.RegisterFromItem(plantData, seedUid)
+        local harvestProducts = {}
+        for uid, change in pairs(deltas) do
+            uid = tonumber(uid) or 0
+            if uid > 0 and change > 0 and not IsSeedOrSporeItem(LookupItemData(uid))
+                and not StockPiler.SeedMap.IsResinUid(uid)
+                and IsCraftingItem(LookupItemData(uid))
+            then
+                harvestProducts[uid] = change
+            end
         end
-        D("SeedMap harvest plantUid=" .. tostring(primaryUid)
-            .. " seedUid=" .. tostring(seedUid)
-            .. " learned=" .. tostring(learned == true))
+        local chatCues = nil
+        if StockPiler.CraftChat and StockPiler.CraftChat.TakeCues then
+            chatCues = StockPiler.CraftChat.TakeCues()
+        end
+        StockPiler.SeedMap.RecordHarvestChatCues(seedUid, chatCues, pending)
+        StockPiler.SeedMap.ObserveHarvest(seedUid, harvestProducts, true)
+        local primaryData = LookupItemData(primaryUid)
+        if IsCraftingItem(primaryData) and not StockPiler.SeedMap.IsResinUid(primaryUid) then
+            local learned = StockPiler.SeedMap.LearnMapping(primaryUid, seedUid, "harvest")
+            if type(primaryData) == "table" then
+                StockPiler.SeedMap.RegisterFromItem(primaryData, seedUid)
+            end
+            D("SeedMap harvest plantUid=" .. tostring(primaryUid)
+                .. " seedUid=" .. tostring(seedUid)
+                .. " learned=" .. tostring(learned == true)
+                .. " chatCritOk=" .. tostring(pending.chatCriticalSuccess == true)
+                .. " chatCritFail=" .. tostring(pending.chatCriticalFailure == true))
+        end
     end
 
     return true
@@ -1010,119 +1755,54 @@ end
 function StockPiler.SeedMap.ObserveMatFromRefine(plantUid, seedUid)
     plantUid = tonumber(plantUid) or 0
     seedUid = tonumber(seedUid) or 0
-    if StockPiler.Inventory and StockPiler.Inventory.ObserveMat then
-        local plantData = LookupItemData(plantUid)
-        if type(plantData) == "table" then
-            StockPiler.Inventory.ObserveMat(plantData, "refine-plant")
-            StockPiler.SeedMap.RegisterFromItem(plantData, seedUid)
-        end
-        local seedData = LookupItemData(seedUid)
-        if type(seedData) == "table" then
-            StockPiler.Inventory.ObserveMat(seedData, "refine-seed")
-            StockPiler.SeedMap.RegisterFromItem(seedData, plantUid)
-        end
+    local plantData = LookupItemData(plantUid)
+    if type(plantData) == "table" then
+        UpsertItem(plantData, "mat")
+        StockPiler.SeedMap.RegisterFromItem(plantData, seedUid)
+    end
+    local seedData = LookupItemData(seedUid)
+    if type(seedData) == "table" then
+        local kind = ProductKindForItem(seedData)
+        UpsertItem(seedData, (kind == "spore") and "spore" or "seed")
+        StockPiler.SeedMap.RegisterFromItem(seedData, plantUid)
     end
 end
 
 function StockPiler.SeedMap.RegisterSpecLink(plantSpec, seedSpec, seedUid, plantUid, source)
-    if not StockPiler.MaterialSpec or type(plantSpec) ~= "table" or type(seedSpec) ~= "table" then
-        return false
+    plantUid = tonumber(plantUid) or 0
+    seedUid = tonumber(seedUid) or 0
+    if plantUid > 0 and seedUid > 0 then
+        return StockPiler.SeedMap.LearnMapping(plantUid, seedUid, source)
     end
-    local s = GetSettings()
-    if type(s.seedMap) ~= "table" then
-        s.seedMap = {}
-    end
-    if type(s.growProducers) ~= "table" then
-        s.growProducers = {}
-    end
-    local plantKey = StockPiler.MaterialSpec.Key(plantSpec)
-    local seedKey = StockPiler.MaterialSpec.Key(seedSpec)
-    if plantKey == "" or seedKey == "" then
-        return false
-    end
-    local seedEntry = s.seedMap[seedKey]
-    if type(seedEntry) == "table"
-        and type(seedEntry.plantSpecKey) == "string"
-        and seedEntry.plantSpecKey ~= ""
-        and seedEntry.plantSpecKey ~= plantKey
-    then
-        seedKey = plantKey .. ">" .. seedKey
-        seedEntry = s.seedMap[seedKey]
-    end
-    if type(seedEntry) ~= "table" then
-        seedEntry = {
-            plantSpecKey = plantKey,
-            plantSpec = StockPiler.MaterialSpec.Copy(plantSpec),
-            source = source or "learned",
-        }
-    end
-    if seedUid and tonumber(seedUid) > 0 then
-        seedEntry.seedUidCache = tonumber(seedUid)
-    end
-    if plantUid and tonumber(plantUid) > 0 then
-        seedEntry.plantUidCache = tonumber(plantUid)
-    end
-    seedEntry.plantSpecKey = plantKey
-    seedEntry.plantSpec = StockPiler.MaterialSpec.Copy(plantSpec)
-    s.seedMap[seedKey] = seedEntry
-
-    local prod = s.growProducers[plantKey]
-    if type(prod) ~= "table" then
-        prod = { seedSpecKeys = {}, sources = {} }
-    end
-    if type(prod.seedSpecKeys) ~= "table" then
-        prod.seedSpecKeys = {}
-    end
-    if type(prod.sources) ~= "table" then
-        prod.sources = {}
-    end
-    local seen = {}
-    for i = 1, #prod.seedSpecKeys do
-        seen[prod.seedSpecKeys[i]] = true
-    end
-    if not seen[seedKey] then
-        prod.seedSpecKeys[#prod.seedSpecKeys + 1] = seedKey
-    end
-    prod.sources[source or "learned"] = true
-    s.growProducers[plantKey] = prod
-    if tonumber(plantUid) and tonumber(plantUid) > 0
-        and tonumber(seedUid) and tonumber(seedUid) > 0
-    then
-        StockPiler.SeedMap.LearnMapping(plantUid, seedUid, source)
-    end
-    return true
+    return false
 end
 
 function StockPiler.SeedMap.RegisterFromItem(itemData, linkedUid)
-    if type(itemData) ~= "table" or not StockPiler.MaterialSpec then
+    if type(itemData) ~= "table" then
         return false
     end
     local cultType = tonumber(itemData.cultivationType) or 0
-    local spec = StockPiler.MaterialSpec.FromItemData(itemData)
-    if spec == nil then
-        return false
-    end
     local seedType = CultivationSeedType()
     local sporeType = CultivationSporeType()
+    local uid = tonumber(itemData.uniqueID) or 0
+
     if cultType == seedType or cultType == sporeType then
+        UpsertItem(itemData, (cultType == sporeType) and "spore" or "seed")
         local plantUid = tonumber(linkedUid) or 0
-        if plantUid <= 0 and type(CraftValueTip) == "table" and type(CraftValueTip.SeedList) == "table" then
-            local row = CraftValueTip.SeedList[tonumber(itemData.uniqueID) or 0]
-            if type(row) == "table" then
-                plantUid = tonumber(row[4]) or 0
-            end
+        if plantUid > 0 and uid > 0 then
+            return StockPiler.SeedMap.LearnMapping(plantUid, uid, "learned")
         end
-        local plantData = plantUid > 0 and LookupItemData(plantUid) or nil
-        local plantSpec = type(plantData) == "table" and StockPiler.MaterialSpec.FromItemData(plantData)
-            or spec
-        return StockPiler.SeedMap.RegisterSpecLink(plantSpec, spec, itemData.uniqueID, plantUid, "learned")
+        return false
     end
-    local plantRole = spec.role or ""
+
+    local spec = StockPiler.MaterialSpec and StockPiler.MaterialSpec.FromItemData(itemData)
+    local plantRole = type(spec) == "table" and (spec.role or "") or ""
     if itemData.isRefinable == true
         or plantRole == "main" or plantRole == "stabilizer" or plantRole == "goldweed"
         or plantRole == "extender" or plantRole == "multiplier" or plantRole == "stimulant"
     then
-        local plantUid = tonumber(itemData.uniqueID) or 0
+        UpsertItem(itemData, "mat")
+        local plantUid = uid
         local seedUid = tonumber(linkedUid) or 0
         if seedUid <= 0 and plantUid > 0 then
             local seedUids = StockPiler.SeedMap.GetSeedUidsForPlant(plantUid)
@@ -1130,18 +1810,15 @@ function StockPiler.SeedMap.RegisterFromItem(itemData, linkedUid)
         end
         if seedUid > 0 and plantUid > 0 then
             local seedData = LookupItemData(seedUid)
-            local seedSpec = type(seedData) == "table" and StockPiler.MaterialSpec.FromItemData(seedData)
-            if seedSpec == nil then
-                return false
+            if type(seedData) == "table" then
+                local kind = ProductKindForItem(seedData)
+                UpsertItem(seedData, (kind == "spore") and "spore" or "seed")
             end
-            local source = "learned"
-            if tonumber(linkedUid) == nil or tonumber(linkedUid) <= 0 then
-                source = "cvt"
-            end
-            return StockPiler.SeedMap.RegisterSpecLink(spec, seedSpec, seedUid, plantUid, source)
+            return StockPiler.SeedMap.LearnMapping(plantUid, seedUid, "learned")
         end
         if (plantRole == "stabilizer" or plantRole == "goldweed")
             and itemData.isRefinable ~= true
+            and type(spec) == "table"
         then
             StockPiler.SeedMap.MaybeLearnHarvestByproduct(itemData, spec)
         end
@@ -1201,7 +1878,6 @@ function StockPiler.SeedMap.FindPlantUidForSpec(spec)
         return 0
     end
     local MS = StockPiler.MaterialSpec
-    local s = GetSettings()
     local bestUid = 0
 
     -- Bags may also hold butcher substitutes with the same spec (e.g. Zoic Gore
@@ -1254,14 +1930,27 @@ function StockPiler.SeedMap.FindPlantUidForSpec(spec)
         end
     end
 
-    if type(s.learnedRecipes) == "table" then
-        for _, recipe in pairs(s.learnedRecipes) do
-            if type(recipe) == "table" and type(recipe.materials) == "table" then
-                for i = 1, #recipe.materials do
-                    local mat = recipe.materials[i]
-                    if type(mat) == "table" then
-                        considerUid(mat.uniqueID, mat.role)
+    local items = AccountTable("items")
+    for uidKey, row in pairs(items) do
+        if type(row) == "table" and row.kind ~= "seed" and row.kind ~= "spore" and row.kind ~= "resin" then
+            local uid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+            if uid > 0 then
+                if StockPiler.Items and StockPiler.Items.ToSpec and MS.Key then
+                    local itemSpec = StockPiler.Items.ToSpec(uid)
+                    if type(itemSpec) == "table" and MS.Key(itemSpec) == MS.Key(spec) then
+                        if IsCultivatablePlantItem(StockPiler.Items.AsItemData(uid) or row) then
+                            bestUid = uid
+                        end
+                    elseif MS.Matches then
+                        local asItem = StockPiler.Items.AsItemData(uid)
+                        if type(asItem) == "table" and MS.Matches(asItem, spec)
+                            and IsCultivatablePlantItem(asItem)
+                        then
+                            bestUid = uid
+                        end
                     end
+                else
+                    considerUid(uid, row.role)
                 end
             end
         end
@@ -1270,10 +1959,28 @@ function StockPiler.SeedMap.FindPlantUidForSpec(spec)
         return bestUid
     end
 
-    if type(s.observedMats) == "table" then
-        for _, obs in pairs(s.observedMats) do
-            if type(obs) == "table" then
-                considerUid(obs.uniqueID, nil)
+    local grows = AccountTable("grows")
+    for _, plants in pairs(grows) do
+        if type(plants) == "table" then
+            for plantKey, row in pairs(plants) do
+                if type(row) == "table" then
+                    considerUid(plantKey, nil)
+                end
+            end
+        end
+    end
+    if bestUid > 0 then
+        return bestUid
+    end
+
+    local recipes = AccountTable("recipes")
+    for _, recipe in pairs(recipes) do
+        if type(recipe) == "table" and type(recipe.slots) == "table" then
+            for i = 1, #recipe.slots do
+                local slot = recipe.slots[i]
+                if type(slot) == "table" then
+                    considerUid(slot.uid, slot.role)
+                end
             end
         end
     end
@@ -1304,70 +2011,63 @@ function StockPiler.SeedMap.ResolveSeedForPlantUid(plantUid, spec)
     if type(record) ~= "table" then
         return nil
     end
-    if StockPiler.MaterialSpec and spec then
-        local plantData = LookupItemData(plantUid)
-        local seedData = LookupItemData(seedUid)
-        local plantSpec = type(plantData) == "table" and StockPiler.MaterialSpec.FromItemData(plantData, spec.role)
-        local seedSpec = type(seedData) == "table" and StockPiler.MaterialSpec.FromItemData(seedData)
-        if plantSpec and seedSpec then
-            StockPiler.SeedMap.RegisterSpecLink(plantSpec, seedSpec, seedUid, plantUid, "learned")
-        end
-    end
+    StockPiler.SeedMap.LearnMapping(plantUid, seedUid, "learned")
     return record
-end
-
-local function LookupSeedMapEntry(s, plantKey, seedKey)
-    if type(s.seedMap) ~= "table" then
-        return nil, seedKey
-    end
-    local entry = s.seedMap[seedKey]
-    if type(entry) == "table" then
-        return entry, seedKey
-    end
-    local composite = plantKey .. ">" .. seedKey
-    entry = s.seedMap[composite]
-    if type(entry) == "table" then
-        return entry, composite
-    end
-    return nil, seedKey
-end
-
-local function SeedEntryMatchesPlantKey(entry, plantKey)
-    if type(entry) ~= "table" or plantKey == nil or plantKey == "" then
-        return false
-    end
-    return entry.plantSpecKey == plantKey
 end
 
 function StockPiler.SeedMap.CachedPlantUidForSpec(spec)
     if type(spec) ~= "table" or not StockPiler.MaterialSpec then
         return 0
     end
-    local plantKey = StockPiler.MaterialSpec.Key(spec)
+    local MS = StockPiler.MaterialSpec
+    local plantKey = MS.Key(spec)
     if plantKey == "" then
         return 0
     end
-    local s = GetSettings()
-    if type(s.seedMap) == "table" then
-        for _, entry in pairs(s.seedMap) do
-            if type(entry) == "table" and entry.plantSpecKey == plantKey then
-                local uid = tonumber(entry.plantUidCache) or 0
-                if uid > 0 then
-                    return uid
+
+    local function uidMatches(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return false
+        end
+        if StockPiler.Items and StockPiler.Items.ToSpec then
+            local itemSpec = StockPiler.Items.ToSpec(uid)
+            if type(itemSpec) == "table" and MS.Key(itemSpec) == plantKey then
+                return true
+            end
+        end
+        local itemData = LookupItemData(uid)
+        if type(itemData) == "table" and MS.Matches and MS.Matches(itemData, spec) then
+            return true
+        end
+        return false
+    end
+
+    local grows = AccountTable("grows")
+    for _, plants in pairs(grows) do
+        if type(plants) == "table" then
+            for plantUidKey, row in pairs(plants) do
+                if type(row) == "table" and uidMatches(plantUidKey) then
+                    return tonumber(plantUidKey) or 0
                 end
             end
         end
     end
-    local prod = type(s.growProducers) == "table" and s.growProducers[plantKey] or nil
-    if type(prod) == "table" and type(prod.seedSpecKeys) == "table" then
-        for i = 1, #prod.seedSpecKeys do
-            local entry = LookupSeedMapEntry(s, plantKey, prod.seedSpecKeys[i])
-            if type(entry) == "table" then
-                local uid = tonumber(entry.plantUidCache) or 0
-                if uid > 0 then
-                    return uid
-                end
+
+    local items = AccountTable("items")
+    for uidKey, row in pairs(items) do
+        if type(row) == "table" and row.kind ~= "seed" and row.kind ~= "spore" and row.kind ~= "resin" then
+            local uid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+            if uidMatches(uid) then
+                return uid
             end
+        end
+    end
+
+    local refines = AccountTable("refines")
+    for plantKeyUid, entry in pairs(refines) do
+        if type(entry) == "table" and (tonumber(entry.seedUid) or 0) > 0 and uidMatches(plantKeyUid) then
+            return tonumber(plantKeyUid) or 0
         end
     end
     return 0
@@ -1382,41 +2082,9 @@ function StockPiler.SeedMap.FindSeedInBagsForPlantSpec(spec)
         return nil
     end
     local MS = StockPiler.MaterialSpec
-    local plantKey = MS.Key(spec)
-    local s = GetSettings()
     local expectedPlant = StockPiler.SeedMap.CachedPlantUidForSpec(spec)
-    local linkedSeedUids = {}
-    if type(s.seedMap) == "table" then
-        for _, entry in pairs(s.seedMap) do
-            if SeedEntryMatchesPlantKey(entry, plantKey) then
-                local sid = tonumber(entry.seedUidCache) or 0
-                local pid = tonumber(entry.plantUidCache) or 0
-                if sid > 0 then
-                    linkedSeedUids[sid] = pid
-                end
-                if pid > 0 then
-                    expectedPlant = pid
-                end
-            end
-        end
-    end
-    local prod = type(s.growProducers) == "table" and s.growProducers[plantKey] or nil
-    if type(prod) == "table" and type(prod.seedSpecKeys) == "table" then
-        for i = 1, #prod.seedSpecKeys do
-            local entry = LookupSeedMapEntry(s, plantKey, prod.seedSpecKeys[i])
-            -- growProducers can list another plant's composite key (e.g. Smedleycap
-            -- spore on a Hurling fx:1 producer). Never treat that as this spec.
-            if SeedEntryMatchesPlantKey(entry, plantKey) then
-                local sid = tonumber(entry.seedUidCache) or 0
-                local pid = tonumber(entry.plantUidCache) or 0
-                if sid > 0 then
-                    linkedSeedUids[sid] = pid
-                end
-                if pid > 0 then
-                    expectedPlant = pid
-                end
-            end
-        end
+    if expectedPlant <= 0 then
+        expectedPlant = StockPiler.SeedMap.FindPlantUidForSpec(spec)
     end
 
     local bestUid = 0
@@ -1432,17 +2100,21 @@ function StockPiler.SeedMap.FindSeedInBagsForPlantSpec(spec)
         end
         local plantUid = StockPiler.SeedMap.GetPlantUidForSeed(seedUid)
         local ok = false
-        if linkedSeedUids[seedUid] ~= nil then
-            ok = true
-            if plantUid <= 0 then
-                plantUid = linkedSeedUids[seedUid]
-            end
-        elseif expectedPlant > 0 and plantUid == expectedPlant then
+        if expectedPlant > 0 and plantUid == expectedPlant then
             ok = true
         elseif plantUid > 0 and MS.Matches then
             local plantData = LookupItemData(plantUid)
             if type(plantData) == "table" and MS.Matches(plantData, spec) == true then
                 ok = true
+            end
+        end
+        -- Seed name must match the plant it claims to grow (blocks Gobswort→Goldweed).
+        if ok then
+            local plantData = (plantUid > 0 and LookupItemData(plantUid)) or nil
+            if type(plantData) == "table"
+                and not StockPiler.SeedMap.GrowNamesRelated(plantData.name, item.name)
+            then
+                ok = false
             end
         end
         if not ok then
@@ -1462,21 +2134,19 @@ function StockPiler.SeedMap.FindSeedInBagsForPlantSpec(spec)
 end
 
 function StockPiler.SeedMap.RepairFromLearnedRecipes()
-    local s = GetSettings()
     local seen = {}
     local repaired = 0
-    if type(s.learnedRecipes) == "table" then
-        for _, recipe in pairs(s.learnedRecipes) do
-            if type(recipe) == "table" and type(recipe.materials) == "table" then
-                for i = 1, #recipe.materials do
-                    local mat = recipe.materials[i]
-                    if type(mat) == "table" and GROW_REPAIR_ROLES[mat.role] then
-                        local uid = tonumber(mat.uniqueID) or 0
-                        if uid > 0 and not seen[uid] then
-                            seen[uid] = true
-                            if StockPiler.SeedMap.RegisterPlantUid(uid, "learned") then
-                                repaired = repaired + 1
-                            end
+    local recipes = AccountTable("recipes")
+    for _, recipe in pairs(recipes) do
+        if type(recipe) == "table" and type(recipe.slots) == "table" then
+            for i = 1, #recipe.slots do
+                local slot = recipe.slots[i]
+                if type(slot) == "table" and GROW_REPAIR_ROLES[slot.role] then
+                    local uid = tonumber(slot.uid) or 0
+                    if uid > 0 and not seen[uid] then
+                        seen[uid] = true
+                        if StockPiler.SeedMap.RegisterPlantUid(uid, "learned") then
+                            repaired = repaired + 1
                         end
                     end
                 end
@@ -1487,39 +2157,21 @@ function StockPiler.SeedMap.RepairFromLearnedRecipes()
 end
 
 function StockPiler.SeedMap.ResetSpecMaps()
-    local s = GetSettings()
-    s.seedMap = {}
-    s.growProducers = {}
-    StockPiler.SeedMap._specBootstrapDone = false
-    local bootstrapped = StockPiler.SeedMap.EnsureSpecBootstrap() or 0
+    ClearAccountTable("grows")
+    ClearAccountTable("refines")
+    StockPiler.SeedMap._specBootstrapDone = true
     local repaired = StockPiler.SeedMap.RepairFromLearnedRecipes() or 0
     if StockPiler.Trace then
-        StockPiler.Trace("Reset spec maps bootstrap=" .. tostring(bootstrapped)
-            .. " recipeRepair=" .. tostring(repaired))
+        StockPiler.Trace("Reset grow/refine maps recipeRepair=" .. tostring(repaired))
     end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
         StockPiler.AutoGrow.InvalidatePlantQueue()
     end
-    return bootstrapped, repaired
+    return 0, repaired
 end
 
 function StockPiler.SeedMap.ApplyPendingMapReset()
-    local s = GetSettings()
-    if s._seedMapResetPending ~= true then
-        return false
-    end
-    s._seedMapResetPending = nil
-    StockPiler.SeedMap._specBootstrapDone = false
-    local bootstrapped = StockPiler.SeedMap.EnsureSpecBootstrap() or 0
-    local repaired = StockPiler.SeedMap.RepairFromLearnedRecipes() or 0
-    if StockPiler.Trace then
-        StockPiler.Trace("Spec map migration bootstrap=" .. tostring(bootstrapped)
-            .. " recipeRepair=" .. tostring(repaired))
-    end
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
-        StockPiler.AutoGrow.InvalidatePlantQueue()
-    end
-    return true
+    return false
 end
 
 local function SpecHasGoldweedMultiplier(spec)
@@ -1532,17 +2184,54 @@ local function SpecHasGoldweedMultiplier(spec)
     return val ~= nil and val ~= 0
 end
 
-local function SpecHasGrowProducer(spec)
+--- True when a plant matching this spec appears in grows products or has a refine seed.
+local function SpecLinkedToGrowOrRefine(spec)
     if type(spec) ~= "table" or not StockPiler.MaterialSpec then
         return false
     end
-    local key = StockPiler.MaterialSpec.Key(spec)
-    if key == "" then
+    local MS = StockPiler.MaterialSpec
+    local plantKey = MS.Key(spec)
+    if plantKey == "" then
         return false
     end
-    local s = GetSettings()
-    local prod = type(s.growProducers) == "table" and s.growProducers[key]
-    return type(prod) == "table" and type(prod.seedSpecKeys) == "table" and #prod.seedSpecKeys > 0
+
+    local function uidMatches(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return false
+        end
+        if StockPiler.Items and StockPiler.Items.ToSpec then
+            local itemSpec = StockPiler.Items.ToSpec(uid)
+            if type(itemSpec) == "table" and MS.Key(itemSpec) == plantKey then
+                return true
+            end
+        end
+        local itemData = LookupItemData(uid)
+        return type(itemData) == "table" and MS.Matches and MS.Matches(itemData, spec) == true
+    end
+
+    local grows = AccountTable("grows")
+    for _, plants in pairs(grows) do
+        if type(plants) == "table" then
+            for plantUidKey, row in pairs(plants) do
+                if type(row) == "table" and uidMatches(plantUidKey) then
+                    return true
+                end
+            end
+        end
+    end
+
+    local refines = AccountTable("refines")
+    for plantUidKey, entry in pairs(refines) do
+        if type(entry) == "table" and (tonumber(entry.seedUid) or 0) > 0 and uidMatches(plantUidKey) then
+            return true
+        end
+    end
+    return false
+end
+
+local function SpecHasGrowProducer(spec)
+    return SpecLinkedToGrowOrRefine(spec)
 end
 
 function StockPiler.SeedMap.MarkHarvestByproduct(spec, source, uniqueID)
@@ -1550,27 +2239,22 @@ function StockPiler.SeedMap.MarkHarvestByproduct(spec, source, uniqueID)
         return false
     end
     -- Goldweed (and butcher substitutes like Zoic Gore) share +stab/+multiplier.
-    -- Resin convert extras do not. Never let those specs occupy harvestByproducts.
+    -- Resin convert extras do not.
     if SpecHasGoldweedMultiplier(spec) or SpecHasGrowProducer(spec) then
         return false
     end
-    local key = StockPiler.MaterialSpec.Key(spec)
-    if key == "" then
+    uniqueID = tonumber(uniqueID) or 0
+    if uniqueID <= 0 then
         return false
     end
-    local s = GetSettings()
-    if type(s.harvestByproducts) ~= "table" then
-        s.harvestByproducts = {}
+    local itemData = LookupItemData(uniqueID)
+    if type(itemData) == "table" then
+        UpsertItem(itemData, "resin")
+    elseif StockPiler.Items and StockPiler.Items.Upsert then
+        StockPiler.Items.Upsert(uniqueID, { kind = "resin" })
     end
-    local existing = s.harvestByproducts[key]
-    s.harvestByproducts[key] = {
-        source = source or "learned",
-        uniqueID = tonumber(uniqueID) or 0,
-        role = spec.role,
-    }
-    if existing == nil then
-        D("SeedMap harvest byproduct " .. key .. " source=" .. tostring(source or "learned"))
-    end
+    D("SeedMap harvest byproduct uid=" .. tostring(uniqueID)
+        .. " source=" .. tostring(source or "learned"))
     return true
 end
 
@@ -1578,20 +2262,51 @@ function StockPiler.SeedMap.IsHarvestByproduct(spec)
     if type(spec) ~= "table" or not StockPiler.MaterialSpec then
         return false
     end
-    local key = StockPiler.MaterialSpec.Key(spec)
+    local MS = StockPiler.MaterialSpec
+    local key = MS.Key(spec)
     if key == "" then
         return false
     end
-    local s = GetSettings()
-    if type(s.harvestByproducts) ~= "table" or type(s.harvestByproducts[key]) ~= "table" then
-        return false
-    end
-    -- Stale marks: cultivated goldweed (or a grow-mapped plant) was stored as resin.
     if SpecHasGoldweedMultiplier(spec) or SpecHasGrowProducer(spec) then
-        s.harvestByproducts[key] = nil
         return false
     end
-    return true
+
+    local function uidMatchesSpec(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return false
+        end
+        if StockPiler.Items and StockPiler.Items.ToSpec then
+            local itemSpec = StockPiler.Items.ToSpec(uid)
+            if type(itemSpec) == "table" and MS.Key(itemSpec) == key then
+                return true
+            end
+        end
+        local itemData = LookupItemData(uid)
+        return type(itemData) == "table" and MS.Matches and MS.Matches(itemData, spec) == true
+    end
+
+    local items = AccountTable("items")
+    for uidKey, row in pairs(items) do
+        if type(row) == "table" and row.kind == "resin" then
+            local uid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+            if uidMatchesSpec(uid) then
+                return true
+            end
+        end
+    end
+
+    local refines = AccountTable("refines")
+    for _, entry in pairs(refines) do
+        if type(entry) == "table" and type(entry.byproducts) == "table" then
+            for resinKey, _ in pairs(entry.byproducts) do
+                if uidMatchesSpec(resinKey) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 --- Seedless, non-refinable stabilizer seen on a learned recipe (no name matching).
@@ -1645,7 +2360,11 @@ function StockPiler.SeedMap.MaybeLearnHarvestByproduct(itemData, spec)
             return false
         end
     end
-    return StockPiler.SeedMap.MarkHarvestByproduct(spec, "learned", uid)
+    -- Name-like resin, or treat seedless stabilizer as resin byproduct.
+    if ItemNameLooksLikeResin(itemData) or role == "stabilizer" then
+        return StockPiler.SeedMap.MarkHarvestByproduct(spec, "learned", uid)
+    end
+    return false
 end
 
 function StockPiler.SeedMap.IsGrowableSpec(spec)
@@ -1656,22 +2375,10 @@ function StockPiler.SeedMap.IsGrowableSpec(spec)
     if role == "container" then
         return false
     end
-    local plantKey = StockPiler.MaterialSpec.Key(spec)
-    if plantKey == "" then
-        return false
-    end
-    local s = GetSettings()
-    if type(s.growProducers) == "table" then
-        local prod = s.growProducers[plantKey]
-        if type(prod) == "table" and type(prod.seedSpecKeys) == "table" and #prod.seedSpecKeys > 0 then
-            return true
-        end
-    end
     if StockPiler.SeedMap.IsHarvestByproduct(spec) then
         return false
     end
-    return role == "main" or role == "stabilizer" or role == "goldweed"
-        or role == "extender" or role == "multiplier" or role == "stimulant"
+    return SpecLinkedToGrowOrRefine(spec)
 end
 
 function StockPiler.SeedMap.ResolveSeedForSpec(spec)
@@ -1709,58 +2416,6 @@ function StockPiler.SeedMap.ResolveSeedForSpec(spec)
         end
     end
 
-    local plantKey = MS.Key(spec)
-    local s = GetSettings()
-    local prod = type(s.growProducers) == "table" and s.growProducers[plantKey] or nil
-    local fallback = nil
-    if type(prod) == "table" and type(prod.seedSpecKeys) == "table" then
-        for i = 1, #prod.seedSpecKeys do
-            local seedKey = prod.seedSpecKeys[i]
-            local seedEntry = LookupSeedMapEntry(s, plantKey, seedKey)
-            if type(seedEntry) == "table" then
-                local cachedPlantUid = tonumber(seedEntry.plantUidCache) or 0
-                if not SeedEntryMatchesPlantKey(seedEntry, plantKey) then
-                    seedEntry = nil
-                elseif cachedPlantUid > 0 and MS.Matches then
-                    local plantData = LookupItemData(cachedPlantUid)
-                    if type(plantData) == "table" then
-                        local liveSpec = MS.FromItemData(plantData, spec.role)
-                        local comparable = type(liveSpec) == "table"
-                            and liveSpec.incomplete ~= true
-                            and ((tonumber(liveSpec.tradeSkill) or 0) > 0
-                                or (tonumber(liveSpec.slotType) or 0) > 0)
-                        if comparable and not MS.Matches(plantData, spec) then
-                            seedEntry = nil
-                        end
-                    end
-                end
-            end
-            if type(seedEntry) == "table" then
-                local seedUid = tonumber(seedEntry.seedUidCache) or 0
-                local count = 0
-                local sample = nil
-                if seedUid > 0 and StockPiler.Inventory and StockPiler.Inventory.CountByUniqueId then
-                    count, sample = StockPiler.Inventory.CountByUniqueId(seedUid)
-                end
-                local record = {
-                    uniqueID = seedUid,
-                    plantUid = tonumber(seedEntry.plantUidCache) or 0,
-                    count = count,
-                    name = sample and sample.name or MS.Label(seedEntry.plantSpec or spec),
-                    nameNarrow = ToNarrow(MS.Label(seedEntry.plantSpec or spec)),
-                    source = seedEntry.source or "spec",
-                    specKey = seedKey,
-                }
-                if count > 0 then
-                    return record
-                end
-                if seedUid > 0 and fallback == nil then
-                    fallback = record
-                end
-            end
-        end
-    end
-
     local named = StockPiler.SeedMap.ResolveSeedForMaterial({
         uniqueID = plantUid > 0 and plantUid or nil,
         nameNarrow = ToNarrow(MS.Label(spec)),
@@ -1769,55 +2424,315 @@ function StockPiler.SeedMap.ResolveSeedForSpec(spec)
     if type(named) == "table" and (tonumber(named.count) or 0) > 0 then
         return named
     end
-    return fallback or named
+    return named
 end
 
 function StockPiler.SeedMap.BootstrapSpecMap()
-    if type(CraftValueTip) ~= "table" or type(CraftValueTip.SeedList) ~= "table" then
-        return 0
-    end
-    if not StockPiler.MaterialSpec then
-        return 0
-    end
-    if type(GetDatabaseItemData) ~= "function" then
-        return 0
-    end
-    local n = 0
-    for seedUid, row in pairs(CraftValueTip.SeedList) do
-        if type(row) == "table" then
-            local plantUid = tonumber(row[4]) or 0
-            if plantUid > 0 then
-                local okSeed, seedData = pcall(LookupItemData, seedUid)
-                local okPlant, plantData = pcall(LookupItemData, plantUid)
-                if okSeed and okPlant
-                    and type(seedData) == "table"
-                    and type(plantData) == "table"
-                then
-                    local seedSpec = StockPiler.MaterialSpec.FromItemData(seedData)
-                    local plantSpec = StockPiler.MaterialSpec.FromItemData(plantData)
-                    if seedSpec and plantSpec
-                        and StockPiler.SeedMap.RegisterSpecLink(plantSpec, seedSpec, seedUid, plantUid, "cvt")
+    return 0
+end
+
+function StockPiler.SeedMap.ForgetUnrelatedLearnedMaps()
+    local dropped = 0
+
+    local grows = AccountTable("grows")
+    for seedKey, plants in pairs(grows) do
+        if type(plants) == "table" then
+            local seedUid = tonumber(seedKey) or 0
+            local seedData = seedUid > 0 and LookupItemData(seedUid) or nil
+            for plantKey, row in pairs(plants) do
+                if type(row) == "table" then
+                    local plantUid = tonumber(plantKey) or 0
+                    local plantData = plantUid > 0 and LookupItemData(plantUid) or nil
+                    local resinPlant = StockPiler.SeedMap.IsResinUid and StockPiler.SeedMap.IsResinUid(plantUid)
+                    if resinPlant
+                        or (type(plantData) == "table" and type(seedData) == "table"
+                            and not StockPiler.SeedMap.GrowNamesRelated(plantData.name, seedData.name))
                     then
-                        n = n + 1
+                        plants[plantKey] = nil
+                        dropped = dropped + 1
+                        D("SeedMap forgot unrelated grow plantUid=" .. tostring(plantUid)
+                            .. " seedUid=" .. tostring(seedUid))
                     end
+                end
+            end
+            if next(plants) == nil then
+                grows[seedKey] = nil
+            end
+        end
+    end
+
+    local refines = AccountTable("refines")
+    for plantKey, entry in pairs(refines) do
+        if type(entry) == "table" then
+            local plantUid = tonumber(plantKey) or 0
+            local seedUid = tonumber(entry.seedUid) or 0
+            if plantUid > 0 and seedUid > 0 then
+                local plantData = LookupItemData(plantUid)
+                local seedData = LookupItemData(seedUid)
+                local resinPlant = StockPiler.SeedMap.IsResinUid and StockPiler.SeedMap.IsResinUid(plantUid)
+                if resinPlant
+                    or (type(plantData) == "table" and type(seedData) == "table"
+                        and not StockPiler.SeedMap.GrowNamesRelated(plantData.name, seedData.name))
+                then
+                    entry.seedUid = 0
+                    entry.seedKind = nil
+                    dropped = dropped + 1
+                    D("SeedMap forgot unrelated refine plantUid=" .. tostring(plantUid)
+                        .. " seedUid=" .. tostring(seedUid))
                 end
             end
         end
     end
-    return n
+    return dropped
+end
+
+local function OutcomeItemName(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return "?"
+    end
+    local data = LookupItemData(uid)
+    local name = ToNarrow(data and data.name)
+    if name ~= "" then
+        return name
+    end
+    if StockPiler.ItemDisplayName then
+        name = ToNarrow(StockPiler.ItemDisplayName(uid, nil))
+        if name ~= "" then
+            return name
+        end
+    end
+    return tostring(uid)
+end
+
+local function FormatOutcomeQty(prod)
+    if type(prod) ~= "table" then
+        return ""
+    end
+    if (tonumber(prod.samples) or 0) > 0 then
+        return string.format("%.1fx ", OutcomeAvg(prod))
+    end
+    if (tonumber(prod.last) or 0) > 0 then
+        return tostring(prod.last) .. "x "
+    end
+    return ""
+end
+
+local function FormatOutcomeProducts(list)
+    local parts = {}
+    for i = 1, #list do
+        local prod = list[i]
+        local uid = tonumber(prod.uid) or 0
+        parts[#parts + 1] = FormatOutcomeQty(prod)
+            .. OutcomeItemName(uid)
+            .. " (" .. tostring(uid) .. ")"
+    end
+    if #parts == 0 then
+        return "(none)"
+    end
+    return table.concat(parts, ", ")
+end
+
+local function DumpGrowsToChat(chatMax)
+    local grows = AccountTable("grows")
+    local rows = {}
+    for seedKey, plants in pairs(grows) do
+        if type(plants) == "table" then
+            local seedUid = tonumber(seedKey) or 0
+            local products = StockPiler.SeedMap.HarvestProducts(seedUid)
+            rows[#rows + 1] = {
+                uid = seedUid,
+                name = OutcomeItemName(seedUid),
+                products = products,
+            }
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.name ~= b.name then
+            return string.lower(a.name) < string.lower(b.name)
+        end
+        return (a.uid or 0) < (b.uid or 0)
+    end)
+    local header = "Grows (seed -> plants): " .. tostring(#rows)
+    D("SeedMap dump " .. header)
+    if StockPiler.Print then
+        StockPiler.Print(towstring(header))
+    end
+    chatMax = tonumber(chatMax) or 30
+    for i = 1, #rows do
+        local row = rows[i]
+        local line = row.name .. " (" .. tostring(row.uid) .. ") -> "
+            .. FormatOutcomeProducts(row.products)
+        D("SeedMap " .. line)
+        if i <= chatMax and StockPiler.Print then
+            StockPiler.Print(towstring(line))
+        end
+    end
+    if #rows > chatMax and StockPiler.Print then
+        StockPiler.Print(L"... " .. towstring(tostring(#rows - chatMax))
+            .. L" more written to uilog.log")
+    end
+    return #rows
+end
+
+local function DumpRefinesToChat(chatMax)
+    local refines = AccountTable("refines")
+    local rows = {}
+    for plantKey, entry in pairs(refines) do
+        if type(entry) == "table" then
+            local plantUid = tonumber(plantKey) or 0
+            rows[#rows + 1] = {
+                uid = plantUid,
+                name = OutcomeItemName(plantUid),
+                products = StockPiler.SeedMap.RefineProducts(plantUid),
+            }
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.name ~= b.name then
+            return string.lower(a.name) < string.lower(b.name)
+        end
+        return (a.uid or 0) < (b.uid or 0)
+    end)
+    local header = "Refines (plant -> seed + extras): " .. tostring(#rows)
+    D("SeedMap dump " .. header)
+    if StockPiler.Print then
+        StockPiler.Print(towstring(header))
+    end
+    chatMax = tonumber(chatMax) or 30
+    for i = 1, #rows do
+        local row = rows[i]
+        local line = row.name .. " (" .. tostring(row.uid) .. ") -> "
+            .. FormatOutcomeProducts(row.products)
+        D("SeedMap " .. line)
+        if i <= chatMax and StockPiler.Print then
+            StockPiler.Print(towstring(line))
+        end
+    end
+    if #rows > chatMax and StockPiler.Print then
+        StockPiler.Print(L"... " .. towstring(tostring(#rows - chatMax))
+            .. L" more written to uilog.log")
+    end
+    return #rows
+end
+
+function StockPiler.SeedMap.DumpToChat()
+    local growN = DumpGrowsToChat(25)
+    local refineN = DumpRefinesToChat(25)
+    return growN + refineN
+end
+
+--- Prefer engine/bag type; skip Account AsItemData (often itemType=0 until relearned).
+local function LiveItemType(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.CountByUniqueId then
+        local _, sample = StockPiler.Inventory.CountByUniqueId(uid)
+        if type(sample) == "table" then
+            local t = tonumber(sample.type) or tonumber(sample.itemType)
+            if t ~= nil then
+                return t
+            end
+        end
+    end
+    if GetDatabaseItemData ~= nil then
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, uid)
+        if ok and type(data) == "table" then
+            return tonumber(data.type) or tonumber(data.itemType)
+        end
+    end
+    return nil
+end
+
+--- Drop grow products that are not ItemTypes.CRAFTING (cleans Wilted Wild Weed, etc.).
+function StockPiler.SeedMap.PruneNonCraftingGrowProducts()
+    local dropped = 0
+    local grows = AccountTable("grows")
+    for seedKey, plants in pairs(grows) do
+        if type(plants) == "table" then
+            for plantKey, row in pairs(plants) do
+                if type(row) == "table" then
+                    local plantUid = tonumber(plantKey) or 0
+                    local t = LiveItemType(plantUid)
+                    if t ~= nil and t ~= CraftingItemType() then
+                        plants[plantKey] = nil
+                        dropped = dropped + 1
+                        D("SeedMap pruned non-crafting grow plantUid=" .. tostring(plantUid)
+                            .. " seedUid=" .. tostring(seedKey)
+                            .. " type=" .. tostring(t))
+                    end
+                end
+            end
+            if next(plants) == nil then
+                grows[seedKey] = nil
+            end
+        end
+    end
+    return dropped
+end
+
+--- Remove harvest-trash leftovers that landed in Account.items (e.g. Wilted Wild Weed).
+function StockPiler.SeedMap.PruneNonCraftingItemOrphans()
+    local dropped = 0
+    if not (StockPiler.Items and StockPiler.Items.Get) then
+        return 0
+    end
+    local items = AccountTable("items")
+    local remove = {}
+    for uidKey, row in pairs(items) do
+        if type(row) == "table" then
+            local uid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+            local t = LiveItemType(uid)
+            local cachedType = tonumber(row.itemType)
+            local knownType = t
+            if knownType == nil and cachedType ~= nil and cachedType > 0 then
+                knownType = cachedType
+            end
+            -- Wilted-style trash: non-crafting, never a recipe/grow/refine actor.
+            local name = string.lower(ToNarrow(row.nameNarrow or row.name))
+            local looksWilted = string.find(name, "wilted", 1, true) ~= nil
+            if looksWilted or (knownType ~= nil and knownType ~= CraftingItemType()
+                and row.kind == "mat" and (tonumber(row.skillReq) or 0) == 0
+                and (row.role == "container" or row.role == "ingredient"))
+            then
+                -- Don't drop real vials/containers used in recipes.
+                local inRecipe = false
+                local recipes = AccountTable("recipes")
+                for _, recipe in pairs(recipes) do
+                    if type(recipe) == "table" and type(recipe.slots) == "table" then
+                        for _, slot in pairs(recipe.slots) do
+                            if type(slot) == "table" and (tonumber(slot.uid) or 0) == uid then
+                                inRecipe = true
+                                break
+                            end
+                        end
+                    end
+                    if inRecipe then
+                        break
+                    end
+                end
+                if not inRecipe then
+                    remove[#remove + 1] = uidKey
+                end
+            end
+        end
+    end
+    for i = 1, #remove do
+        items[remove[i]] = nil
+        dropped = dropped + 1
+        D("SeedMap pruned non-crafting item orphan uid=" .. tostring(remove[i]))
+    end
+    return dropped
 end
 
 function StockPiler.SeedMap.EnsureSpecBootstrap()
-    if StockPiler.SeedMap._specBootstrapDone == true then
-        return 0
-    end
     StockPiler.SeedMap._specBootstrapDone = true
-    local ok, n = pcall(StockPiler.SeedMap.BootstrapSpecMap)
-    if ok and StockPiler.Trace then
-        StockPiler.Trace("SeedMap CVT bootstrap entries=" .. tostring(n or 0))
-    elseif ok and StockPiler.D then
-        StockPiler.D("SeedMap spec bootstrap entries=" .. tostring(n or 0))
-    end
-    return ok and n or 0
+    StockPiler.SeedMap.PruneNonCraftingGrowProducts()
+    StockPiler.SeedMap.PruneNonCraftingItemOrphans()
+    -- Drop mixed-harvest pairs (e.g. Gobswort Spore → Majestic Goldweed).
+    StockPiler.SeedMap.ForgetUnrelatedLearnedMaps()
+    return 0
 end
 

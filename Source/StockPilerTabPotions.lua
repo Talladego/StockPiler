@@ -11,29 +11,32 @@ local ICON_SCALE = 0.34
 local SORT_IDS = {
     [1] = "name",
     [2] = "effect",
-    [3] = "rank",
-    [4] = "buff",
-    [5] = "duration",
-    [6] = "have",
-    [7] = "watch",
+    [3] = "power",
+    [4] = "stability",
+    [5] = "superCrit",
+    [6] = "yield",
+    [7] = "have",
+    [8] = "watch",
 }
 
 local SORT_HEADERS = {
     watch = "SPTabPotionsSortWatch",
     name = "SPTabPotionsSortName",
     effect = "SPTabPotionsSortEffect",
-    rank = "SPTabPotionsSortRank",
-    buff = "SPTabPotionsSortBuff",
-    duration = "SPTabPotionsSortDuration",
+    power = "SPTabPotionsSortPower",
+    stability = "SPTabPotionsSortStability",
+    superCrit = "SPTabPotionsSortSuperCrit",
+    yield = "SPTabPotionsSortYield",
     have = "SPTabPotionsSortHave",
 }
 
 local SORT_HEADER_LABELS = {
-    name = L"Potion",
+    name = L"Name",
     effect = L"Effect",
-    rank = L"Rank",
-    buff = L"Buff",
-    duration = L"Dur",
+    power = L"Power",
+    stability = L"Stability",
+    superCrit = L"Super-Crit",
+    yield = L"Yield",
     have = L"Stock",
 }
 
@@ -53,17 +56,7 @@ local EFFECT_LABELS = {
 }
 
 local function ToNarrow(text)
-    if text == nil then
-        return ""
-    end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(text)
+    return StockPiler.ToNarrow(text)
 end
 
 local function GetSettings()
@@ -131,17 +124,60 @@ local function ApplyPotionStats(row, entry, itemData)
     row.durationText = durationText
 end
 
-local function BuildRecipeDataForPotion(potionKey, potionName, recipe, potionLevel)
+local function BuildRecipeDataForPotion(potionKey, potionName, recipe, potionLevel, potionUid)
     if type(recipe) ~= "table" then
         return nil
+    end
+    local uid = tonumber(potionUid) or tonumber(recipe.outputUid) or tonumber(recipe.activeOutcomeUid) or 0
+    local RS = StockPiler.RecipeSpec
+    local attempts = tonumber(recipe.brewAttempts) or 0
+    local successes = tonumber(recipe.brewSuccesses) or 0
+    local successRate = nil
+    local yieldSamples = tonumber(recipe.yieldSamples) or 0
+    local yieldProductSum = tonumber(recipe.yieldProductSum) or 0
+    if RS and RS.OutcomeSuccessRate then
+        local rate, ok, att = RS.OutcomeSuccessRate(recipe, uid)
+        successRate = rate
+        if att and att > 0 then
+            attempts = att
+        end
+        if ok ~= nil then
+            successes = ok
+        end
+    elseif RS and RS.RecipeSuccessRate then
+        successRate = RS.RecipeSuccessRate(recipe)
+    end
+    local oc = RS and RS.OutcomeForPotion and RS.OutcomeForPotion(recipe, uid) or nil
+    if type(oc) == "table" then
+        local ocOk = tonumber(oc.successes) or 0
+        local ocQty = tonumber(oc.qtySum) or 0
+        if ocOk > 0 then
+            yieldSamples = ocOk
+            yieldProductSum = ocQty
+        end
+    end
+    local recipeYield = 0
+    if RS and RS.RecipeOutputYield then
+        recipeYield = RS.RecipeOutputYield(recipe, uid) or 0
+    else
+        recipeYield = tonumber(recipe.recipeYield) or 0
     end
     return {
         name = potionName,
         potionLevel = tonumber(potionLevel) or 0,
-        potionUid = tonumber(recipe.outputUid) or 0,
+        potionUid = uid,
         recipeSpecKey = recipe.recipeSpecKey,
-        recipeYield = tonumber(recipe.recipeYield) or 0,
+        recipeYield = recipeYield,
         crafts = tonumber(recipe.crafts) or 0,
+        brewAttempts = attempts,
+        brewSuccesses = successes,
+        brewCrits = tonumber(recipe.brewCrits) or 0,
+        brewSuperCrits = tonumber(recipe.brewSuperCrits) or 0,
+        brewFailures = tonumber(recipe.brewFailures) or 0,
+        brewVolatiles = tonumber(recipe.brewVolatiles) or 0,
+        yieldProductSum = yieldProductSum,
+        yieldSamples = yieldSamples,
+        successRate = successRate,
         materials = recipe.slots or {},
     }
 end
@@ -168,19 +204,55 @@ local function ResolvePotionItemData(potionKey, uid, existing)
 end
 
 local function PassesFilters(row, nameFilter, effectFilter)
-    if not MatchesNameFilter(row.name, nameFilter) then
+    if not MatchesNameFilter(row.name, nameFilter)
+        and not MatchesNameFilter(row.baseName, nameFilter)
+        and not MatchesNameFilter(row.recipeLabel, nameFilter)
+    then
         return false
     end
     return MatchesEffectFilter(row.effectKey, effectFilter)
 end
 
 local function CompareName(a, b)
-    local na = string.lower(ToNarrow(a.name))
-    local nb = string.lower(ToNarrow(b.name))
+    local na = string.lower(ToNarrow(a.baseName or a.name))
+    local nb = string.lower(ToNarrow(b.baseName or b.name))
     if na == nb then
+        local la = string.lower(ToNarrow(a.recipeLabel))
+        local lb = string.lower(ToNarrow(b.recipeLabel))
+        if la ~= lb then
+            return la < lb
+        end
         return ToNarrow(a.id) < ToNarrow(b.id)
     end
     return na < nb
+end
+
+local function FormatSignedStat(value)
+    value = tonumber(value) or 0
+    if value > 0 then
+        return towstring("+" .. tostring(value))
+    end
+    return towstring(tostring(value))
+end
+
+local function FormatPercentStat(value)
+    value = tonumber(value) or 0
+    if value == 0 then
+        return L"-"
+    end
+    return towstring(tostring(value) .. "%")
+end
+
+local function FormatYieldStat(value)
+    value = tonumber(value) or 0
+    if value <= 0 then
+        return L"-"
+    end
+    local rounded = math.floor(value + 0.5)
+    if math.abs(value - rounded) < 0.05 then
+        return towstring(tostring(rounded))
+    end
+    return towstring(string.format("%.1f", value))
 end
 
 local function CompareRows(a, b, column, ascending)
@@ -205,27 +277,34 @@ local function CompareRows(a, b, column, ascending)
             return CompareName(a, b)
         end
         return finish(ea < eb)
-    elseif column == "rank" then
-        local ra = a.rankNum or 0
-        local rb = b.rankNum or 0
-        if ra == rb then
+    elseif column == "power" then
+        local pa = a.powerNum or 0
+        local pb = b.powerNum or 0
+        if pa == pb then
             return CompareName(a, b)
         end
-        return finish(ra < rb)
-    elseif column == "buff" then
-        local ba = a.buffNum or 0
-        local bb = b.buffNum or 0
-        if ba == bb then
+        return finish(pa < pb)
+    elseif column == "stability" then
+        local sa = a.stabilityNum or 0
+        local sb = b.stabilityNum or 0
+        if sa == sb then
             return CompareName(a, b)
         end
-        return finish(ba < bb)
-    elseif column == "duration" then
-        local da = a.durationSec or 0
-        local db = b.durationSec or 0
-        if da == db then
+        return finish(sa < sb)
+    elseif column == "superCrit" then
+        local ca = a.superCritNum or 0
+        local cb = b.superCritNum or 0
+        if ca == cb then
             return CompareName(a, b)
         end
-        return finish(da < db)
+        return finish(ca < cb)
+    elseif column == "yield" then
+        local ya = a.yieldNum or 0
+        local yb = b.yieldNum or 0
+        if ya == yb then
+            return CompareName(a, b)
+        end
+        return finish(ya < yb)
     elseif column == "have" then
         local ha = a.have or 0
         local hb = b.have or 0
@@ -239,7 +318,6 @@ local function CompareRows(a, b, column, ascending)
         if wa == wb then
             return CompareName(a, b)
         end
-        -- Ascending: watched first.
         return finish(wa and not wb)
     end
     return CompareName(a, b)
@@ -247,7 +325,7 @@ end
 
 local function SortRows(rows)
     local s = GetSettings()
-    local column = s.potionSortColumn or "rank"
+    local column = s.potionSortColumn or "name"
     local ascending = s.potionSortAscending ~= false
     table.sort(rows, function(a, b)
         return CompareRows(a, b, column, ascending)
@@ -301,7 +379,7 @@ end
 local function UpdateSortHeaders()
     UpdateSortHeaderLabels()
     local s = GetSettings()
-    local col = s.potionSortColumn or "rank"
+    local col = s.potionSortColumn or "name"
     local asc = s.potionSortAscending ~= false
     for key, win in pairs(SORT_HEADERS) do
         if DoesWindowExist(win) then
@@ -340,47 +418,85 @@ local function BuildVisibleList()
     end
 
     local RS = StockPiler.RecipeSpec
-    local potions = RS and RS.GetKnownPotionList() or {}
+    if RS and RS.MigrateWatchesToPotionRecipeKeys then
+        RS.MigrateWatchesToPotionRecipeKeys()
+    end
+    local potions = RS and RS.ListPotionRecipeEntries and RS.ListPotionRecipeEntries()
+        or (RS and RS.GetKnownPotionList())
+        or {}
 
     for i = 1, #potions do
         local potion = potions[i]
-        local potionKey = potion.potionKey
+        local potionKey = potion.potionRecipeKey or potion.potionKey
+        local potionBase = potion.potion or potion
         local watch = RS and RS.EnsureWatch(potionKey) or { enabled = false, targetStock = 40 }
         local watched = watch.enabled == true
-        local have = RS and RS.PotionHaveCombined(potion) or 0
+        local have = RS and RS.PotionHaveCombined(potionBase) or 0
         local min = tonumber(watch.targetStock) or 0
-        local uid = tonumber(potion.outputUid) or 0
+        local uid = tonumber(potion.outputUid or potionBase.outputUid) or 0
         local entry = {
             id = potionKey,
             uniqueID = uid,
             uniqueIDs = { uid },
         }
-        local itemData = ResolvePotionItemData(potionKey, uid, nil)
-        local effectKey = potion.effectKey
+        local itemData = ResolvePotionItemData(potion.potionKey or potionKey, uid, nil)
+        local effectKey = potion.effectKey or potionBase.effectKey
         if not effectKey and itemData and StockPiler.Classify then
             effectKey = StockPiler.Classify.GetEffectKey(itemData)
         end
+        local recipeLabel = potion.recipeLabel or L""
+        local baseName = potion.name or potionBase.name or towstring(tostring(uid))
+        local powerNum = tonumber(potion.power) or 0
+        local stabilityNum = tonumber(potion.stability) or 0
+        local superCritNum = tonumber(potion.superCrit) or 0
+        local yieldNum = tonumber(potion.yield) or 0
         local row = {
             id = potionKey,
             potionKey = potionKey,
+            potionBaseKey = potion.potionKey or potionBase.potionKey,
+            recipeSpecKey = potion.recipeSpecKey,
+            recipeLabel = recipeLabel,
             entry = entry,
-            name = potion.name or towstring(tostring(uid)),
+            name = baseName,
+            baseName = baseName,
             effectKey = effectKey,
             effectText = EffectTextForRow(effectKey, nil),
+            powerNum = powerNum,
+            powerText = FormatSignedStat(powerNum),
+            stabilityNum = stabilityNum,
+            stabilityText = FormatSignedStat(stabilityNum),
+            superCritNum = superCritNum,
+            superCritText = FormatPercentStat(superCritNum),
+            yieldNum = yieldNum,
+            yieldText = FormatYieldStat(yieldNum),
             have = have,
             haveText = towstring(tostring(have)),
             min = min,
             minText = towstring(tostring(min)),
             watched = watched,
-            iconNum = tonumber(potion.iconNum) or 0,
+            iconNum = tonumber(potion.iconNum or potionBase.iconNum) or 0,
             itemData = itemData,
             uniqueID = uid,
             observed = true,
         }
         ApplyPotionStats(row, entry, itemData)
-        local recipe = RS and RS.RecipeSpecForPotion(potionKey)
-        row.recipeSpecKey = recipe and recipe.recipeSpecKey
-        row.recipeData = BuildRecipeDataForPotion(potionKey, row.name, recipe, row.rankNum)
+        local recipe = nil
+        if RS and RS.RecipeSpecForPotion then
+            recipe = RS.RecipeSpecForPotion(potionKey)
+        end
+        row.recipeSpecKey = (recipe and recipe.recipeSpecKey) or potion.recipeSpecKey
+        if recipe and RS.RecipeFingerprintStats then
+            local stats = RS.RecipeFingerprintStats(recipe, uid)
+            row.powerNum = stats.power
+            row.powerText = FormatSignedStat(stats.power)
+            row.stabilityNum = stats.stability
+            row.stabilityText = FormatSignedStat(stats.stability)
+            row.superCritNum = stats.superCrit
+            row.superCritText = FormatPercentStat(stats.superCrit)
+            row.yieldNum = stats.yield
+            row.yieldText = FormatYieldStat(stats.yield)
+        end
+        row.recipeData = BuildRecipeDataForPotion(potionKey, baseName, recipe, row.rankNum, uid)
         row.hasRecipe = row.recipeData ~= nil
         if PassesFilters(row, nameFilter, effectFilter) then
             rows[#rows + 1] = row
@@ -410,7 +526,7 @@ local function SetIconTexture(iconWin, iconNum)
         return
     end
     if iconNum and iconNum > 0 and type(GetIconData) == "function" then
-        local ok, texture, x, y = pcall(GetIconData, iconNum)
+        local ok, texture, x, y = StockPiler.TryCallQuiet("GetIconData", GetIconData, iconNum)
         if ok and texture and texture ~= "" then
             DynamicImageSetTexture(iconWin, texture, x or 0, y or 0)
             if type(DynamicImageSetTextureScale) == "function" then
@@ -428,7 +544,7 @@ function StockPilerTabPotions.Initialize()
     LabelSetText("SPTabPotionsBannerTitle", L"Known potions")
     LabelSetText(
         "SPTabPotionsBannerText",
-        L"Known potion outputs from learned recipes. Click the eye header to sort watched first. Hover the note for the recipe; Forget removes it."
+        L"Recipes are learned by brewing manually. One row per recipe; columns are fingerprint stats (effect / rank / buff / duration in the icon tip)."
     )
     LabelSetText("SPTabPotionsSearchLabel", L"Search:")
     LabelSetText("SPTabPotionsEffectLabel", L"Effect:")
@@ -478,9 +594,10 @@ function StockPilerTabPotions.UpdateRows()
 
             LabelSetText(rowName .. "Name", data.name or L"")
             LabelSetText(rowName .. "Effect", data.effectText or L"")
-            LabelSetText(rowName .. "Rank", data.rankText or L"-")
-            LabelSetText(rowName .. "Buff", data.buffText or L"-")
-            LabelSetText(rowName .. "Duration", data.durationText or L"-")
+            LabelSetText(rowName .. "Power", data.powerText or L"0")
+            LabelSetText(rowName .. "Stability", data.stabilityText or L"0")
+            LabelSetText(rowName .. "SuperCrit", data.superCritText or L"-")
+            LabelSetText(rowName .. "Yield", data.yieldText or L"-")
             LabelSetText(rowName .. "Have", data.haveText or towstring(tostring(data.have or 0)))
 
             local min = data.min or 0
@@ -497,7 +614,6 @@ function StockPilerTabPotions.UpdateRows()
 
             local forgetWin = rowName .. "Forget"
             if DoesWindowExist(forgetWin) then
-                ButtonSetText(forgetWin, L"Forget")
                 WindowSetShowing(forgetWin, data.hasRecipe == true)
             end
         end
@@ -585,8 +701,8 @@ local function ShowItemOrTextTooltip(itemData, title, line2, line3)
             return
         end
     elseif itemData ~= nil and type(Tooltips.CreateItemTooltip) == "function" then
-        local ok = pcall(
-            Tooltips.CreateItemTooltip,
+        local ok = StockPiler.TryCall(
+            "Tooltips.CreateItemTooltip", Tooltips.CreateItemTooltip,
             itemData,
             SystemData.ActiveWindow.name,
             Tooltips.ANCHOR_WINDOW_RIGHT,
@@ -619,39 +735,9 @@ function StockPilerTabPotions.OnMouseOverIcon()
     if itemData then
         data.itemData = itemData
     end
-    local line2 = data.effectText or L""
-    if data.rankText and data.rankText ~= L"-" then
-        if line2 ~= L"" then
-            line2 = line2 .. L"  |  "
-        end
-        line2 = line2 .. L"Rank " .. data.rankText
-    end
-    if data.buffText and data.buffText ~= L"-" then
-        if line2 ~= L"" then
-            line2 = line2 .. L"  |  "
-        end
-        line2 = line2 .. L"Buff " .. data.buffText
-    end
-    if data.durationText and data.durationText ~= L"-" then
-        if line2 ~= L"" then
-            line2 = line2 .. L"  |  "
-        end
-        line2 = line2 .. data.durationText
-    end
-    if data.uniqueID then
-        if line2 ~= L"" then
-            line2 = line2 .. L"  |  "
-        end
-        line2 = line2 .. L"id " .. towstring(tostring(data.uniqueID))
-    elseif data.abilityName and data.abilityName ~= L"" then
-        if line2 ~= L"" then
-            line2 = line2 .. L"  |  "
-        end
-        line2 = line2 .. data.abilityName
-    end
-    local line3 = data.tooltip
-        or L"Catalog Have counts all matching names in bags (incl. Potent)."
-    ShowItemOrTextTooltip(itemData, data.name or L"Potion", line2, line3)
+    -- Full stock tooltip only when bags/session have Use-bonus itemData.
+    -- Otherwise name only — do not invent or cache full tooltip blobs.
+    ShowItemOrTextTooltip(itemData, data.name or L"Potion", nil, nil)
 end
 
 function StockPilerTabPotions.OnMouseOverRecipe()
@@ -664,19 +750,14 @@ function StockPilerTabPotions.OnMouseOverRecipe()
     end
 end
 
-function StockPilerTabPotions.OnForgetRow()
-    local data = RowDataFromActiveChild()
-    if not data then
-        return
-    end
-    local key = data.recipeSpecKey
-    if (not key or key == "") and data.recipeData then
-        key = data.recipeData.recipeSpecKey
-    end
+function StockPilerTabPotions.ConfirmForgetRecipe()
+    local key = StockPilerTabPotions._pendingForgetKey
+    local label = StockPilerTabPotions._pendingForgetLabel or key
+    StockPilerTabPotions._pendingForgetKey = nil
+    StockPilerTabPotions._pendingForgetLabel = nil
     if not key or key == "" then
         return
     end
-    local label = ToNarrow(data.name) or tostring(key)
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.ForgetLearnedRecipeSpec then
         if StockPiler.RecipeSpec.ForgetLearnedRecipeSpec(key) then
             if StockPiler.Print then
@@ -693,10 +774,44 @@ function StockPilerTabPotions.OnForgetRow()
     end
 end
 
+function StockPilerTabPotions.OnForgetRow()
+    local data = RowDataFromActiveChild()
+    if not data then
+        return
+    end
+    local key = data.recipeSpecKey
+    if (not key or key == "") and data.recipeData then
+        key = data.recipeData.recipeSpecKey
+    end
+    if not key or key == "" then
+        return
+    end
+    local label = ToNarrow(data.baseName or data.name) or tostring(key)
+    local statsHint = ToNarrow(data.recipeLabel)
+    if statsHint and statsHint ~= "" then
+        label = label .. " (" .. statsHint .. ")"
+    end
+    StockPilerTabPotions._pendingForgetKey = key
+    StockPilerTabPotions._pendingForgetLabel = label
+    if type(DialogManager) == "table" and type(DialogManager.MakeTwoButtonDialog) == "function" then
+        local yes = GetString and GetString(StringTables.Default.LABEL_YES) or L"Yes"
+        local no = GetString and GetString(StringTables.Default.LABEL_NO) or L"No"
+        DialogManager.MakeTwoButtonDialog(
+            L"Forget learned recipe?\n" .. towstring(label),
+            yes,
+            StockPilerTabPotions.ConfirmForgetRecipe,
+            no,
+            nil
+        )
+        return
+    end
+    StockPilerTabPotions.ConfirmForgetRecipe()
+end
+
 function StockPilerTabPotions.OnMouseOverForget()
     Tooltips.CreateTextOnlyTooltip(
         SystemData.ActiveWindow.name,
-        L"Remove this learned recipe from StockPiler. Re-brew at the Apothecary to learn it again."
+        L"Forget this learned recipe. Re-brew at the Apothecary to learn it again."
     )
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
 end

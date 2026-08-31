@@ -6,17 +6,7 @@ local PREFIX_TEXT = "StockPiler"
 local PREFIX_COLOR = { 170, 220, 170 }
 
 local function ToNarrow(text)
-    if text == nil then
-        return ""
-    end
-    if type(text) == "wstring" then
-        local ok, s = pcall(WStringToString, text)
-        if ok and s then
-            return s
-        end
-        return ""
-    end
-    return tostring(text)
+    return StockPiler.ToNarrow(text)
 end
 
 local function AsWString(text)
@@ -39,9 +29,32 @@ local function GetSettings()
     return StockPiler.Settings
 end
 
-function StockPiler.StatusMessagesEnabled()
+function StockPiler.StatusChatMode()
     local s = GetSettings()
-    return s.statusMessages ~= false
+    local mode = s and s.statusChat
+    if mode == "all" or mode == "quiet" or mode == "off" then
+        return mode
+    end
+    if s and s.statusMessages == false then
+        return "off"
+    end
+    return "all"
+end
+
+--- Any automatic status chat (all or quiet). Slash Print() always works.
+function StockPiler.StatusMessagesEnabled()
+    return StockPiler.StatusChatMode() ~= "off"
+end
+
+--- Plant / harvest / stage / learn spam (all only).
+function StockPiler.StatusMessagesVerbose()
+    return StockPiler.StatusChatMode() == "all"
+end
+
+--- Manual toggles (enable AutoGrow, additives, AutoBuy) — all and quiet.
+function StockPiler.StatusMessagesManual()
+    local mode = StockPiler.StatusChatMode()
+    return mode == "all" or mode == "quiet"
 end
 
 local function ChatPrefix(includeSpace)
@@ -79,20 +92,38 @@ local function EmitChat(message)
 end
 
 function StockPiler.Notify(message)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     EmitChat(AsWString(message))
 end
 
 function StockPiler.NotifyFeature(featureName, message)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     featureName = AsWString(featureName)
     message = AsWString(message)
     if featureName == L"" then
-        StockPiler.Notify(message)
+        EmitChat(message)
+        return
+    end
+    if message == L"" then
+        EmitChat(featureName)
+        return
+    end
+    EmitChat(featureName .. L": " .. message)
+end
+
+--- Manual feature toggles (AutoGrow/Additives/AutoBuy on/off). Shown in quiet mode.
+function StockPiler.NotifyManual(featureName, message)
+    if not StockPiler.StatusMessagesManual() then
+        return
+    end
+    featureName = AsWString(featureName)
+    message = AsWString(message)
+    if featureName == L"" then
+        EmitChat(message)
         return
     end
     if message == L"" then
@@ -111,21 +142,22 @@ function StockPiler.ItemDisplayName(uniqueID, fallback)
         end
     end
     if uniqueID > 0 then
-        local s = GetSettings()
-        if type(s.observedMats) == "table" and StockPiler.Inventory and StockPiler.Inventory.ObservedId then
-            local obs = s.observedMats[StockPiler.Inventory.ObservedId(uniqueID)]
-            if type(obs) == "table" and obs.name and obs.name ~= L"" then
-                return obs.name
+        if StockPiler.Items and StockPiler.Items.AsItemData then
+            local data = StockPiler.Items.AsItemData(uniqueID)
+            if type(data) == "table" and data.name and data.name ~= L"" then
+                return data.name
             end
         end
-        if type(s.observedPotions) == "table" and StockPiler.Inventory and StockPiler.Inventory.ObservedId then
-            local obs = s.observedPotions[StockPiler.Inventory.ObservedId(uniqueID)]
-            if type(obs) == "table" and obs.name and obs.name ~= L"" then
-                return obs.name
+        local s = GetSettings()
+        local potions = type(s) == "table" and (s.potions or s.knownPotions) or nil
+        if type(potions) == "table" then
+            local pot = potions["uid:" .. tostring(uniqueID)]
+            if type(pot) == "table" and pot.name and pot.name ~= L"" then
+                return pot.name
             end
         end
         if GetDatabaseItemData then
-            local ok, data = pcall(GetDatabaseItemData, uniqueID)
+            local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, uniqueID)
             if ok and type(data) == "table" and data.name and data.name ~= L"" then
                 return data.name
             end
@@ -141,7 +173,7 @@ function StockPiler.ItemDisplayName(uniqueID, fallback)
 end
 
 function StockPiler.NotifySeedLearned(plantUid, seedUid, source)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     local plantName = StockPiler.ItemDisplayName(plantUid, nil)
@@ -155,7 +187,7 @@ function StockPiler.NotifySeedLearned(plantUid, seedUid, source)
 end
 
 function StockPiler.NotifyAdditiveLearned(itemData, info)
-    if not StockPiler.StatusMessagesEnabled() or type(itemData) ~= "table" then
+    if not StockPiler.StatusMessagesVerbose() or type(itemData) ~= "table" then
         return
     end
     local name = itemData.name
@@ -170,7 +202,7 @@ function StockPiler.NotifyAdditiveLearned(itemData, info)
 end
 
 function StockPiler.NotifyAutoGrowAdditive(plotNum, item, info)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     local name = item and item.name or L"additive"
@@ -185,7 +217,7 @@ function StockPiler.NotifyAutoGrowAdditive(plotNum, item, info)
 end
 
 function StockPiler.NotifyRecipeLearned(output)
-    if not StockPiler.StatusMessagesEnabled() or type(output) ~= "table" then
+    if not StockPiler.StatusMessagesVerbose() or type(output) ~= "table" then
         return
     end
     local name = output.name
@@ -210,7 +242,7 @@ local COLLECT_SKIP_SOURCES = {
 }
 
 function StockPiler.ShouldNotifyCollection(source)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return false
     end
     if source == nil or source == "" then
@@ -229,7 +261,7 @@ function StockPiler.NotifyItemCollected(record, bucket, source)
     else
         name = AsWString(name)
     end
-    if bucket == "observedPotions" then
+    if bucket == "observedPotions" or bucket == "potions" or bucket == "potion" then
         StockPiler.NotifyFeature(L"Collected", L"Potion " .. name .. L".")
     else
         StockPiler.NotifyFeature(L"Collected", L"Material " .. name .. L".")
@@ -237,27 +269,27 @@ function StockPiler.NotifyItemCollected(record, bucket, source)
 end
 
 function StockPiler.NotifyAutoGrowState(enabled, queue)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesManual() then
         return
     end
     if enabled ~= true then
-        StockPiler.NotifyFeature(L"AutoGrow", L"disabled.")
+        StockPiler.NotifyManual(L"AutoGrow", L"disabled.")
         return
     end
 
     if StockPiler.Planner and StockPiler.Planner.FormatGrowQueueText then
         local summary = StockPiler.Planner.FormatGrowQueueText(queue, 3)
         if summary and summary ~= L"" then
-            StockPiler.NotifyFeature(L"AutoGrow", L"enabled. " .. summary)
+            StockPiler.NotifyManual(L"AutoGrow", L"enabled. " .. summary)
             return
         end
     end
 
-    StockPiler.NotifyFeature(L"AutoGrow", L"enabled. No plantable seeds in the current plan.")
+    StockPiler.NotifyManual(L"AutoGrow", L"enabled. No plantable seeds in the current plan.")
 end
 
 function StockPiler.NotifyAutoGrowStage(plotNum, plantName, stageLabel, readyToHarvest)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     if readyToHarvest ~= true then
@@ -269,7 +301,7 @@ function StockPiler.NotifyAutoGrowStage(plotNum, plantName, stageLabel, readyToH
 end
 
 function StockPiler.NotifyAutoGrowRefined(plantUid, seedUid)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     local plantName = StockPiler.ItemDisplayName(plantUid, nil)
@@ -278,7 +310,7 @@ function StockPiler.NotifyAutoGrowRefined(plantUid, seedUid)
 end
 
 function StockPiler.NotifyAutoGrowHarvested(plotNum, plantName, manual)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     plantName = AsWString(plantName)
@@ -286,8 +318,11 @@ function StockPiler.NotifyAutoGrowHarvested(plotNum, plantName, manual)
     StockPiler.NotifyFeature(L"AutoGrow", detail)
 end
 
---- Always prints (not gated by statusMessages). Last 1–4 seeds of a type.
+--- Planted plot lines. Verbose chat only (was always Print).
 function StockPiler.NotifyAutoGrowPlanted(plotNum, entry, reason)
+    if not StockPiler.StatusMessagesVerbose() then
+        return
+    end
     plotNum = tonumber(plotNum) or 0
     local seedName = L"seed"
     if type(entry) == "table" then
@@ -368,7 +403,7 @@ function StockPiler.NotifyAutoGrowPlanted(plotNum, entry, reason)
     if reason == "harvest" then
         why = why .. L" after harvest"
     end
-    StockPiler.Print(
+    EmitChat(
         L"AutoGrow: planted "
             .. seedName
             .. L" on plot "
@@ -414,8 +449,48 @@ local function FlattenBlockers(blockers)
     return items
 end
 
+--- Same chat list AutoBuy uses: recipe-stat lines, yield-correct counts.
+function StockPiler.PrintMaterialsToBuy(jobs, opts)
+    opts = type(opts) == "table" and opts or {}
+    if type(jobs) ~= "table" then
+        jobs = {}
+    end
+    if opts.dedupe == true then
+        local sigParts = {}
+        for i = 1, #jobs do
+            local job = jobs[i]
+            local id = tostring(job and (job.specKey or job.name) or "")
+            sigParts[#sigParts + 1] = id .. "=" .. tostring(job and job.deficit or 0)
+        end
+        table.sort(sigParts)
+        local sig = table.concat(sigParts, "|")
+        if sig == StockPiler._lastProgressBlockSig then
+            return false
+        end
+        StockPiler._lastProgressBlockSig = sig
+        if #jobs == 0 then
+            return false
+        end
+    end
+    if #jobs == 0 then
+        StockPiler.Print(L"Materials to buy: none.")
+        return false
+    end
+    StockPiler.Print(L"Materials to buy:")
+    for i = 1, #jobs do
+        local job = jobs[i]
+        local n = tonumber(job and job.deficit) or 0
+        local label = (job and (job.label or job.name)) or L"material"
+        StockPiler.Print(towstring(tostring(n)) .. L"x " .. AsWString(label))
+    end
+    return true
+end
+
 --- One chat line per missing recipe slot. Deduped; repeats only if the set changes.
 function StockPiler.NotifyProgressBlocked(blockers)
+    if not StockPiler.StatusMessagesVerbose() then
+        return false
+    end
     if type(blockers) ~= "table" then
         StockPiler._lastProgressBlockSig = ""
         return false
@@ -450,6 +525,9 @@ function StockPiler.NotifyProgressBlocked(blockers)
 end
 
 function StockPiler.NotifyAutoGrowLastSeeds(seedName, remaining)
+    if not StockPiler.StatusMessagesVerbose() then
+        return
+    end
     remaining = tonumber(remaining) or 0
     seedName = AsWString(seedName)
     if remaining < 1 then
@@ -460,7 +538,7 @@ function StockPiler.NotifyAutoGrowLastSeeds(seedName, remaining)
         .. L" ("
         .. towstring(tostring(remaining))
         .. L"). A failed harvest can lose this seed line."
-    StockPiler.Print(msg)
+    EmitChat(msg)
 end
 
 --- Slash/load banner; always prints (ignores statusMessages toggle).

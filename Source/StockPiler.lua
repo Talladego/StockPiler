@@ -3,33 +3,74 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"0.8.75"
+StockPiler.Version = L"0.9.48"
 -- Writes to user/logs/uilog.log via engine d(). Toggle with /stockpiler debug
 StockPiler.DebugEnabled = false
 
+-- Profile file (SharedProfile/.../StockPiler/SavedVariables.lua):
+-- UI prefs + characters[name] watches/toggles. Character aliases are session-only.
 StockPiler.DefaultSettings = {
-    potionNameFilter = "",
-    potionEffectFilter = "", -- effectKey or "" for all
-    potionKnownRecipeOnly = false,
-    potionSortColumn = "rank", -- watch | name | effect | rank | buff | duration | have
-    potionSortAscending = true,
-    -- Slim identity records only (no itemData). Session tooltips live in Inventory._learned*.
-    observedPotions = {}, -- [uidKey] = { uniqueID, iconNum, name, nameNarrow, source }
-    observedMats = {}, -- [uidKey] = Apothecary + Cultivation mats only
-    settingsVersion = 8,
-    learnedRecipeSpecs = {}, -- [recipeSpecKey] = LearnedRecipeSpec
-    knownPotions = {}, -- [potionKey] = KnownPotion
-    watches = {}, -- [potionKey] = { enabled, autoGrow, targetStock } — aliased from characters[name]
-    seedMap = {}, -- [seedSpecKey] = { plantSpecKey, plantSpec, seedUidCache, plantUidCache, source }
-    growProducers = {}, -- [plantSpecKey] = { seedSpecKeys = {}, sources = {} }
-    harvestByproducts = {}, -- [specKey] = { source=, uniqueID= } convert extras (e.g. Arboreal Resin)
-    learnedAdditives = {}, -- [uidKey] = slim Soil/Watering/Nutrient stats
-    characters = {}, -- [characterName] = { watches, autoGrowEnabled, autoGrowAdditives }
+    settingsVersion = 9,
     charactersVersion = 1,
-    growSeedBufferMin = 4, -- convert plants up to this many seeds; planting uses any remaining seed
-    learnedSeedMap = {}, -- [plantUidKey] = { seedUid=, source= }
-    statusMessages = true, -- CustomUI-style chat notifications
-    blockInvalidApothecaryBrew = true, -- block Apothecary Brew when recipe is unstable or incomplete
+    characters = {}, -- [characterName] = DefaultCharacterSettings
+    potionNameFilter = "",
+    potionEffectFilter = "",
+    potionKnownRecipeOnly = false,
+    potionSortColumn = "rank",
+    potionSortAscending = true,
+    -- Chat verbosity: "all" (default) | "quiet" (manual toggles only) | "off"
+    statusChat = "all",
+    statusMessages = true, -- compat: false when statusChat == "off"
+    blockInvalidApothecaryBrew = true,
+}
+
+-- Account file (GLOBAL/StockPiler/SavedVariables.lua): shared knowledge.
+-- Learn-only: brew / plant / harvest / refine / plot additives. No CVT / bag observe.
+-- EnsureSettings aliases these onto StockPiler.Settings for existing code paths.
+StockPiler.ACCOUNT_VERSION = 2
+
+StockPiler.DefaultAccount = {
+    accountVersion = 2,
+    -- One row per item learned via brew/grow/refine/additive use
+    items = {},
+    -- seedUid -> { [plantUid] = { samples, countSum, last } }
+    grows = {},
+    -- plantUid -> { seedUid, seedKind, byproducts = { [resinUid] = stats } }
+    refines = {},
+    -- fingerprint -> recipe (slots by uid, outcomes by potion uid)
+    recipes = {},
+    -- "uid:N" -> potion (links back to recipe fingerprints)
+    potions = {},
+    -- tostring(uid) -> soil/water/nutrient record
+    additives = {},
+}
+
+local ACCOUNT_TABLE_KEYS = {
+    "items",
+    "grows",
+    "refines",
+    "recipes",
+    "potions",
+    "additives",
+}
+
+-- Legacy Settings field names → Account table (same table reference).
+local ACCOUNT_COMPAT_ALIASES = {
+    knownPotions = "potions",
+    learnedRecipeSpecs = "recipes",
+    learnedAdditives = "additives",
+}
+
+-- Session aliases from characters[name]; stripped from Settings before save.
+local SETTINGS_CHARACTER_ALIASES = {
+    "watches",
+    "autoGrowEnabled",
+    "autoGrowAdditives",
+    "autoBuyEnabled",
+    "autoBuyReserveGold",
+    "autoBuyBudgetGold",
+    "growSeedBufferMin",
+    "brewMacroEnabled",
 }
 
 local function DeepCopy(value)
@@ -80,6 +121,85 @@ function StockPiler._EmitLog(text)
     end
 end
 
+--- Log a protected-call failure. Quiet = uilog only when /stp debug is on.
+local _reportingProtectedCall = false
+function StockPiler.ReportProtectedCallFailure(context, err, quiet)
+    if _reportingProtectedCall == true then
+        return
+    end
+    _reportingProtectedCall = true
+    local msg = tostring(context or "unknown") .. ": " .. tostring(err or "unknown error")
+    pcall(function()
+        if quiet == true then
+            if StockPiler.DebugEnabled == true then
+                StockPiler._EmitLog("StockPiler| TryCallQuiet " .. msg)
+            end
+            return
+        end
+        StockPiler._EmitLog("StockPiler| TryCall " .. msg)
+        if type(LogLuaMessage) == "function" and SystemData and SystemData.UiLogFilters then
+            LogLuaMessage("Lua", SystemData.UiLogFilters.WARNING, towstring("[StockPiler] " .. msg))
+        end
+    end)
+    _reportingProtectedCall = false
+end
+
+--- User actions, hooks, init, snapshot builders. Logs every failure.
+function StockPiler.TryCall(context, fn, ...)
+    if type(fn) ~= "function" then
+        StockPiler.ReportProtectedCallFailure(context, "expected function, got " .. type(fn))
+        return false
+    end
+    local results = { pcall(fn, ...) }
+    local ok = table.remove(results, 1)
+    if ok then
+        if #results == 0 then
+            return true
+        end
+        return true, unpack(results)
+    end
+    StockPiler.ReportProtectedCallFailure(context, results[1])
+    return false
+end
+
+--- Hot-path optional lookups. Logs only when /stp debug is on.
+function StockPiler.TryCallQuiet(context, fn, ...)
+    if type(fn) ~= "function" then
+        StockPiler.ReportProtectedCallFailure(context, "expected function, got " .. type(fn), true)
+        return false
+    end
+    local results = { pcall(fn, ...) }
+    local ok = table.remove(results, 1)
+    if ok then
+        if #results == 0 then
+            return true
+        end
+        return true, unpack(results)
+    end
+    StockPiler.ReportProtectedCallFailure(context, results[1], true)
+    return false
+end
+
+function StockPiler.ToNarrow(value)
+    if value == nil then
+        return ""
+    end
+    if type(value) == "string" then
+        return value
+    end
+    if type(value) == "wstring" then
+        if type(WStringToString) ~= "function" then
+            return ""
+        end
+        local ok, text = StockPiler.TryCallQuiet("ToNarrow", WStringToString, value)
+        if ok and type(text) == "string" then
+            return text
+        end
+        return ""
+    end
+    return tostring(value)
+end
+
 function StockPiler.DumpTableKeys(label, tbl, maxKeys)
     if StockPiler.DebugEnabled ~= true or type(tbl) ~= "table" then
         return
@@ -95,64 +215,13 @@ function StockPiler.DumpTableKeys(label, tbl, maxKeys)
     StockPiler.D((label or "table") .. " keys: " .. table.concat(keys, ", "))
 end
 
-local SETTINGS_V8_DROP = {
-    "mins", "watchlist", "growOrder", "growPriorities",
-    "recipeFilter", "recipeSortAscending", "potionFilter",
-    "matFilter", "matNameFilter", "matTypeFilter", "matSortColumn", "matSortAscending",
-    "learnedRecipes", "itemDataCache", "iconCache", "matDataCache", "matIconCache",
-    "recipeKeyVersion", "growOrderVersion", "catalogCacheVersion", "iconCacheVersion",
-    "_charBucket",
-}
-
-local function KnownPotionUidSet(s)
-    local uids = {}
-    if type(s) ~= "table" or type(s.knownPotions) ~= "table" then
-        return uids
-    end
-    for key, potion in pairs(s.knownPotions) do
-        local uid = 0
-        if type(potion) == "table" then
-            uid = tonumber(potion.outputUid) or 0
-        end
-        if uid <= 0 and type(key) == "string" then
-            uid = tonumber(string.match(key, "^uid:(%d+)$")) or 0
-        end
-        if uid > 0 then
-            uids[uid] = true
-        end
-    end
-    return uids
-end
-
-local function SlimObservedTable(tbl, pruneUnskilled, knownUids)
+local function WipeTable(tbl)
     if type(tbl) ~= "table" then
-        return 0, 0
+        return
     end
-    local slimmed = 0
-    local dropped = 0
-    local kept = {}
-    for key, obs in pairs(tbl) do
-        if type(obs) == "table" then
-            local uid = tonumber(obs.uniqueID) or 0
-            local skill = tonumber(obs.craftingSkillRequirement) or 0
-            if pruneUnskilled and skill <= 0 and (knownUids == nil or knownUids[uid] ~= true) then
-                dropped = dropped + 1
-            else
-                if obs.itemData ~= nil then
-                    obs.itemData = nil
-                    slimmed = slimmed + 1
-                end
-                kept[key] = obs
-            end
-        end
+    for k in pairs(tbl) do
+        tbl[k] = nil
     end
-    for key in pairs(tbl) do
-        tbl[key] = nil
-    end
-    for key, obs in pairs(kept) do
-        tbl[key] = obs
-    end
-    return slimmed, dropped
 end
 
 local function CleanCharacterBuckets(s)
@@ -160,44 +229,327 @@ local function CleanCharacterBuckets(s)
         return
     end
     for _, char in pairs(s.characters) do
-        if type(char) == "table" then
+        if type(char) == "table" and StockPiler.EnsureCharacterBucketShape then
+            StockPiler.EnsureCharacterBucketShape(char)
             for key in pairs(char) do
-                if key ~= "watches" and key ~= "autoGrowEnabled" and key ~= "autoGrowAdditives" then
+                if StockPiler.DefaultCharacterSettings[key] == nil then
                     char[key] = nil
                 end
-            end
-            if type(char.watches) ~= "table" then
-                char.watches = {}
-            end
-            if char.autoGrowEnabled == nil then
-                char.autoGrowEnabled = false
-            end
-            if char.autoGrowAdditives == nil then
-                char.autoGrowAdditives = false
             end
         end
     end
 end
 
--- v8: drop v5 planner keys, UID recipe store, full itemData caches; slim observed tables.
-function StockPiler.ApplySettingsV8(s)
+function StockPiler.EnsureAccount()
+    if type(StockPiler.Account) ~= "table" then
+        StockPiler.Account = DeepCopy(StockPiler.DefaultAccount)
+    end
+    local a = StockPiler.Account
+    local ver = tonumber(a.accountVersion) or 0
+    if ver < StockPiler.ACCOUNT_VERSION then
+        -- Breaking knowledge model: flush and relearn (no migration).
+        local notice = ver > 0
+        StockPiler.Account = DeepCopy(StockPiler.DefaultAccount)
+        a = StockPiler.Account
+        if notice and StockPiler.Print then
+            StockPiler.Print(L"Account knowledge reset for v"
+                .. towstring(tostring(StockPiler.ACCOUNT_VERSION))
+                .. L" - relearn by brewing, planting, harvesting, and refining.")
+        end
+    end
+    for i = 1, #ACCOUNT_TABLE_KEYS do
+        local key = ACCOUNT_TABLE_KEYS[i]
+        if type(a[key]) ~= "table" then
+            a[key] = {}
+        end
+    end
+    -- Drop legacy tables if a partial/old save somehow remains.
+    local legacy = {
+        "harvestMap", "refineMap", "harvestByproducts", "seedMap", "growProducers",
+        "learnedSeedMap", "learnedRecipeSpecs", "knownPotions", "observedPotions",
+        "observedMats", "learnedAdditives", "matScopeVersion",
+    }
+    for i = 1, #legacy do
+        a[legacy[i]] = nil
+    end
+    a.accountVersion = StockPiler.ACCOUNT_VERSION
+    return a
+end
+
+--- Point Settings.<key> at Account.<key> so existing code keeps using StockPiler.Settings.
+function StockPiler.BindAccountIntoSettings(s)
+    local a = StockPiler.EnsureAccount()
     if type(s) ~= "table" then
+        return a
+    end
+    for i = 1, #ACCOUNT_TABLE_KEYS do
+        local key = ACCOUNT_TABLE_KEYS[i]
+        s[key] = a[key]
+    end
+    for alias, canonical in pairs(ACCOUNT_COMPAT_ALIASES) do
+        s[alias] = a[canonical]
+    end
+    return a
+end
+
+--- Drop account + character aliases from Settings so the profile file stays small.
+function StockPiler.StripAccountFromSettings(s)
+    if type(s) ~= "table" then
+        return
+    end
+    for i = 1, #ACCOUNT_TABLE_KEYS do
+        s[ACCOUNT_TABLE_KEYS[i]] = nil
+    end
+    for alias in pairs(ACCOUNT_COMPAT_ALIASES) do
+        s[alias] = nil
+    end
+    -- Legacy names that must never leak into the profile file
+    local stripExtra = {
+        "harvestMap", "refineMap", "harvestByproducts", "seedMap", "growProducers",
+        "learnedSeedMap", "observedPotions", "observedMats", "matScopeVersion",
+    }
+    for i = 1, #stripExtra do
+        s[stripExtra[i]] = nil
+    end
+    for i = 1, #SETTINGS_CHARACTER_ALIASES do
+        s[SETTINGS_CHARACTER_ALIASES[i]] = nil
+    end
+    s._characterKey = nil
+    s._charBucket = nil
+end
+
+--- Clear an account table in place (keeps Settings alias intact).
+function StockPiler.ClearAccountTable(key)
+    local a = StockPiler.EnsureAccount()
+    if type(a[key]) ~= "table" then
+        a[key] = {}
+    else
+        WipeTable(a[key])
+    end
+    if type(StockPiler.Settings) == "table" then
+        StockPiler.Settings[key] = a[key]
+        for alias, canonical in pairs(ACCOUNT_COMPAT_ALIASES) do
+            if canonical == key then
+                StockPiler.Settings[alias] = a[key]
+            end
+        end
+    end
+    return a[key]
+end
+
+----------------------------------------------------------------
+-- Account.items — single catalog for learned craft/grow items
+----------------------------------------------------------------
+
+StockPiler.Items = StockPiler.Items or {}
+
+local function ItemsTable()
+    local a = StockPiler.EnsureAccount()
+    if type(a.items) ~= "table" then
+        a.items = {}
+    end
+    if type(StockPiler.Settings) == "table" then
+        StockPiler.Settings.items = a.items
+    end
+    return a.items
+end
+
+function StockPiler.Items.Get(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local items = ItemsTable()
+    local row = items[tostring(uid)]
+    if type(row) == "table" then
+        return row
+    end
+    return nil
+end
+
+local function TableEntryCount(t)
+    local n = 0
+    if type(t) == "table" then
+        for _ in pairs(t) do
+            n = n + 1
+        end
+    end
+    return n
+end
+
+local function ItemDataHasCraftBonuses(itemData)
+    return type(itemData) == "table"
+        and type(itemData.craftingBonus) == "table"
+        and next(itemData.craftingBonus) ~= nil
+end
+
+--- True when an existing items row has a richer craft profile than incoming fields.
+--- Prevents refine/harvest lookups (no craftingBonus) from wiping brew-learned mats.
+local function ExistingCraftProfileIsRicher(row, fields)
+    if type(row) ~= "table" or type(fields) ~= "table" then
         return false
     end
-    s._charBucket = nil
-    if (tonumber(s.settingsVersion) or 0) >= 8 then
+    local existN = TableEntryCount(row.bonuses)
+    local newN = TableEntryCount(fields.bonuses)
+    local existTs = tonumber(row.tradeSkill) or 0
+    local newTs = tonumber(fields.tradeSkill) or 0
+    local existRole = tostring(row.role or "")
+    local newRole = tostring(fields.role or "")
+    local existCraftRole = existRole ~= "" and existRole ~= "ingredient"
+    local newCraftRole = newRole ~= "" and newRole ~= "ingredient"
+
+    if existN > newN then
+        return true
+    end
+    if existTs > 0 and newTs == 0 then
+        return true
+    end
+    if existCraftRole and not newCraftRole and existN >= newN then
+        return true
+    end
+    if row.incomplete ~= true and fields.incomplete == true and existN >= newN then
+        return true
+    end
+    -- Prefer completing a main (effect fingerprint) over keeping incomplete.
+    if row.incomplete == true and fields.incomplete ~= true then
         return false
     end
-    for i = 1, #SETTINGS_V8_DROP do
-        s[SETTINGS_V8_DROP[i]] = nil
+    return false
+end
+
+local CRAFT_PROFILE_FIELDS = {
+    "role", "bonuses", "effectId", "slotType", "skillLevel",
+    "tradeSkill", "incomplete", "cultivationType",
+}
+
+--- Merge display + craft profile into items[uid]. Returns the row.
+function StockPiler.Items.Upsert(uid, fields)
+    uid = tonumber(uid) or 0
+    if uid <= 0 or type(fields) ~= "table" then
+        return nil
     end
-    local knownUids = KnownPotionUidSet(s)
-    SlimObservedTable(s.observedPotions, true, knownUids)
-    SlimObservedTable(s.observedMats, false, nil)
-    CleanCharacterBuckets(s)
-    s.settingsVersion = 8
-    s._charBucket = nil
-    return true
+    local items = ItemsTable()
+    local key = tostring(uid)
+    local row = items[key]
+    if type(row) ~= "table" then
+        row = { uniqueID = uid }
+    end
+    row.uniqueID = uid
+    for k, v in pairs(fields) do
+        if v ~= nil then
+            -- Never clobber a known ItemTypes value with NONE/0.
+            if k == "itemType" and (tonumber(v) or 0) == 0 and (tonumber(row.itemType) or 0) > 0 then
+                -- keep existing
+            else
+                row[k] = v
+            end
+        end
+    end
+    items[key] = row
+    return row
+end
+
+function StockPiler.Items.UpsertFromItemData(itemData, kindHint)
+    if type(itemData) ~= "table" then
+        return nil
+    end
+    local uid = tonumber(itemData.uniqueID) or tonumber(itemData.id) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local fields = {
+        kind = kindHint,
+        name = itemData.name,
+        nameNarrow = StockPiler.ToNarrow and StockPiler.ToNarrow(itemData.name) or nil,
+        iconNum = tonumber(itemData.iconNum) or 0,
+        skillReq = tonumber(itemData.craftingSkillRequirement) or 0,
+        tradeSkill = tonumber(itemData.tradeSkill) or 0,
+        cultivationType = tonumber(itemData.cultivationType) or 0,
+        isRefinable = itemData.isRefinable == true,
+        -- Live GameData uses .type (ItemTypes.*); keep itemType as the stored field name.
+        itemType = tonumber(itemData.type) or tonumber(itemData.itemType) or 0,
+        iLevel = tonumber(itemData.iLevel) or 0,
+    }
+    local hasLiveCraft = ItemDataHasCraftBonuses(itemData)
+    if StockPiler.MaterialSpec and StockPiler.MaterialSpec.FromItemData then
+        local spec = StockPiler.MaterialSpec.FromItemData(itemData)
+        if type(spec) == "table" then
+            local copied = StockPiler.MaterialSpec.Copy and StockPiler.MaterialSpec.Copy(spec) or spec
+            fields.role = copied.role
+            fields.skillLevel = copied.skillLevel
+            fields.slotType = copied.slotType
+            fields.effectId = copied.effectId
+            fields.bonuses = copied.bonuses
+            fields.tradeSkill = copied.tradeSkill or fields.tradeSkill
+            fields.cultivationType = copied.cultivationType or fields.cultivationType
+            fields.incomplete = copied.incomplete == true
+            if not fields.kind then
+                local role = copied.role or ""
+                if role == "ingredient" and (fields.cultivationType == 1 or fields.cultivationType == 5) then
+                    fields.kind = (fields.cultivationType == 5) and "spore" or "seed"
+                elseif role ~= "" and role ~= "ingredient" then
+                    fields.kind = "mat"
+                end
+            end
+        end
+    end
+    if not fields.kind then
+        fields.kind = "mat"
+    end
+
+    local existing = StockPiler.Items.Get(uid)
+    if type(existing) == "table" and (not hasLiveCraft or ExistingCraftProfileIsRicher(existing, fields)) then
+        -- Display / kind / flags only; keep brew-learned craft profile.
+        for i = 1, #CRAFT_PROFILE_FIELDS do
+            fields[CRAFT_PROFILE_FIELDS[i]] = nil
+        end
+        -- skillReq from DB is fine when existing is empty; don't zero a known req.
+        if (tonumber(fields.skillReq) or 0) == 0 and (tonumber(existing.skillReq) or 0) > 0 then
+            fields.skillReq = nil
+        end
+    end
+
+    return StockPiler.Items.Upsert(uid, fields)
+end
+
+--- Rebuild a MaterialSpec-compatible table from a stored items row.
+function StockPiler.Items.ToSpec(uid)
+    local row = StockPiler.Items.Get(uid)
+    if type(row) ~= "table" then
+        return nil
+    end
+    return {
+        tradeSkill = tonumber(row.tradeSkill) or 0,
+        skillLevel = tonumber(row.skillLevel) or tonumber(row.skillReq) or 0,
+        slotType = tonumber(row.slotType) or 0,
+        effectId = row.effectId,
+        bonuses = type(row.bonuses) == "table" and row.bonuses or {},
+        cultivationType = tonumber(row.cultivationType) or 0,
+        role = row.role,
+        incomplete = row.incomplete == true,
+    }
+end
+
+--- Thin itemData-like table for icon/name fallbacks when bags are empty.
+function StockPiler.Items.AsItemData(uid)
+    local row = StockPiler.Items.Get(uid)
+    if type(row) ~= "table" then
+        return nil
+    end
+    return {
+        uniqueID = tonumber(row.uniqueID) or tonumber(uid) or 0,
+        name = row.name,
+        nameNarrow = row.nameNarrow,
+        iconNum = tonumber(row.iconNum) or 0,
+        craftingSkillRequirement = tonumber(row.skillReq) or 0,
+        tradeSkill = tonumber(row.tradeSkill) or 0,
+        cultivationType = tonumber(row.cultivationType) or 0,
+        isRefinable = row.isRefinable == true,
+        itemType = tonumber(row.itemType) or 0,
+        type = tonumber(row.itemType) or 0,
+        iLevel = tonumber(row.iLevel) or 0,
+        craftingBonus = nil,
+    }
 end
 
 -- Safe to call during CreateWindow OnInitialize (before StockPiler.Initialize).
@@ -206,12 +558,11 @@ function StockPiler.EnsureSettings()
         StockPiler.Settings = DeepCopy(StockPiler.DefaultSettings)
     end
     local s = StockPiler.Settings
-    if StockPiler.BindActiveCharacterSettings then
-        StockPiler.BindActiveCharacterSettings(s)
-    end
     if type(s.characters) ~= "table" then
         s.characters = {}
     end
+    s.settingsVersion = 9
+    s.charactersVersion = 1
     if s.potionNameFilter == nil then
         s.potionNameFilter = ""
     end
@@ -221,117 +572,30 @@ function StockPiler.EnsureSettings()
     if s.potionKnownRecipeOnly == nil then
         s.potionKnownRecipeOnly = false
     end
-    if s.potionSortColumn == nil then
+    if s.potionSortColumn == nil or s.potionSortColumn == "recipe" then
         s.potionSortColumn = "rank"
     end
     if s.potionSortAscending == nil then
         s.potionSortAscending = true
     end
-    if s.potionSortColumn == "recipe" then
-        s.potionSortColumn = "rank"
-    end
-    if type(s.observedPotions) ~= "table" then
-        s.observedPotions = {}
-    end
-    if type(s.observedMats) ~= "table" then
-        s.observedMats = {}
-    end
-    if s.settingsVersion == nil then
-        s.settingsVersion = 1
-    end
-    if type(s.learnedRecipeSpecs) ~= "table" then
-        s.learnedRecipeSpecs = {}
-    end
-    if type(s.knownPotions) ~= "table" then
-        s.knownPotions = {}
-    end
-    if type(s.watches) ~= "table" then
-        s.watches = {}
-    end
-    if type(s.seedMap) ~= "table" then
-        s.seedMap = {}
-    end
-    if type(s.growProducers) ~= "table" then
-        s.growProducers = {}
-    end
-    if type(s.harvestByproducts) ~= "table" then
-        s.harvestByproducts = {}
-    end
-    if s.settingsVersion < 6 then
-        s.learnedRecipeSpecs = {}
-        s.knownPotions = {}
-        s.watches = {}
-        s.seedMap = {}
-        s.growProducers = {}
-        s.settingsVersion = 6
-        if StockPiler.Print then
-            pcall(StockPiler.Print, L"v0.8: spec-based recipes. Brew potions to re-learn; watches reset.")
+    if s.statusChat ~= "all" and s.statusChat ~= "quiet" and s.statusChat ~= "off" then
+        if s.statusMessages == false then
+            s.statusChat = "off"
+        else
+            s.statusChat = "all"
         end
     end
-    if s.settingsVersion < 7 then
-        s.seedMap = {}
-        s.growProducers = {}
-        s.settingsVersion = 7
-        s._seedMapResetPending = true
-        if StockPiler.Print then
-            pcall(StockPiler.Print, L"v0.8.5: seed/grow maps reset; CVT bootstrap on load.")
-        end
-    end
-    if s.autoGrowEnabled == nil then
-        s.autoGrowEnabled = false
-    end
-    if s.autoGrowAdditives == nil then
-        s.autoGrowAdditives = false
-    end
-    if type(s.learnedAdditives) ~= "table" then
-        s.learnedAdditives = {}
-    end
-    if s.growSeedBufferMin == nil then
-        s.growSeedBufferMin = 4
-    else
-        local buf = tonumber(s.growSeedBufferMin) or 4
-        if buf < 4 then
-            s.growSeedBufferMin = 4
-        end
-    end
-    if type(s.learnedSeedMap) ~= "table" then
-        s.learnedSeedMap = {}
-    end
-    if s.statusMessages == nil then
-        s.statusMessages = true
-    end
+    s.statusMessages = (s.statusChat ~= "off")
     if s.blockInvalidApothecaryBrew == nil then
         s.blockInvalidApothecaryBrew = true
     end
-    -- 0.1.16: keep only Apothecary + Cultivation mats (drop Talisman / other crafting)
-    if s.matScopeVersion ~= 1 then
-        local kept = {}
-        local dropped = 0
-        for key, obs in pairs(s.observedMats) do
-            local inScope = false
-            if StockPiler.Inventory and StockPiler.Inventory.IsObservedMatInScope then
-                inScope = StockPiler.Inventory.IsObservedMatInScope(obs)
-            elseif type(obs) == "table" and tonumber(obs.cultivationType) and tonumber(obs.cultivationType) ~= 0 then
-                inScope = true
-            end
-            if inScope then
-                kept[key] = obs
-            else
-                dropped = dropped + 1
-            end
-        end
-        s.observedMats = kept
-        s.matScopeVersion = 1
-        if StockPiler.D then
-            StockPiler.D("Pruned observedMats (Apo/Cult only), dropped=" .. tostring(dropped))
-        end
+
+    StockPiler.BindAccountIntoSettings(s)
+    CleanCharacterBuckets(s)
+    if StockPiler.BindActiveCharacterSettings then
+        StockPiler.BindActiveCharacterSettings(s)
     end
 
-    if StockPiler.ApplySettingsV8(s) and StockPiler.Print then
-        pcall(StockPiler.Print, L"v0.8.31: cleared stale saved data (watches and recipes kept).")
-    end
-
-    -- Hydrate session tooltip copies from leftover itemData (pre-v8 profiles / mid-session).
     if StockPiler.Inventory then
         if type(StockPiler.Inventory._learnedItemData) ~= "table" then
             StockPiler.Inventory._learnedItemData = {}
@@ -339,28 +603,12 @@ function StockPiler.EnsureSettings()
         if type(StockPiler.Inventory._learnedMatData) ~= "table" then
             StockPiler.Inventory._learnedMatData = {}
         end
-        if type(s.observedPotions) == "table" then
-            for key, obs in pairs(s.observedPotions) do
-                if type(obs) == "table" and type(obs.itemData) == "table"
-                    and StockPiler.Inventory._learnedItemData[key] == nil
-                then
-                    StockPiler.Inventory._learnedItemData[key] = obs.itemData
-                end
-            end
-        end
-        if type(s.observedMats) == "table" then
-            for key, obs in pairs(s.observedMats) do
-                if type(obs) == "table" and type(obs.itemData) == "table"
-                    and StockPiler.Inventory._learnedMatData[key] == nil
-                then
-                    StockPiler.Inventory._learnedMatData[key] = obs.itemData
-                end
-            end
-        end
     end
 
     s._charBucket = nil
-    StockPiler.PersistActiveCharacterSettings(s)
+    if StockPiler.PersistActiveCharacterSettings then
+        StockPiler.PersistActiveCharacterSettings(s)
+    end
     return s
 end
 
@@ -408,7 +656,13 @@ function StockPiler.HandleSlash(input)
         return
     end
     if args == "help" then
-        StockPiler.Print(L"/stockpiler (or /stp) - open  |  potions|watch  |  spec <uid>  |  growplan|growtrace  |  resetmaps  |  scan  |  debug")
+        StockPiler.Print(L"/stockpiler (or /stp) - open  |  potions|watch  |  quiet|chat  |  spec <uid>  |  seedmap|growplan|growwhy|growtrace  |  resetmaps  |  scan  |  debug  |  perf")
+        return
+    end
+    if args == "seedmap" or args == "seeds" or args == "growmap" then
+        if StockPiler.SeedMap and StockPiler.SeedMap.DumpToChat then
+            StockPiler.SeedMap.DumpToChat()
+        end
         return
     end
     if args == "growplan" or args == "growdump" then
@@ -418,11 +672,22 @@ function StockPiler.HandleSlash(input)
         end
         return
     end
+    if args == "growwhy" or args == "why" then
+        if StockPiler.AutoGrow and StockPiler.AutoGrow.DumpDecisionWhy then
+            -- Refresh plan so queue decision is current before dump.
+            if StockPiler.AutoGrow.DumpGrowPlan then
+                StockPiler.AutoGrow.DumpGrowPlan({ force = true })
+            end
+            StockPiler.AutoGrow.DumpDecisionWhy({ force = true })
+            StockPiler.Print(L"Grow decisions written to chat + uilog.log")
+        end
+        return
+    end
     if args == "growtrace" then
         if StockPiler.AutoGrow then
             StockPiler.AutoGrow.TraceEnabled = not (StockPiler.AutoGrow.TraceEnabled == true)
             local state = (StockPiler.AutoGrow.TraceEnabled == true) and L"ON" or L"OFF"
-            StockPiler.Print(L"AutoGrow decision trace: " .. state .. L" (/stp debug also writes grow traces)")
+            StockPiler.Print(L"AutoGrow decision trace: " .. state .. L" (/stp growwhy for last decisions)")
             if StockPiler.AutoGrow.TraceEnabled == true and StockPiler.AutoGrow.DumpGrowPlan then
                 StockPiler.AutoGrow.DumpGrowPlan({ force = true })
             end
@@ -432,8 +697,9 @@ function StockPiler.HandleSlash(input)
     if args == "resetmaps" or args == "resetseedmap" or args == "clearmaps" then
         if StockPiler.SeedMap and StockPiler.SeedMap.ResetSpecMaps then
             local bootstrapped, repaired = StockPiler.SeedMap.ResetSpecMaps()
-            StockPiler.Print(L"Seed/grow maps reset. CVT=" .. towstring(tostring(bootstrapped or 0))
-                .. L" learned=" .. towstring(tostring(repaired or 0)))
+            StockPiler.Print(L"Seed/grow maps reset. Relearn by planting, harvesting, and refining."
+                .. L" (cleared=" .. towstring(tostring(bootstrapped or 0))
+                .. L" repaired=" .. towstring(tostring(repaired or 0)) .. L")")
         end
         return
     end
@@ -442,7 +708,7 @@ function StockPiler.HandleSlash(input)
         local id = tonumber(specUid)
         local itemData = nil
         if type(GetDatabaseItemData) == "function" then
-            local ok, data = pcall(GetDatabaseItemData, id)
+            local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, id)
             if ok then
                 itemData = data
             end
@@ -463,6 +729,17 @@ function StockPiler.HandleSlash(input)
         end
         return
     end
+    if args == "perf" then
+        if StockPiler.Perf and StockPiler.Perf.SetEnabled then
+            local on = StockPiler.Perf.SetEnabled(not (StockPiler.Perf.Enabled == true))
+            local state = on and L"ON" or L"OFF"
+            StockPiler.Print(L"Perf hitch log: " .. state .. L" (uilog only on frames >=400ms with StockPiler work)")
+            if on ~= true and StockPiler.Perf.PrintLast then
+                StockPiler.Perf.PrintLast()
+            end
+        end
+        return
+    end
     if args == "debug" then
         StockPiler.DebugEnabled = not (StockPiler.DebugEnabled == true)
         local state = (StockPiler.DebugEnabled == true) and L"ON" or L"OFF"
@@ -478,11 +755,39 @@ function StockPiler.HandleSlash(input)
         StockPiler.Print(L"Scan dumped to chat + uilog.log (d).")
         return
     end
-    if args == "notify" or args == "messages" then
+    local cmd, modeArg = string.match(args, "^(%S+)%s*(%S*)$")
+    if cmd == "quiet" or cmd == "chat" or cmd == "notify" or cmd == "messages" then
         local s = StockPiler.EnsureSettings()
-        s.statusMessages = not (s.statusMessages ~= false)
-        local state = (s.statusMessages ~= false) and L"ON" or L"OFF"
-        StockPiler.Print(L"Status messages: " .. state)
+        modeArg = modeArg or ""
+        local mode = s.statusChat
+        if mode ~= "all" and mode ~= "quiet" and mode ~= "off" then
+            mode = (s.statusMessages == false) and "off" or "all"
+        end
+        if modeArg == "all" or modeArg == "full" or modeArg == "on" then
+            mode = "all"
+        elseif modeArg == "quiet" or modeArg == "q" then
+            mode = "quiet"
+        elseif modeArg == "off" or modeArg == "none" then
+            mode = "off"
+        else
+            -- Cycle: all -> quiet -> off -> all
+            if mode == "all" then
+                mode = "quiet"
+            elseif mode == "quiet" then
+                mode = "off"
+            else
+                mode = "all"
+            end
+        end
+        s.statusChat = mode
+        s.statusMessages = (mode ~= "off")
+        local label = L"ALL (plant/harvest/learn)"
+        if mode == "quiet" then
+            label = L"QUIET (manual enable/disable only)"
+        elseif mode == "off" then
+            label = L"OFF"
+        end
+        StockPiler.Print(L"Chat status: " .. label .. L"  (/stp quiet | /stp quiet all|off)")
         return
     end
     -- /stockpiler db <uniqueID>  -- test GetDatabaseItemData (chat item-link path)
@@ -495,7 +800,7 @@ function StockPiler.HandleSlash(input)
             StockPiler.D("GetDatabaseItemData type=" .. type(GetDatabaseItemData))
             return
         end
-        local ok, data = pcall(GetDatabaseItemData, id)
+        local ok, data = StockPiler.TryCallQuiet("GetDatabaseItemData", GetDatabaseItemData, id)
         StockPiler.D("dbtest id=" .. tostring(id) .. " ok=" .. tostring(ok)
             .. " type=" .. type(data)
             .. (ok and type(data) == "table"
@@ -504,7 +809,7 @@ function StockPiler.HandleSlash(input)
                 or (" err=" .. tostring(data))))
         if ok and type(data) == "table" and type(Tooltips.CreateItemTooltip) == "function" then
             StockPiler.Print(L"DB ok for " .. towstring(tostring(id)) .. L" - showing tooltip")
-            pcall(Tooltips.CreateItemTooltip, data, "Root", Tooltips.ANCHOR_CURSOR, true)
+            StockPiler.TryCall("Tooltips.CreateItemTooltip", Tooltips.CreateItemTooltip, data, "Root", Tooltips.ANCHOR_CURSOR, true)
         else
             StockPiler.Print(L"DB miss/fail for " .. towstring(tostring(id)) .. L" (see uilog)")
         end
@@ -535,7 +840,7 @@ local function HookItemTooltips()
     local original = Tooltips.CreateItemTooltip
     Tooltips.CreateItemTooltip = function(itemData, ...)
         if StockPiler.Inventory and StockPiler.Inventory.LearnFromItemData then
-            pcall(StockPiler.Inventory.LearnFromItemData, itemData, "tooltip")
+            StockPiler.Inventory.LearnFromItemData(itemData, "tooltip")
         end
         return original(itemData, ...)
     end
@@ -545,6 +850,89 @@ end
 local m_invRefreshPending = false
 StockPiler._deferInvLearn = false
 StockPiler._deferUiRefresh = false
+StockPiler._bagWorkDue = false
+StockPiler._bagWorkAt = 0
+StockPiler._bagNeedQueue = false
+-- Harvest is one click per plot, typically ~1s apart. 0.4s flushed
+-- between clicks and rebuilt the grow plan four times.
+local BAG_WORK_COALESCE_SEC = 2.0
+
+local function GameNow()
+    if type(GetGameTime) == "function" then
+        return tonumber(GetGameTime()) or 0
+    end
+    return 0
+end
+
+--- Debounce harvest/loot bag work. Each event pushes the flush out 2s.
+--- needQueue: true after plots empty; false after refine/trade-skill bag noise.
+function StockPiler.ScheduleBagWork(needQueue)
+    StockPiler._bagWorkDue = true
+    StockPiler._bagWorkAt = GameNow() + BAG_WORK_COALESCE_SEC
+    StockPiler._deferInvLearn = true
+    if needQueue ~= false then
+        StockPiler._bagNeedQueue = true
+    end
+    if DoesWindowExist("StockPilerWindow") and WindowGetShowing("StockPilerWindow") then
+        StockPiler._deferUiRefresh = true
+    end
+end
+
+function StockPiler.BagWorkPending()
+    return StockPiler._bagWorkDue == true
+end
+
+--- One snapshot after harvest clicks and harvest animations go quiet.
+--- Plan rebuild waits for ProcessTick so we do not BuildPlan twice.
+function StockPiler.FlushBagWorkIfDue()
+    if StockPiler._bagWorkDue ~= true then
+        return false
+    end
+    if StockPiler.AutoGrow
+        and StockPiler.AutoGrow.HasHarvestInProgress
+        and StockPiler.AutoGrow.HasHarvestInProgress()
+    then
+        StockPiler._bagWorkAt = GameNow() + BAG_WORK_COALESCE_SEC
+        return false
+    end
+    if GameNow() < (tonumber(StockPiler._bagWorkAt) or 0) then
+        return false
+    end
+    StockPiler._bagWorkDue = false
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("FlushBagWork")
+    end
+    if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidateBagCache then
+        StockPiler.AutoGrow.InvalidateBagCache()
+    end
+    StockPiler._deferInvLearn = false
+    if StockPiler.Inventory and StockPiler.Inventory.LearnNewFromBags then
+        StockPiler.Inventory.LearnNewFromBags("bag-flush")
+    end
+    if StockPiler.Brew and StockPiler.Brew.OnInventoryDeferred then
+        StockPiler.Brew.OnInventoryDeferred()
+    end
+    local needQueue = StockPiler._bagNeedQueue == true
+    StockPiler._bagNeedQueue = false
+    if needQueue and StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
+        StockPiler.AutoGrow.InvalidatePlantQueue()
+    end
+    if StockPiler._deferUiRefresh == true then
+        StockPiler._deferUiRefresh = false
+        if StockPiler.AutoGrow then
+            StockPiler.AutoGrow._watchUiDirty = true
+        end
+    end
+    -- Snap-only flushes (refine/loot) must not re-arm refine; that rebuilt
+    -- spec demand (~800ms) after the harvest plan was already built.
+    if needQueue and StockPiler.AutoGrow and StockPiler.AutoGrow.MarkRefineDue then
+        StockPiler.AutoGrow.MarkRefineDue()
+    end
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("FlushBagWork")
+    end
+    return true
+end
 
 local function RefreshUiIfOpen()
     if DoesWindowExist("StockPilerWindow") and WindowGetShowing("StockPilerWindow") then
@@ -555,6 +943,9 @@ local function RefreshUiIfOpen()
 end
 
 function StockPiler.OnInventoryUpdated()
+    if StockPiler.Perf and StockPiler.Perf.Mark then
+        StockPiler.Perf.Mark("OnInventoryUpdated")
+    end
     if StockPiler.EnsureRefinementHook then
         StockPiler.EnsureRefinementHook()
     end
@@ -562,18 +953,23 @@ function StockPiler.OnInventoryUpdated()
         local refineResult = StockPiler.SeedMap.MaybeCompletePendingRefine()
         if type(refineResult) == "table" then
             if StockPiler.AutoGrow and StockPiler.AutoGrow.OnRefineComplete then
-                pcall(StockPiler.AutoGrow.OnRefineComplete, refineResult.plantUid, refineResult.seedUid)
+                StockPiler.AutoGrow.OnRefineComplete(refineResult.plantUid, refineResult.seedUid)
             end
             if StockPiler.SeedMap.RefreshHarvestWatchAfterBagChange then
-                pcall(StockPiler.SeedMap.RefreshHarvestWatchAfterBagChange)
+                StockPiler.SeedMap.RefreshHarvestWatchAfterBagChange()
             end
-            RefreshUiIfOpen()
+            StockPiler.ScheduleBagWork(false)
         elseif StockPiler.AutoGrow then
             StockPiler.AutoGrow._autoRefinePending = nil
         end
     end
-    if StockPiler.SeedMap and StockPiler.SeedMap.MaybeCompletePendingHarvest then
-        pcall(StockPiler.SeedMap.MaybeCompletePendingHarvest)
+    local suppress = StockPiler.AutoGrow
+        and tonumber(StockPiler.AutoGrow._suppressInvTicks) and StockPiler.AutoGrow._suppressInvTicks > 0
+    if not suppress
+        and StockPiler.SeedMap
+        and StockPiler.SeedMap.MaybeCompletePendingHarvest
+    then
+        StockPiler.SeedMap.MaybeCompletePendingHarvest()
     end
     if StockPiler.Inventory and StockPiler.Inventory.MaybeCompletePendingCraftFromInventory then
         local learned = StockPiler.Inventory.MaybeCompletePendingCraftFromInventory()
@@ -581,13 +977,17 @@ function StockPiler.OnInventoryUpdated()
             RefreshUiIfOpen()
         end
     end
-    if StockPiler.Inventory and StockPiler.Inventory.InvalidateSnapshot then
-        StockPiler.Inventory.InvalidateSnapshot()
-    end
-    local suppress = StockPiler.AutoGrow
-        and tonumber(StockPiler.AutoGrow._suppressInvTicks) and StockPiler.AutoGrow._suppressInvTicks > 0
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
-        pcall(StockPiler.AutoGrow.InvalidatePlantQueue)
+    -- AutoGrow plant/refine sets suppress so bag noise does not rebuild the
+    -- grow plan every second (that was a ~70ms hitch).
+    if not suppress then
+        if StockPiler.AutoGrow and StockPiler.AutoGrow.NeedsCurrentStageAdditive
+            and StockPiler.AutoGrow.NeedsCurrentStageAdditive()
+            and StockPiler.AutoGrow.MarkAdditiveDue
+        then
+            StockPiler.AutoGrow.MarkAdditiveDue()
+        end
+        -- Loot/vendor: resnap only. Plot-empty is what rebuilds the grow queue.
+        StockPiler.ScheduleBagWork(false)
     end
     -- Bags changed (brew, harvest, vendor). Empty plots that never left Empty
     -- never get _wantFill from OnPlotUpdated — mark them so AutoGrow plants.
@@ -598,37 +998,45 @@ function StockPiler.OnInventoryUpdated()
         and StockPiler.AutoGrow.IsEnabled()
         and StockPiler.AutoGrow.MarkAllPlotsWantFill
     then
-        pcall(StockPiler.AutoGrow.MarkAllPlotsWantFill)
-    end
-    if not suppress then
-        StockPiler._deferInvLearn = true
+        StockPiler.AutoGrow.MarkAllPlotsWantFill()
     end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.OnCraftingSlotUpdated then
         StockPiler.AutoGrow.OnCraftingSlotUpdated()
     end
     if StockPiler.Brew and StockPiler.Brew.OnCraftingSlotUpdated then
-        pcall(StockPiler.Brew.OnCraftingSlotUpdated)
+        StockPiler.Brew.OnCraftingSlotUpdated()
     end
-    if not DoesWindowExist("StockPilerWindow") or not WindowGetShowing("StockPilerWindow") then
-        return
-    end
-    StockPiler._deferUiRefresh = true
 end
 
 function StockPiler.ProcessDeferredInventoryWork()
+    if StockPiler.FlushBagWorkIfDue and StockPiler.FlushBagWorkIfDue() then
+        return
+    end
+    if StockPiler.BagWorkPending and StockPiler.BagWorkPending() then
+        return
+    end
+    if StockPiler._deferInvLearn ~= true and StockPiler._deferUiRefresh ~= true then
+        return
+    end
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("DeferredInv")
+    end
     local bagsChanged = StockPiler._deferInvLearn == true
     if StockPiler._deferInvLearn == true then
         StockPiler._deferInvLearn = false
         if StockPiler.Inventory and StockPiler.Inventory.LearnNewFromBags then
-            pcall(StockPiler.Inventory.LearnNewFromBags, "bag-deferred")
+            StockPiler.Inventory.LearnNewFromBags("bag-deferred")
         end
     end
     if bagsChanged and StockPiler.Brew and StockPiler.Brew.OnInventoryDeferred then
-        pcall(StockPiler.Brew.OnInventoryDeferred)
+        StockPiler.Brew.OnInventoryDeferred()
     end
     if StockPiler._deferUiRefresh == true then
         StockPiler._deferUiRefresh = false
         if m_invRefreshPending then
+            if StockPiler.Perf and StockPiler.Perf.End then
+                StockPiler.Perf.End("DeferredInv")
+            end
             return
         end
         m_invRefreshPending = true
@@ -636,6 +1044,9 @@ function StockPiler.ProcessDeferredInventoryWork()
             StockPilerWindow.RefreshActiveTab()
         end
         m_invRefreshPending = false
+    end
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("DeferredInv")
     end
 end
 
@@ -709,6 +1120,9 @@ function StockPiler.OnStoreShow()
     if n > 0 then
         RefreshUiIfOpen()
     end
+    if StockPiler.Buy and StockPiler.Buy.OnStoreUpdated then
+        StockPiler.Buy.OnStoreUpdated()
+    end
 end
 
 local function HookGuildVaultWindow()
@@ -722,14 +1136,14 @@ local function HookGuildVaultWindow()
     if type(origOpen) == "function" then
         GuildVaultWindow.OnGuildVaultOpened = function(vaultDataTable)
             origOpen(vaultDataTable)
-            pcall(StockPiler.OnGuildVaultOpen, vaultDataTable)
+            StockPiler.TryCall("StockPiler.OnGuildVaultOpen", StockPiler.OnGuildVaultOpen, vaultDataTable)
         end
     end
     local origUpdate = GuildVaultWindow.UpdateItemsInVault
     if type(origUpdate) == "function" then
         GuildVaultWindow.UpdateItemsInVault = function(vaultData)
             origUpdate(vaultData)
-            pcall(StockPiler.OnGuildVaultItemsUpdated, vaultData)
+            StockPiler.TryCall("StockPiler.OnGuildVaultItemsUpdated", StockPiler.OnGuildVaultItemsUpdated, vaultData)
         end
     end
     GuildVaultWindow._StockPilerHooked = true
@@ -746,7 +1160,7 @@ local function HookBankWindow()
     if type(origOpen) == "function" then
         BankWindow.OpenBank = function(...)
             origOpen(...)
-            pcall(StockPiler.OnBankOpen)
+            StockPiler.TryCall("StockPiler.OnBankOpen", StockPiler.OnBankOpen)
         end
     end
     BankWindow._StockPilerHooked = true
@@ -764,21 +1178,21 @@ local function HookStoreWindow()
     if type(origShow) == "function" then
         EA_Window_InteractionStore.ShowStore = function(...)
             origShow(...)
-            pcall(StockPiler.OnStoreShow)
+            StockPiler.TryCall("StockPiler.OnStoreShow", StockPiler.OnStoreShow)
         end
     end
     local origUpdate = EA_Window_InteractionStore.UpdateStoreList
     if type(origUpdate) == "function" then
         EA_Window_InteractionStore.UpdateStoreList = function(...)
             origUpdate(...)
-            pcall(StockPiler.OnStoreShow)
+            StockPiler.TryCall("StockPiler.OnStoreShow", StockPiler.OnStoreShow)
         end
     end
     local origBuyback = EA_Window_InteractionStore.UpdateBuyBackList
     if type(origBuyback) == "function" then
         EA_Window_InteractionStore.UpdateBuyBackList = function(...)
             origBuyback(...)
-            pcall(StockPiler.OnStoreShow)
+            StockPiler.TryCall("StockPiler.OnStoreShow", StockPiler.OnStoreShow)
         end
     end
     EA_Window_InteractionStore._StockPilerHooked = true
@@ -795,7 +1209,7 @@ local function HookCraftingSystem()
     if type(origUpdate) == "function" then
         CraftingSystem.UpdateCraftingStatus = function(updatedIngredients)
             origUpdate(updatedIngredients)
-            pcall(StockPiler.OnCraftingUpdated)
+            StockPiler.TryCall("StockPiler.OnCraftingUpdated", StockPiler.OnCraftingUpdated)
         end
     end
     CraftingSystem._StockPilerHooked = true
@@ -819,7 +1233,7 @@ local function HookRefinement()
             local inventory = EA_Window_Backpack.GetItemsFromBackpack(EA_Window_Backpack.refineBackpack)
             local itemData = inventory and inventory[EA_Window_Backpack.refineItemSlot]
             if type(itemData) == "table" and StockPiler.SeedMap and StockPiler.SeedMap.BeginPendingRefine then
-                pcall(StockPiler.SeedMap.BeginPendingRefine, itemData)
+                StockPiler.TryCall("StockPiler.SeedMap.BeginPendingRefine", StockPiler.SeedMap.BeginPendingRefine, itemData)
             end
         end
         origRefine()
@@ -839,22 +1253,25 @@ local function HookApothecaryWindow()
     local origPerform = ApothecaryWindow.Perform
     if type(origPerform) == "function" then
         ApothecaryWindow.Perform = function()
-            local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings()
-            if s and s.blockInvalidApothecaryBrew ~= false
-                and StockPiler.Brew and StockPiler.Brew.ValidateApothecaryPerform
-            then
-                local ok, msg = StockPiler.Brew.ValidateApothecaryPerform()
-                if ok ~= true then
-                    if StockPiler.Print and msg then
-                        StockPiler.Print(msg)
-                    end
-                    return
-                end
-            end
+            -- Stock window Brew is never blocked. Unstable/incomplete
+            -- checks apply only to the one-click brew macro.
             if StockPiler.Inventory and StockPiler.Inventory.BeginPendingCraft then
-                pcall(StockPiler.Inventory.BeginPendingCraft)
+                StockPiler.TryCall("StockPiler.Inventory.BeginPendingCraft", StockPiler.Inventory.BeginPendingCraft)
             end
             origPerform()
+        end
+    end
+    local origHide = ApothecaryWindow.Hide
+    if type(origHide) == "function" then
+        ApothecaryWindow.Hide = function(...)
+            if StockPiler.Inventory and StockPiler.Inventory.CompletePendingCraftLearn
+                and GameData and GameData.CraftingStatus and GameData.CraftingStates
+                and tonumber(GameData.CraftingStatus.State) == GameData.CraftingStates.FAIL
+            then
+                StockPiler.TryCall("StockPiler.Inventory.CompletePendingCraftLearn",
+                    StockPiler.Inventory.CompletePendingCraftLearn, { failed = true })
+            end
+            origHide(...)
         end
     end
     ApothecaryWindow._StockPilerHooked = true
@@ -876,24 +1293,22 @@ end
 
 function StockPiler.OnTradeSkillUpdated()
     if StockPiler.Inventory and StockPiler.Inventory.EnforceProfessionGates then
-        pcall(StockPiler.Inventory.EnforceProfessionGates)
+        StockPiler.Inventory.EnforceProfessionGates()
     end
-    if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-        pcall(StockPiler.Planner.InvalidatePlanCache)
-    end
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
-        pcall(StockPiler.AutoGrow.InvalidatePlantQueue)
-    end
-    RefreshUiIfOpen()
-    if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        pcall(StockPilerMacro.RefreshMacroButtonAppearance)
+    local suppress = StockPiler.AutoGrow
+        and tonumber(StockPiler.AutoGrow._suppressInvTicks)
+        and StockPiler.AutoGrow._suppressInvTicks > 0
+    -- Harvest/plant/refine fire this. Do not rebuild the grow plan here
+    -- (that was a second 1s BuildPlan after FlushBagWork).
+    if not suppress and StockPiler.ScheduleBagWork then
+        StockPiler.ScheduleBagWork(false)
     end
 end
 
 function StockPiler.OnCraftingUpdated()
     StockPiler.EnsureCraftingHook()
     if StockPiler.Brew and StockPiler.Brew.OnCraftingUpdated then
-        pcall(StockPiler.Brew.OnCraftingUpdated)
+        StockPiler.Brew.OnCraftingUpdated()
     end
     if StockPiler.Inventory and StockPiler.Inventory.OnCraftingUpdated then
         local learned = StockPiler.Inventory.OnCraftingUpdated()
@@ -944,61 +1359,81 @@ function StockPiler.Initialize()
     end
 
     if StockPilerWindow and StockPilerWindow.Initialize then
-        pcall(StockPilerWindow.Initialize)
+        StockPilerWindow.Initialize()
     end
 
     if StockPiler.AutoGrow and StockPiler.AutoGrow.Initialize then
-        pcall(StockPiler.AutoGrow.Initialize)
+        StockPiler.AutoGrow.Initialize()
     end
 
     if StockPiler.Brew and StockPiler.Brew.Initialize then
         StockPiler.Brew.Initialize()
     end
 
+    if StockPiler.CraftChat and StockPiler.CraftChat.Initialize then
+        StockPiler.CraftChat.Initialize()
+    end
+
     if StockPilerMacro and StockPilerMacro.Initialize then
-        pcall(StockPilerMacro.Initialize)
+        StockPilerMacro.Initialize()
     end
 
     if StockPiler.SeedMap and StockPiler.SeedMap.ApplyPendingMapReset then
-        pcall(StockPiler.SeedMap.ApplyPendingMapReset)
+        StockPiler.SeedMap.ApplyPendingMapReset()
     end
 
     if StockPiler.SeedMap and StockPiler.SeedMap.EnsureSpecBootstrap then
-        pcall(StockPiler.SeedMap.EnsureSpecBootstrap)
+        StockPiler.SeedMap.EnsureSpecBootstrap()
     end
 
     if StockPiler.SeedMap and StockPiler.SeedMap.RepairFromLearnedRecipes
         and StockPiler.SeedMap._growRepairDone ~= true
     then
         StockPiler.SeedMap._growRepairDone = true
-        local repaired = 0
-        local ok, count = pcall(StockPiler.SeedMap.RepairFromLearnedRecipes)
-        if ok then
-            repaired = tonumber(count) or 0
-        end
+        local repaired = tonumber(StockPiler.SeedMap.RepairFromLearnedRecipes()) or 0
         if repaired > 0 and StockPiler.Trace then
             StockPiler.Trace("Grow map recipe repair entries=" .. tostring(repaired))
         end
         if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
-            pcall(StockPiler.AutoGrow.InvalidatePlantQueue)
+            StockPiler.AutoGrow.InvalidatePlantQueue()
         end
     end
 
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairIncompleteMainSpecs then
-        local repaired = 0
-        local ok, count = pcall(StockPiler.RecipeSpec.RepairIncompleteMainSpecs)
-        if ok then
-            repaired = tonumber(count) or 0
-        end
+        local repaired = tonumber(StockPiler.RecipeSpec.RepairIncompleteMainSpecs()) or 0
         if repaired > 0 and StockPiler.Trace then
             StockPiler.Trace("Repaired " .. tostring(repaired) .. " incomplete main spec(s)")
+        end
+    end
+    if StockPiler.RecipeSpec then
+        if StockPiler.RecipeSpec.SlimAllRecipesForStorage then
+            StockPiler.RecipeSpec.SlimAllRecipesForStorage()
+        end
+        if StockPiler.RecipeSpec.SlimAllPotionsForStorage then
+            StockPiler.RecipeSpec.SlimAllPotionsForStorage()
+        end
+    end
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.ForgetKnownPotionsWithoutRecipe then
+        local dropped = tonumber(StockPiler.RecipeSpec.ForgetKnownPotionsWithoutRecipe()) or 0
+        if dropped > 0 and StockPiler.Trace then
+            StockPiler.Trace("Dropped " .. tostring(dropped) .. " known potion(s) with no brewed recipe")
+        end
+    end
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairRecipeYields then
+        local fixed = tonumber(StockPiler.RecipeSpec.RepairRecipeYields()) or 0
+        if fixed > 0 and StockPiler.Trace then
+            StockPiler.Trace("Repaired " .. tostring(fixed) .. " recipe yield(s) from observed successes")
         end
     end
 
     if RegisterSlash() then
         local pb = (StockPiler.Classify and StockPiler.Classify.PotionBarAvailable and StockPiler.Classify.PotionBarAvailable()) and L"PotionBar=yes" or L"PotionBar=no"
-        local cvt = (StockPiler.SeedMap and StockPiler.SeedMap.CvtAvailable and StockPiler.SeedMap.CvtAvailable()) and L"CVT=yes" or L"CVT=no"
-        StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded. /stockpiler | /stp growplan | /stp growtrace | /stp debug | " .. pb .. L" | " .. cvt)
+        local pairsN = 0
+        if StockPiler.SeedMap and StockPiler.SeedMap.CountLearnedGrowPairs then
+            pairsN = StockPiler.SeedMap.CountLearnedGrowPairs() or 0
+        end
+        StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded. /stockpiler | /stp seedmap | /stp growplan | /stp growwhy | /stp growtrace | /stp debug | /stp perf | "
+            .. pb .. L" | grows=" .. towstring(tostring(pairsN)))
         StockPiler.D("Initialize v" .. tostring(StockPiler.Version)
             .. " DebugEnabled=" .. tostring(StockPiler.DebugEnabled)
             .. " GrowTrace=" .. tostring(StockPiler.AutoGrow and StockPiler.AutoGrow.TraceEnabled)
@@ -1009,12 +1444,25 @@ function StockPiler.Initialize()
 end
 
 function StockPiler.Shutdown()
-    if StockPiler.PersistActiveCharacterSettings and type(StockPiler.Settings) == "table" then
-        StockPiler.PersistActiveCharacterSettings(StockPiler.Settings)
-        StockPiler.Settings._charBucket = nil
+    if StockPiler.RecipeSpec then
+        if StockPiler.RecipeSpec.SlimAllRecipesForStorage then
+            StockPiler.RecipeSpec.SlimAllRecipesForStorage()
+        end
+        if StockPiler.RecipeSpec.SlimAllPotionsForStorage then
+            StockPiler.RecipeSpec.SlimAllPotionsForStorage()
+        end
+    end
+    if type(StockPiler.Settings) == "table" then
+        if StockPiler.PersistActiveCharacterSettings then
+            StockPiler.PersistActiveCharacterSettings(StockPiler.Settings)
+        end
+        StockPiler.StripAccountFromSettings(StockPiler.Settings)
     end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.Shutdown then
         StockPiler.AutoGrow.Shutdown()
+    end
+    if StockPiler.CraftChat and StockPiler.CraftChat.Shutdown then
+        StockPiler.CraftChat.Shutdown()
     end
     if StockPilerMacro and StockPilerMacro.Shutdown then
         StockPilerMacro.Shutdown()
