@@ -1298,7 +1298,7 @@ end
 
 function StockPilerMacro.OnHotBarUpdated()
     StockPilerMacro.InvalidateHotbarSlotCache()
-    StockPilerMacro.RequestRefreshMacroButtonAppearance(false)
+    StockPilerMacro._appearanceDirty = true
 end
 
 function StockPilerMacro.RegisterHotbarEventHandler()

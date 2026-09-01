@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"0.9.94"
+StockPiler.Version = L"0.10.10"
 -- Writes to user/logs/uilog.log via engine d(). Toggle with /stockpiler debug
 StockPiler.DebugEnabled = false
 
@@ -18,7 +18,7 @@ StockPiler.DefaultSettings = {
     potionKnownRecipeOnly = false,
     potionSortColumn = "rank",
     potionSortAscending = true,
-    -- Chat verbosity: "all" (default) | "quiet" (manual toggles only) | "off"
+    -- Chat verbosity: "all" | "quiet" (settings/harvest/load/brew) | "off"
     statusChat = "all",
     statusMessages = true, -- compat: false when statusChat == "off"
     blockInvalidApothecaryBrew = true,
@@ -692,16 +692,12 @@ function StockPiler.HandleSlash(input)
         StockPiler.Show(1)
         return
     end
-    if args == "recipes" or args == "r" or args == "recipe" then
-        StockPiler.Show(2)
-        return
-    end
     if args == "watch" or args == "autogrow" or args == "grow" or args == "ag" then
         StockPiler.Show(2)
         return
     end
     if args == "help" then
-        StockPiler.Print(L"/stockpiler (or /stp) - open  |  potions|watch  |  quiet|chat  |  spec <uid>  |  seedmap|growplan  |  resetmaps  |  clearwatches  |  scan  |  debug [on|off]  |  perf [on|off|<ms>|baseline|summary]  |  audit [fix]")
+        StockPiler.Print(L"/stockpiler (or /stp) - open  |  potions|watch  |  quiet|chat [all|quiet|off]  |  seedmap|growplan|buyplan|brewplan  |  resetmaps  |  clearwatches  |  debug [on|off]  |  perf  |  audit [fix]  |  help")
         return
     end
     if args == "seedmap" or args == "seeds" or args == "growmap" then
@@ -717,8 +713,18 @@ function StockPiler.HandleSlash(input)
         end
         return
     end
-    if args == "growwhy" or args == "why" or args == "growtrace" then
-        StockPiler.Print(L"Removed. Use /stp debug for live plant|harvest|brew|settings logs in uilog.log, or /stp growplan for a one-shot plan dump.")
+    if args == "buyplan" or args == "buydump" then
+        if StockPiler.Buy and StockPiler.Buy.DumpBuyPlan then
+            StockPiler.Buy.DumpBuyPlan({ force = true })
+            StockPiler.Print(L"Buy plan written to uilog.log")
+        end
+        return
+    end
+    if args == "brewplan" or args == "brewdump" then
+        if StockPiler.Brew and StockPiler.Brew.DumpBrewPlan then
+            StockPiler.Brew.DumpBrewPlan({ force = true })
+            StockPiler.Print(L"Brew plan written to uilog.log")
+        end
         return
     end
     if args == "resetmaps" or args == "resetseedmap" or args == "clearmaps" then
@@ -900,10 +906,16 @@ function StockPiler.HandleSlash(input)
         return
     end
     if args == "scan" or args == "debugscan" then
+        if StockPiler.ShouldDeferHeavyBagWork and StockPiler.ShouldDeferHeavyBagWork() then
+            StockPiler.Print(L"Scan deferred (in combat or RvR lake). Try again when clear.")
+            return
+        end
+        local prevDebug = StockPiler.DebugEnabled == true
         StockPiler.DebugEnabled = true
         if StockPiler.Inventory and StockPiler.Inventory.DebugScan then
             StockPiler.Inventory.DebugScan()
         end
+        StockPiler.DebugEnabled = prevDebug
         StockPiler.Print(L"Scan dumped to chat + uilog.log (d).")
         return
     end
@@ -933,21 +945,23 @@ function StockPiler.HandleSlash(input)
         end
         s.statusChat = mode
         s.statusMessages = (mode ~= "off")
-        local label = L"ALL (plant/harvest/learn)"
+        local label = L"ALL (actions + state changes)"
         if mode == "quiet" then
-            label = L"QUIET (manual enable/disable only)"
+            label = L"QUIET (settings, harvest, load, brew)"
         elseif mode == "off" then
             label = L"OFF"
         end
-        StockPiler.Print(L"Chat status: " .. label .. L"  (/stp quiet | /stp quiet all|off)")
+        StockPiler.Print(L"Chat status: " .. label .. L"  (/stp quiet | /stp quiet all|quiet|off)")
         return
     end
-    -- /stockpiler db <uniqueID>  -- test GetDatabaseItemData (chat item-link path)
+    -- /stockpiler db <uniqueID>  -- power-user probe (hidden from help)
     local dbId = string.match(args, "^db%s+(%d+)$")
     if dbId then
+        local prevDebug = StockPiler.DebugEnabled == true
         StockPiler.DebugEnabled = true
         local id = tonumber(dbId)
         if type(GetDatabaseItemData) ~= "function" then
+            StockPiler.DebugEnabled = prevDebug
             StockPiler.Print(L"GetDatabaseItemData missing")
             StockPiler.D("GetDatabaseItemData type=" .. type(GetDatabaseItemData))
             return
@@ -965,6 +979,7 @@ function StockPiler.HandleSlash(input)
         else
             StockPiler.Print(L"DB miss/fail for " .. towstring(tostring(id)) .. L" (see uilog)")
         end
+        StockPiler.DebugEnabled = prevDebug
         return
     end
     StockPiler.Toggle()
@@ -1062,6 +1077,11 @@ function StockPiler.FlushBagWorkIfDue()
     if StockPiler._bagWorkDue ~= true then
         return false
     end
+    if StockPiler.ShouldDeferHeavyBagWork and StockPiler.ShouldDeferHeavyBagWork() then
+        -- Keep stale; soft AdjustCountByUid still applies. Flush when combat/RvR clears.
+        StockPiler._bagWorkAt = GameNow() + BAG_WORK_COALESCE_SEC
+        return false
+    end
     if StockPiler.AutoGrow
         and StockPiler.AutoGrow.HasHarvestInProgress
         and StockPiler.AutoGrow.HasHarvestInProgress()
@@ -1105,6 +1125,7 @@ function StockPiler.FlushBagWorkIfDue()
     end
     local wasStale = StockPiler._bagCountsStale == true
     StockPiler._bagCountsStale = false
+    local needQueue = StockPiler._bagNeedQueue == true
     if needQueue or wasStale then
         if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
             StockPiler.Planner.InvalidatePlanCache()
@@ -1113,7 +1134,6 @@ function StockPiler.FlushBagWorkIfDue()
     if StockPiler.Brew and StockPiler.Brew.OnInventoryDeferred then
         StockPiler.Brew.OnInventoryDeferred()
     end
-    local needQueue = StockPiler._bagNeedQueue == true
     StockPiler._bagNeedQueue = false
     if not needQueue then
         StockPiler._lastBagSnapAt = GameNow()
@@ -1152,6 +1172,9 @@ end
 function StockPiler.OnInventoryUpdated()
     if StockPiler.Perf and StockPiler.Perf.Mark then
         StockPiler.Perf.Mark("OnInventoryUpdated")
+    end
+    if StockPiler.AutoGrow and StockPiler.AutoGrow.ReconcileRefineOps then
+        StockPiler.AutoGrow.ReconcileRefineOps()
     end
     if StockPiler.EnsureRefinementHook then
         StockPiler.EnsureRefinementHook()
@@ -1640,7 +1663,7 @@ function StockPiler.Initialize()
         if StockPiler.SeedMap and StockPiler.SeedMap.CountLearnedGrowPairs then
             pairsN = StockPiler.SeedMap.CountLearnedGrowPairs() or 0
         end
-        StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded. /stockpiler | /stp seedmap | /stp growplan | /stp debug | /stp perf | "
+        StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded. /stockpiler | /stp seedmap | /stp growplan | /stp buyplan | /stp brewplan | /stp debug | /stp perf | "
             .. pb .. L" | grows=" .. towstring(tostring(pairsN))
             .. ((StockPiler.DebugEnabled == true) and L" | debug=ON" or L""))
         if StockPiler.LogSettingsAlways then

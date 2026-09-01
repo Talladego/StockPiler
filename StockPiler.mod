@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-        <UiMod name="StockPiler" version="0.9.94" date="2026-09-01">
+        <UiMod name="StockPiler" version="0.10.10" date="2026-09-01">
         <Author name="Talladego" email="" />
         <Description text="Apothecary stock planner with AutoGrow, AutoBuy, and harvest/brew macros." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -21,6 +21,7 @@
         <Files>
             <File name="Source/StockPiler.lua" />
             <File name="Source/StockPilerPerf.lua" />
+            <File name="Source/StockPilerWork.lua" />
             <File name="Source/StockPilerAudit.lua" />
             <File name="Source/StockPilerCharacter.lua" />
             <File name="Source/StockPilerNotify.lua" />

@@ -766,7 +766,7 @@ function StockPilerTabAutoGrow.OnMouseOverAutoBuy()
     Tooltips.SetTooltipText(
         2,
         1,
-        L"While an NPC vendor is open, buy whatever Watch already says to buy: containers, butcher mats, flasks, missing seeds, and other non-growable shortages. Independent of AutoGrow."
+        L"While an NPC vendor is open, buy whatever Watch already says to buy: containers, butcher mats, flasks, and other non-growable shortages. Growable plants and seeds are handled by AutoGrow. Independent of AutoGrow."
     )
     Tooltips.SetTooltipText(
         3,
@@ -855,7 +855,9 @@ local function AdjustSeedBufferAndRefresh(increase, flags)
         StockPiler.Planner.AdjustSeedBuffer(increase, amount)
     end
     UpdateSeedBufferLabel()
-    InvalidateAutoGrowPlan()
+    if StockPiler.AutoGrow and StockPiler.AutoGrow.OnSeedBufferSettingChanged then
+        StockPiler.AutoGrow.OnSeedBufferSettingChanged()
+    end
     StockPilerTabAutoGrow.Refresh()
     UpdateSeedBufferLabel()
 end
@@ -874,7 +876,7 @@ function StockPilerTabAutoGrow.OnMouseOverSeedBuffer()
     Tooltips.SetTooltipText(
         2,
         1,
-        L"Refine target: AutoGrow may plant down to 0 seeds. When plants are in bags it converts them back up to this count. Left-click +1, right-click -1. Hold Shift for ±10."
+        L"Target seed count after harvest. AutoGrow may plant down to 0 seeds; post-harvest maintenance refills toward this count. Changing this does not refine immediately. Left-click +1, right-click -1. Hold Shift for ±10."
     )
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
@@ -1315,11 +1317,7 @@ function StockPilerTabAutoGrow.OnMouseOverStatus()
                     or StockPiler.MaterialSpec.Label(entry.spec)
                 local action
                 if entry.kind == "plant" then
-                    if data.statusKey == "converting_material" then
-                        action = L"Convert then plant "
-                    else
-                        action = L"Plant "
-                    end
+                    action = L"Plant "
                 elseif entry.kind == "convert" then
                     action = L"Convert plants for "
                 elseif entry.role == "container" then
@@ -1345,11 +1343,7 @@ function StockPilerTabAutoGrow.OnMouseOverStatus()
                         notes = StockPiler.AutoGrow.GrowingNotesForSpec(entry.spec) or L""
                     end
                     if notes == L"" then
-                        if data.statusKey == "converting_material" then
-                            notes = L"converting plants to seeds"
-                        else
-                            notes = L"needs planting"
-                        end
+                        notes = L"needs planting"
                     end
                     rows[#rows + 1] = { text = notes, kind = GrowingNoteKind(notes) }
                 end

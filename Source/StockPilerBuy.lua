@@ -30,11 +30,47 @@ local function LogBuyOp(msg)
     end
 end
 
+--- AutoBuy uilog line. force=true for one-shot dumps (/stp buyplan).
+local function EmitBuyTrace(msg, force)
+    if force ~= true and StockPiler.DebugEnabled ~= true then
+        return
+    end
+    local text = "buy| " .. tostring(msg)
+    if StockPiler._EmitLog and StockPiler._LogText then
+        StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(text))
+    elseif type(d) == "function" then
+        d("StockPiler| " .. text)
+    end
+end
+
 local function ToNarrow(text)
     if StockPiler.ToNarrow then
         return StockPiler.ToNarrow(text)
     end
     return tostring(text or "")
+end
+
+local function LogBuyJobLines(jobs, force)
+    jobs = type(jobs) == "table" and jobs or {}
+    for i = 1, math.min(#jobs, 20) do
+        local job = jobs[i]
+        if type(job) == "table" then
+            EmitBuyTrace(string.format(
+                "  job #%d kind=%s specKey=%s have=%d need=%d deficit=%d seedUid=%s name=%s",
+                i,
+                tostring(job.kind or "buy"),
+                tostring(job.specKey or "?"),
+                tonumber(job.have) or 0,
+                tonumber(job.need) or 0,
+                tonumber(job.deficit) or 0,
+                tostring(tonumber(job.seedUid) or 0),
+                ToNarrow(job.label or job.name or "?")
+            ), force)
+        end
+    end
+    if #jobs > 20 then
+        EmitBuyTrace("  ... +" .. tostring(#jobs - 20) .. " more jobs", force)
+    end
 end
 
 local function GetSettings()
@@ -303,6 +339,38 @@ function StockPiler.Buy.InvalidateJobsCache()
     StockPiler.Buy._jobsSnapGen = nil
 end
 
+function StockPiler.Buy.DumpBuyPlan(opts)
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true
+    local snapDone = StockPiler.Inventory and StockPiler.Inventory._snapshotDone == true
+    local snapGen = StockPiler.Inventory and tonumber(StockPiler.Inventory._snapshotGen) or 0
+    if force and StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
+        StockPiler.Inventory.RefreshAllIfNeeded()
+        snapDone = StockPiler.Inventory._snapshotDone == true
+        snapGen = tonumber(StockPiler.Inventory._snapshotGen) or snapGen
+    end
+    StockPiler.Buy.InvalidateJobsCache()
+    local jobs = StockPiler.Buy.CollectBuyJobs()
+    EmitBuyTrace("=== buy plan ===", force)
+    EmitBuyTrace(string.format(
+        "enabled=%s reserveGold=%d budgetGold=%d snapshotDone=%s snapGen=%d",
+        tostring(StockPiler.Buy.IsEnabled()),
+        StockPiler.Buy.GetReserveGold(),
+        StockPiler.Buy.GetBudgetGold(),
+        tostring(snapDone),
+        snapGen
+    ), force)
+    EmitBuyTrace("--- jobs (" .. tostring(#jobs) .. ") ---", force)
+    if not snapDone then
+        EmitBuyTrace("  (snapshot not ready — job list may be empty)", force)
+    elseif #jobs == 0 then
+        EmitBuyTrace("  (no vendor buy jobs)", force)
+    else
+        LogBuyJobLines(jobs, force)
+    end
+    EmitBuyTrace("=== end buy plan ===", force)
+end
+
 function StockPiler.Buy.CollectBuyJobs()
     local snapGen = StockPiler.Inventory and tonumber(StockPiler.Inventory._snapshotGen) or 0
     if type(StockPiler.Buy._jobsCache) == "table"
@@ -381,12 +449,22 @@ local function ChatVisitStop(reason)
     end
     local bought = tonumber(buy._visitBought) or 0
     local spent = tonumber(buy._visitSpentBrass) or 0
-    LogBuyOp(string.format(
+    local noMatch = 0
+    if type(buy._visitNoMatchKeys) == "table" then
+        for _ in pairs(buy._visitNoMatchKeys) do
+            noMatch = noMatch + 1
+        end
+    end
+    local stopMsg = string.format(
         "stop reason=%s bought=%d spentBrass=%d",
         tostring(reason),
         bought,
         spent
-    ))
+    )
+    if reason == "nothing" and noMatch > 0 then
+        stopMsg = stopMsg .. " noMatch=" .. tostring(noMatch)
+    end
+    LogBuyOp(stopMsg)
     if not StockPiler.StatusMessagesVerbose() then
         return
     end
@@ -429,8 +507,25 @@ local function ResetVisit()
     StockPiler.Buy._visitSawMatch = false
     StockPiler.Buy._visitHadJobs = false
     StockPiler.Buy._visitAcquiredByKey = {}
+    StockPiler.Buy._visitNoMatchKeys = {}
+    StockPiler.Buy._visitSkipLogged = {}
+    StockPiler.Buy._visitSnapshotSkipLogged = false
+    StockPiler.Buy._visitBuybackSkipLogged = false
     StockPiler.Buy._visitMoneyBrass = PlayerMoneyBrass()
     StockPiler.Buy.InvalidateJobsCache()
+end
+
+local function LogVisitSkipOnce(key, msg)
+    local logged = StockPiler.Buy._visitSkipLogged
+    if type(logged) ~= "table" then
+        logged = {}
+        StockPiler.Buy._visitSkipLogged = logged
+    end
+    if logged[key] == true then
+        return
+    end
+    logged[key] = true
+    LogBuyOp("skip " .. msg)
 end
 
 local function JobAcquireKey(job, item)
@@ -512,6 +607,9 @@ function StockPiler.Buy.OnStoreUpdated()
             StockPiler.Buy.GetReserveGold(),
             StockPiler.Buy.GetBudgetGold()
         ))
+        if StockPiler.Buy.IsEnabled() and type(jobs) == "table" and #jobs > 0 then
+            LogBuyJobLines(jobs, false)
+        end
     elseif not showing and StockPiler.Buy._visitStoreOpen == true then
         StockPiler.Buy._visitStoreOpen = false
         if (tonumber(StockPiler.Buy._visitBought) or 0) > 0 then
@@ -549,7 +647,14 @@ function StockPiler.Buy.TryBuyNext()
     if not StockPiler.Buy.IsEnabled() then
         return false
     end
-    if not StoreIsShowing() or IsBuybackView() then
+    if not StoreIsShowing() then
+        return false
+    end
+    if IsBuybackView() then
+        if StockPiler.Buy._visitBuybackSkipLogged ~= true then
+            StockPiler.Buy._visitBuybackSkipLogged = true
+            LogBuyOp("skip buyback-view")
+        end
         return false
     end
     local busy = BuyBlockedReason()
@@ -575,6 +680,12 @@ function StockPiler.Buy.TryBuyNext()
 
     local jobs = StockPiler.Buy.CollectBuyJobs()
     if type(jobs) ~= "table" or #jobs == 0 then
+        if StockPiler.Inventory and StockPiler.Inventory._snapshotDone ~= true then
+            if StockPiler.Buy._visitSnapshotSkipLogged ~= true then
+                StockPiler.Buy._visitSnapshotSkipLogged = true
+                LogBuyOp("skip snapshot-not-ready")
+            end
+        end
         if (tonumber(StockPiler.Buy._visitBought) or 0) > 0 then
             ChatVisitStop("bought")
         end
@@ -601,7 +712,32 @@ function StockPiler.Buy.TryBuyNext()
         local bagDeficit = tonumber(job.deficit) or 0
         local remaining = math.max(0, bagDeficit - VisitAcquired(acquireKey))
         if remaining < 1 then
-            -- Already bought enough this visit; bag snapshot may still be catching up.
+            if acquireKey ~= nil then
+                LogVisitSkipOnce(
+                    "acquired:" .. tostring(acquireKey),
+                    string.format(
+                        "acquired key=%s acquired=%d deficit=%d",
+                        tostring(acquireKey),
+                        VisitAcquired(acquireKey),
+                        bagDeficit
+                    )
+                )
+            end
+        elseif type(item) ~= "table" and bagDeficit > 0 then
+            local jobKey = tostring(job.specKey or job.kind or i)
+            if type(StockPiler.Buy._visitNoMatchKeys) ~= "table" then
+                StockPiler.Buy._visitNoMatchKeys = {}
+            end
+            StockPiler.Buy._visitNoMatchKeys[jobKey] = true
+            LogVisitSkipOnce(
+                "nomatch:" .. jobKey,
+                string.format(
+                    "no-match job=%s kind=%s deficit=%d",
+                    ToNarrow(job.name or job.label or jobKey),
+                    tostring(job.kind or "buy"),
+                    bagDeficit
+                )
+            )
         elseif type(item) == "table" and (tonumber(cost) or 0) > 0 then
             StockPiler.Buy._visitSawMatch = true
             -- Same cap as ItemStackingWindow for merchant buy-N (stackCount <= 1).

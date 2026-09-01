@@ -47,6 +47,19 @@ local function LogBrewOp(msg)
     end
 end
 
+--- Brew uilog line. force=true for one-shot dumps (/stp brewplan).
+local function EmitBrewTrace(msg, force)
+    if force ~= true and StockPiler.DebugEnabled ~= true then
+        return
+    end
+    local text = "brew| " .. tostring(msg)
+    if StockPiler._EmitLog and StockPiler._LogText then
+        StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(text))
+    elseif type(d) == "function" then
+        d("StockPiler| " .. text)
+    end
+end
+
 local function ShortKey(key)
     if StockPiler.ShortLogKey then
         return StockPiler.ShortLogKey(key)
@@ -853,6 +866,8 @@ local function EmptySession()
         potionDeficit = nil,
         craftable = nil,
         recipeYield = nil,
+        statusKey = nil,
+        statusText = nil,
     }
 end
 
@@ -888,6 +903,8 @@ local function SoftSessionRow()
         craftable = session.craftable,
         target = session.potionMin,
         potionMin = session.potionMin,
+        statusKey = session.statusKey,
+        statusText = session.statusText,
     }
 end
 
@@ -901,6 +918,8 @@ local function CaptureSessionStatsFromRow(row, recipe)
     session.potionMin = tonumber(row.target or row.potionMin)
     session.potionDeficit = tonumber(row.potionDeficit)
     session.craftable = tonumber(row.craftable)
+    session.statusKey = row.statusKey
+    session.statusText = row.statusText
     local yield = 2
     if type(recipe) == "table"
         and StockPiler.RecipeSpec
@@ -943,6 +962,22 @@ local function PatchPlanCacheAfterBrew(session, yieldAdd)
                 row.craftableText = towstring(tostring(craftable)) .. L"*"
             end
             session.craftable = row.craftable
+            -- Soft clear Ready when no longer craftable (full plan refresh later).
+            if (tonumber(row.craftable) or 0) <= 0
+                or (tonumber(row.potionDeficit) or 0) <= 0
+            then
+                if row.statusKey == "ready_to_craft" then
+                    if (tonumber(row.potionDeficit) or 0) <= 0 then
+                        row.statusKey = "potion_stocked"
+                        row.statusText = L"Stocked"
+                    else
+                        row.statusKey = "need_materials"
+                        row.statusText = L"Buy materials"
+                    end
+                end
+            end
+            session.statusKey = row.statusKey
+            session.statusText = row.statusText
             break
         end
     end
@@ -1183,7 +1218,7 @@ function StockPiler.Brew.SetMacroEnabled(enabled)
         and not StockPiler.Inventory.IsApothecary()
     then
         if StockPiler.Print then
-            StockPiler.Print(L"Brew macro is only available to Apothecaries.")
+            StockPiler.NotifyUserAction(L"Brew", L"Brew macro is only available to Apothecaries.")
         end
         enabled = false
     end
@@ -1272,7 +1307,7 @@ end
 function StockPiler.Brew.OnRowCraftClick(row)
     if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
         if StockPiler.Print then
-            StockPiler.Print(L"One-Click Brew is disabled.")
+            StockPiler.NotifyUserAction(L"Brew", L"One-Click Brew is disabled.")
         end
         return false
     end
@@ -1280,7 +1315,7 @@ function StockPiler.Brew.OnRowCraftClick(row)
         and not StockPiler.Inventory.IsApothecary()
     then
         if StockPiler.Print then
-            StockPiler.Print(L"Load is only available to Apothecaries.")
+            StockPiler.NotifyUserAction(L"Brew", L"Load is only available to Apothecaries.")
         end
         return false
     end
@@ -1320,7 +1355,7 @@ function StockPiler.Brew.CancelSession()
         CloseApothecarySession()
     end
     if StockPiler.Print then
-        StockPiler.Print(L"Brew session cancelled.")
+        StockPiler.NotifyUserAction(L"Brew", L"Brew session cancelled.")
     end
     RefreshBrewAppearance()
 end
@@ -1395,7 +1430,9 @@ function StockPiler.Brew.RefreshSessionAfterBrew()
     end
     PatchPlanCacheAfterBrew(session, yieldAdd)
     StockPiler._brewDeferPlanRefresh = true
-    if StockPiler.ScheduleBagWork then
+    if StockPiler.Work and StockPiler.Work.Complete then
+        StockPiler.Work.Complete("brew", { refreshBrewUi = true })
+    elseif StockPiler.ScheduleBagWork then
         StockPiler.ScheduleBagWork(false)
     end
     if session.potionDeficit ~= nil and (tonumber(session.potionDeficit) or 0) <= 0 then
@@ -1421,15 +1458,19 @@ local function ChatBrewBlocked()
     if StockPiler.Inventory and StockPiler.Inventory.IsApothecary
         and not StockPiler.Inventory.IsApothecary()
     then
-        if StockPiler.Print then
-            StockPiler.Print(L"Brew is only available to Apothecaries.")
+        if StockPiler.NotifyUserAction then
+            StockPiler.NotifyUserAction(L"Brew", L"Brew is only available to Apothecaries.")
         end
         return
     end
     if StockPiler.Planner and StockPiler.Planner.BrewGrowBlockMessage then
         local growMsg = StockPiler.Planner.BrewGrowBlockMessage()
-        if growMsg ~= nil and growMsg ~= L"" and StockPiler.Print then
-            StockPiler.Print(growMsg)
+        if growMsg ~= nil and growMsg ~= L"" then
+            if StockPiler.NotifyUserAction then
+                StockPiler.NotifyUserAction(L"Brew", growMsg)
+            elseif StockPiler.Print then
+                StockPiler.Print(growMsg)
+            end
             return
         end
     end
@@ -1484,6 +1525,12 @@ function StockPiler.Brew.TryBrewClick()
                 return "go"
             end
             D("session apo mismatch or empty; pick a new watch")
+            if StockPiler.Work and StockPiler.Work.Complete then
+                StockPiler.Work.Complete("brew-validate-fail", {
+                    forceSnap = true,
+                    refreshBrewUi = true,
+                })
+            end
         else
             D("session target met; pick next")
         end
@@ -1502,9 +1549,9 @@ function StockPiler.Brew.TryBrewClick()
             and type(recipe) == "table"
             and StockPiler.Planner.WouldBrewStarveGrow(recipe)
         then
-            if StockPiler.Print then
+            if StockPiler.NotifyUserAction then
                 local msg = StockPiler.Planner.BrewGrowBlockMessage and StockPiler.Planner.BrewGrowBlockMessage()
-                StockPiler.Print(msg or L"Brew held: materials reserved for AutoGrow seed conversion.")
+                StockPiler.NotifyUserAction(L"Brew", msg or L"Brew held: materials reserved for AutoGrow seed conversion.")
             end
             return "blocked"
         end
@@ -1587,7 +1634,35 @@ function StockPiler.Brew.ShowBrewTooltip(anchorWindow, anchor)
                 if growMsg ~= nil and growMsg ~= L"" then
                     body(growMsg)
                 else
-                    body(L"No watches ready to craft.")
+                    -- Furthest-behind short watch status (missing mats / buy / restock).
+                    local best = nil
+                    local bestDef = -1
+                    local plan = StockPiler.Planner and StockPiler.Planner.BuildPlan
+                        and StockPiler.Planner.BuildPlan({ refresh = false, reuse = true })
+                    local rows = plan and plan.rows
+                    if type(rows) == "table" then
+                        for i = 1, #rows do
+                            local r = rows[i]
+                            if type(r) == "table" and r.watched == true then
+                                local def = tonumber(r.potionDeficit) or 0
+                                if def > bestDef then
+                                    bestDef = def
+                                    best = r
+                                end
+                            end
+                        end
+                    end
+                    if type(best) == "table" then
+                        local name = AsWString(best.name or L"watch")
+                        local st = AsWString(best.statusText or best.statusKey or L"not ready")
+                        local detail = best.statusDetail
+                        body(name .. L": " .. st)
+                        if detail ~= nil and detail ~= L"" then
+                            body(AsWString(detail))
+                        end
+                    else
+                        body(L"No watches ready to craft.")
+                    end
                 end
             end
         end
@@ -1618,7 +1693,9 @@ local function FailJob(message)
         D("FAIL " .. tostring(message))
         LogBrewOp("fail msg=" .. ToNarrow(message))
     end
-    if message and StockPiler.Print then
+    if message and StockPiler.NotifyUserAction then
+        StockPiler.NotifyUserAction(L"Brew", message)
+    elseif message and StockPiler.Print then
         StockPiler.Print(message)
     end
     StockPiler.Brew._job = nil
@@ -1720,7 +1797,9 @@ local function CompleteJob(message)
     else
         D(message or "complete")
     end
-    if message and StockPiler.Print then
+    if message and StockPiler.NotifyUserAction then
+        StockPiler.NotifyUserAction(L"Brew", message)
+    elseif message and StockPiler.Print then
         StockPiler.Print(message)
     end
     StockPiler.Brew._job = nil
@@ -2860,10 +2939,20 @@ function StockPiler.Brew.BeginForRow(row)
     if StockPiler.Inventory and StockPiler.Inventory.IsApothecary
         and not StockPiler.Inventory.IsApothecary()
     then
-        if StockPiler.Print then
-            StockPiler.Print(L"Load is only available to Apothecaries.")
+        if StockPiler.NotifyUserAction then
+            StockPiler.NotifyUserAction(L"Brew", L"Load is only available to Apothecaries.")
         end
         return false
+    end
+    if StockPiler.Work and StockPiler.Work.CanStartBrewLoad then
+        local ok, msg = StockPiler.Work.CanStartBrewLoad()
+        if ok ~= true then
+            if StockPiler.NotifyUserAction then
+                StockPiler.NotifyUserAction(L"Brew", msg or L"Brew held: AutoGrow is busy.")
+            end
+            LogBrewOp("BeginForRow blocked: grow-op")
+            return false
+        end
     end
     -- Do not cancel an in-flight load/perform on spam; use CancelSession explicitly.
     if StockPiler.Brew.IsBusy() then
@@ -2886,9 +2975,9 @@ function StockPiler.Brew.BeginForRow(row)
         and StockPiler.Planner.WouldBrewStarveGrow
         and StockPiler.Planner.WouldBrewStarveGrow(recipe)
     then
-        if StockPiler.Print then
+        if StockPiler.NotifyUserAction then
             local msg = StockPiler.Planner.BrewGrowBlockMessage and StockPiler.Planner.BrewGrowBlockMessage()
-            StockPiler.Print(msg or L"Brew held: materials reserved for AutoGrow seed conversion.")
+            StockPiler.NotifyUserAction(L"Brew", msg or L"Brew held: materials reserved for AutoGrow seed conversion.")
         end
         return false
     end
@@ -2898,7 +2987,7 @@ function StockPiler.Brew.BeginForRow(row)
     end
     if type(recipe) ~= "table" then
         if StockPiler.Print then
-            StockPiler.Print(L"No learned recipe for this potion.")
+            StockPiler.NotifyUserAction(L"Brew", L"No learned recipe for this potion.")
         end
         return false
     end
@@ -2909,9 +2998,9 @@ function StockPiler.Brew.BeginForRow(row)
                 missing = StockPiler.Brew.DescribeMissingInCraftingBag(recipe)
             end
             if missing ~= nil and missing ~= L"" then
-                StockPiler.Print(L"Load blocked: missing " .. missing .. L" in the crafting bag.")
+                StockPiler.NotifyUserAction(L"Brew", L"Load blocked: missing " .. missing .. L" in the crafting bag.")
             else
-                StockPiler.Print(L"Move all recipe materials into the crafting bag first.")
+                StockPiler.NotifyUserAction(L"Brew", L"Move all recipe materials into the crafting bag first.")
             end
         end
         -- Do not AbortBrewStation/CloseApo here — that can yank leftover main-kept
@@ -2924,7 +3013,7 @@ function StockPiler.Brew.BeginForRow(row)
     local steps = BuildLoadSteps(recipe)
     if #steps == 0 then
         if StockPiler.Print then
-            StockPiler.Print(L"Could not build brew steps for this recipe.")
+            StockPiler.NotifyUserAction(L"Brew", L"Could not build brew steps for this recipe.")
         end
         return false
     end
@@ -3179,6 +3268,246 @@ function StockPiler.Brew.OnUpdate(timeElapsed)
     end
     StockPiler.Brew._updateAccum = StockPiler.Brew._updateAccum - TICK_INTERVAL_SEC
     StockPiler.Brew.Tick()
+end
+
+local function BrewPlanSpecLabel(spec, specKey)
+    if type(spec) ~= "table" or not StockPiler.MaterialSpec then
+        return tostring(specKey or "?")
+    end
+    local label = ToNarrow(StockPiler.MaterialSpec.Label(spec))
+    local key = specKey or StockPiler.MaterialSpec.Key(spec) or "?"
+    return label .. " [" .. tostring(key) .. "]"
+end
+
+local function BrewPlanRowWhy(row)
+    if type(row) ~= "table" then
+        return "invalid row"
+    end
+    if (tonumber(row.potionDeficit) or 0) <= 0 then
+        return "stocked"
+    end
+    local recipe = row.specRecipe or row.recipe
+    if type(recipe) ~= "table" then
+        return "no recipe"
+    end
+    local RS = StockPiler.RecipeSpec
+    local rawCraft = tonumber(row.craftable) or 0
+    local reservedCraft = rawCraft
+    if RS and RS.CountPotionsCraftable then
+        rawCraft = math.floor((tonumber(RS.CountPotionsCraftable(recipe)) or 0) + 0.5)
+        reservedCraft = math.floor((tonumber(RS.CountPotionsCraftable(recipe, { respectGrowReserve = true })) or 0) + 0.5)
+    end
+    if StockPiler.Planner and StockPiler.Planner.WouldBrewStarveGrow
+        and StockPiler.Planner.WouldBrewStarveGrow(recipe)
+    then
+        return string.format("grow-reserve block raw=%d reserved=%d", rawCraft, reservedCraft)
+    end
+    if reservedCraft <= 0 and rawCraft > 0 then
+        return string.format("grow-reserve block raw=%d reserved=0", rawCraft)
+    end
+    if row.canLoad ~= true and reservedCraft <= 0 then
+        local lim = row.specDeficit
+        if type(lim) == "table" then
+            return string.format(
+                "need %s have=%d need=%d kind=%s",
+                BrewPlanSpecLabel(lim.spec, lim.specKey),
+                tonumber(lim.have) or 0,
+                tonumber(lim.need) or 0,
+                tostring(lim.kind or "?")
+            )
+        end
+        return ToNarrow(row.statusText or row.statusKey or "need materials")
+    end
+    if StockPiler.Brew.MaterialsReadyInCraftingBag
+        and StockPiler.Brew.MaterialsReadyInCraftingBag(recipe) ~= true
+    then
+        local missing = L""
+        if StockPiler.Brew.DescribeMissingInCraftingBag then
+            missing = StockPiler.Brew.DescribeMissingInCraftingBag(recipe)
+        end
+        local narrow = ToNarrow(missing)
+        if narrow ~= "" then
+            return "craft bag missing: " .. narrow
+        end
+        return "move to craft bag"
+    end
+    if RowIsReadyToCraft(row) then
+        return "ready"
+    end
+    return ToNarrow(row.statusKey or "?")
+end
+
+local function CompareBrewPlanRow(a, b)
+    local da = tonumber(a.potionDeficit) or 0
+    local db = tonumber(b.potionDeficit) or 0
+    if da ~= db then
+        return da > db
+    end
+    return ToNarrow(a.name) < ToNarrow(b.name)
+end
+
+function StockPiler.Brew.DumpBrewPlan(opts)
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true
+    local snapDone = StockPiler.Inventory and StockPiler.Inventory._snapshotDone == true
+    local snapGen = StockPiler.Inventory and tonumber(StockPiler.Inventory._snapshotGen) or 0
+    if force and StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
+        StockPiler.Inventory.RefreshAllIfNeeded()
+        snapDone = StockPiler.Inventory._snapshotDone == true
+        snapGen = tonumber(StockPiler.Inventory._snapshotGen) or snapGen
+    end
+    if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+        StockPiler.Planner.InvalidatePlanCache()
+    end
+
+    local function emit(msg)
+        EmitBrewTrace(msg, force)
+    end
+
+    emit("=== brew plan ===")
+    local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings() or StockPiler.Settings
+    local autoGrow = type(s) == "table" and s.autoGrowEnabled == true
+    local respectGrow = StockPiler.Planner and StockPiler.Planner.BrewRespectGrowReserve
+        and StockPiler.Planner.BrewRespectGrowReserve() == true
+    local canApo = true
+    if StockPiler.Inventory and StockPiler.Inventory.IsApothecary then
+        canApo = StockPiler.Inventory.IsApothecary() == true
+    end
+    emit(string.format(
+        "macro=%s respectGrow=%s autoGrow=%s apothecary=%s snapshotDone=%s snapGen=%d",
+        tostring(StockPiler.Brew.IsMacroEnabled()),
+        tostring(respectGrow),
+        tostring(autoGrow),
+        tostring(canApo),
+        tostring(snapDone),
+        snapGen
+    ))
+
+    local session = StockPiler.Brew.GetSession and StockPiler.Brew.GetSession() or {}
+    emit(string.format(
+        "session phase=%s potion=%s rowId=%s busy=%s canClick=%s",
+        tostring(session.phase or "idle"),
+        ToNarrow(session.name or session.potionKey or "-"),
+        tostring(session.rowId or "-"),
+        tostring(StockPiler.Brew.IsBusy()),
+        tostring(StockPiler.Brew.CanBrewClick())
+    ))
+    if StockPiler.Work and StockPiler.Work.CanStartBrewLoad then
+        local loadOk, loadMsg = StockPiler.Work.CanStartBrewLoad()
+        if loadOk ~= true then
+            emit("load blocked: " .. ToNarrow(loadMsg or "grow-op"))
+        end
+    end
+    local growBlock = StockPiler.Planner and StockPiler.Planner.BrewGrowBlockMessage
+        and StockPiler.Planner.BrewGrowBlockMessage()
+    if growBlock ~= nil and growBlock ~= L"" then
+        emit("macro block: " .. ToNarrow(growBlock))
+    end
+
+    local plan = CurrentPlan({ refresh = false })
+    local rows = plan and plan.rows
+    rows = type(rows) == "table" and rows or {}
+
+    emit("--- next pick ---")
+    local pick = StockPiler.Brew.PickReadyWatch()
+    if type(pick) ~= "table" then
+        emit("  (none ready)")
+    else
+        emit(string.format(
+            "  %s deficit=%d craftable=%d canLoad=%s why=%s",
+            ToNarrow(pick.name or pick.potionKey or "?"),
+            tonumber(pick.potionDeficit) or 0,
+            tonumber(pick.craftable) or 0,
+            tostring(pick.canLoad == true),
+            BrewPlanRowWhy(pick)
+        ))
+    end
+
+    local sorted = {}
+    for i = 1, #rows do
+        sorted[#sorted + 1] = rows[i]
+    end
+    table.sort(sorted, CompareBrewPlanRow)
+
+    local shortCount = 0
+    for i = 1, #sorted do
+        if (tonumber(sorted[i].potionDeficit) or 0) > 0 then
+            shortCount = shortCount + 1
+        end
+    end
+    emit("--- watches (" .. tostring(#sorted) .. ", short=" .. tostring(shortCount) .. ") ---")
+    if not snapDone then
+        emit("  (snapshot not ready — counts may be stale)")
+    end
+    for i = 1, math.min(#sorted, 25) do
+        local row = sorted[i]
+        local recipe = row.specRecipe or row.recipe
+        local quality = recipe and recipe.quality or "?"
+        local yield = 0
+        if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RecipeOutputYield then
+            yield = StockPiler.RecipeSpec.RecipeOutputYield(recipe)
+        elseif recipe then
+            yield = tonumber(recipe.recipeYield) or 0
+        end
+        local rawCraft = tonumber(row.craftable) or 0
+        local reservedCraft = rawCraft
+        if type(recipe) == "table" and StockPiler.RecipeSpec and StockPiler.RecipeSpec.CountPotionsCraftable then
+            rawCraft = math.floor((tonumber(StockPiler.RecipeSpec.CountPotionsCraftable(recipe)) or 0) + 0.5)
+            reservedCraft = math.floor((tonumber(StockPiler.RecipeSpec.CountPotionsCraftable(recipe, { respectGrowReserve = true })) or 0) + 0.5)
+        end
+        emit(string.format(
+            "  %s have=%d target=%d deficit=%d craftable=%d raw=%d reserved=%d recipe=%s yield=%d crafts=%d status=%s",
+            ToNarrow(row.name or row.potionKey or "?"),
+            tonumber(row.potionHave) or 0,
+            tonumber(row.potionMin) or 0,
+            tonumber(row.potionDeficit) or 0,
+            tonumber(row.craftable) or 0,
+            rawCraft,
+            reservedCraft,
+            tostring(quality),
+            yield,
+            tonumber(row.craftsNeeded) or 0,
+            ToNarrow(row.statusText or row.statusKey or "?")
+        ))
+        emit("    why: " .. BrewPlanRowWhy(row))
+        if type(row.statusSlots) == "table" then
+            for j = 1, #row.statusSlots do
+                local slot = row.statusSlots[j]
+                if type(slot) == "table" then
+                    emit(string.format(
+                        "    slot %s role=%s have=%d need=%d deficit=%d craftsShort=%d",
+                        BrewPlanSpecLabel(slot.spec, slot.specKey),
+                        tostring(slot.role or "?"),
+                        tonumber(slot.have) or 0,
+                        tonumber(slot.need) or 0,
+                        tonumber(slot.deficit) or 0,
+                        tonumber(slot.craftsShort) or 0
+                    ))
+                end
+            end
+        elseif type(row.specDeficit) == "table" then
+            local lim = row.specDeficit
+            emit(string.format(
+                "    limit %s role=%s have=%d need=%d kind=%s",
+                BrewPlanSpecLabel(lim.spec, lim.specKey),
+                tostring(lim.role or "?"),
+                tonumber(lim.have) or 0,
+                tonumber(lim.need) or 0,
+                tostring(lim.kind or "?")
+            ))
+        end
+    end
+    if #sorted > 25 then
+        emit("  ... +" .. tostring(#sorted - 25) .. " more watches")
+    end
+
+    if StockPiler.Planner and StockPiler.Planner.DumpGrowReservations then
+        StockPiler.Planner.DumpGrowReservations(function(msg)
+            emit(msg)
+        end)
+    end
+
+    emit("=== end brew plan ===")
 end
 
 function StockPiler.Brew.Initialize()

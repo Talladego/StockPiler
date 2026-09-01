@@ -2,7 +2,17 @@
 
 Apothecary stock planner for [Return of Reckoning](https://www.returnofreckoning.com/) (Warhammer Online). Watch potions, grow plants, load recipes, and brew from the hotbar.
 
-**Version:** 0.9.94
+**Version:** 0.10.10
+
+## Status
+
+Core grow → harvest → refine → brew automation is in a good place for daily use. The **0.10.x** line adds a refine operation ledger, harvest-owned seed buffer maintenance, brew grow reserves, WorkCoordinator mutex (auto plant/refine vs user harvest/load/brew), and debug probes (`/stp growplan`, `/stp buyplan`, `/stp brewplan`).
+
+**Validated in play (0.10.10):** one refine op per tick; no post-burn duplicate batches; seed buffer lands at the configured floor (e.g. Goldweed 8 → plant cycle → **5 at buffer=5**); AutoBuy skips growable seeds; brew defers while grow ops run.
+
+**Next (near term):** UX/UI polish, more soak testing across seed lines and brew loads.
+
+**Later (features):** surplus seed trim above buffer; plant stockpiling (hold harvested plants for brew instead of converting); automated Cultivating / Apothecary skill-up (see [Future auto-skill](#future-auto-skill-not-implemented)).
 
 ## Install
 
@@ -16,17 +26,17 @@ Optional: [LibSlash](https://www.curseforge.com/) (`/stockpiler`, `/stp`), Potio
 
 - `/stockpiler` or `/stp`
 - `/stp potions` · `/stp watch`
-- `/stp quiet` · `/stp help` · `/stp debug` · `/stp scan` · `/stp seedmap` · `/stp growplan` · `/stp perf` · `/stp audit`
+- `/stp quiet` · `/stp help` · `/stp debug` · `/stp seedmap` · `/stp growplan` · `/stp buyplan` · `/stp brewplan` · `/stp perf` · `/stp audit`
 
-`/sp` is Scenario Chat, not this addon.
+`/sp` is Scenario Chat, not this addon. Power-user probes (`spec`, `db`, `scan`) work but are omitted from `/stp help`.
 
 ### Chat verbosity
 
 | Command | What it does |
 | :--- | :--- |
 | `/stp quiet` | Cycle chat: **ALL** → **QUIET** → **OFF** → ALL |
-| `/stp quiet all` | Plant/harvest/learn/stage spam on |
-| `/stp quiet quiet` | Only manual enable/disable (AutoGrow, Additives, AutoBuy) |
+| `/stp quiet all` | Most actions and state changes (plant, refine, stage, learn, harvest, load, brew, settings) |
+| `/stp quiet quiet` | User-triggered only: settings, harvest, load, brew |
 | `/stp quiet off` | No status chat (slash replies still print) |
 
 ### Debug logging (`/stp debug`)
@@ -43,13 +53,17 @@ When ON, writes structured op lines to `logs/uilog.log` (search `StockPiler|`):
 | :--- | :--- |
 | `plant\|` | Each successful plant (plot, seed, reason, seeds left, garden empty/ready/growing) |
 | `harvest\|` | Harvest start, done (gains / crit), or fail (Critical Failure) |
-| `refine\|` | Each refine convert batch |
+| `refine\|` | Each refine convert batch (`outstanding=` counts in-flight ops; replaces `credit=`) |
+| `ledger\|` | Refine op register/reconcile/reset (FIFO pipeline accounting) |
+| `pipeline\|` | Refine delivery health (waiting/progressing/deviation) |
+| `reserve\|` | Brew grow reserve when pipeline blocks plants (`brewAvail` may be negative) |
 | `brew\|` | Load begin/loaded/fail, macro load/perform, one-click toggle |
-| `buy\|` | Store visit start/end, purchase, wait (busy), stop (reserve/budget/cap) |
+| `buy\|` | Store visit start/end, job list, purchase, wait (busy), stop (reserve/budget/cap), skip (no-match/acquired/snapshot/buyback) |
 | `settings\|` | Watch enable/target/autoGrow, AutoGrow/Additives/AutoBuy/Brew toggles, seed buffer, buy chips |
 | `AutoGrow\|` | Queue rebuilds, tick state, `/stp growplan` dumps |
+| `work\|` | WorkCoordinator completion breadcrumbs |
 
-`/stp growplan` still one-shots a full plan dump to uilog. `/stp growwhy` and `/stp growtrace` were removed (use `/stp debug`).
+`/stp growplan` one-shots a full plan dump to uilog (includes `LEDGER` lines per seed line). `/stp buyplan` one-shots the AutoBuy job list. `/stp brewplan` one-shots the brew queue with per-watch why lines and grow reservations. `/stp perf` is the hitch logger (session-only).
 
 ## Saved data
 
@@ -60,41 +74,31 @@ When ON, writes structured op lines to `logs/uilog.log` (search `StockPiler|`):
 
 On upgrade to **0.9.0**, account knowledge is flushed and must be relearned (no migration from older `observedMats` / `observedPotions` / CraftValueTip data). On a Shared Profile, watches and toggles are keyed by character name. Flush both folders if you want a clean relearn.
 
-**0.9.49:** Fixed Watch toggles / seed buffer / AutoBuy chips resetting to defaults on login (a bind-time persist wipe). Re-set them once after `/reloadui`; they should stick afterward.
+### 0.10.x (current)
 
-**0.9.50:** AutoBuy no longer overshoots material need (stale bag/spec counts after each purchase). Container matching requires skill tier. Reserve uses a visit money estimate; budget still caps spend per store visit.
+**0.10.10:** Refine overshoot fix — one `SendUseItem` per tick; no re-fire during settle/outstanding; grow-cycle uses raw bag+in-flight+in-ground credit; burn-stale waits `PIPELINE_GRACE_SEC` without immediate re-queue.
 
-**0.9.51:** Auto-merge duplicate learned recipes that differ only by legacy fingerprint noise (e.g. DESTROY_ON_FAIL bonus ref 15). Re-brewing no longer adds a second Potions row for the same loadout.
+**0.10.9:** `/stp brewplan` — one-shot brew queue dump (next pick, per-watch why, raw vs reserved craftable, grow reservations).
 
-**0.9.52:** Grow/brew material guard — One-Click Brew respects AutoGrow seed-conversion reserves (strict by default). Refine only runs pre-plant or post-harvest, not idle while crops grow. `/stp growwhy` includes reservation breakdown. No extra bag refresh on macro clicks.
+**0.10.8:** AutoBuy debug — `/stp buyplan`, visit job lines, skip/no-match logging. Brew-shield refine (`uses=1` when `live=0`, no in-ground seeds, plants available); in-ground seed credit for brew grow reserve (`inGround` in grow plan ledger).
 
-**0.9.53:** One-Click Brew load path skips `AddCraftingContainer` when slot 0 already has a flask (fixes spurious "Already has container" chat after brew/reload). Load retries advance when the slot fills instead of re-adding.
+**0.10.7:** Post-burn buffer overshoot — live-aware harvest buffer gate (`SeedLineHarvestBufferSatisfied`); post-burn settle cooldown (`REFINE_SETTLE_SEC`); orphan delivery reconcile (`ledger| orphan-delivery`); seed buffer slider no longer triggers immediate refine.
 
-**0.9.54:** Fix startup crash: `RepairDuplicateRecipeFingerprints` called `RecipesTable` before the local helper was defined.
+**0.10.6:** Post-harvest fix — harvested seed line refined first; stale ledger ops burn on pipeline deviation (`ledger| burn-stale`); split actionable vs awaiting-delivery maintenance (grow-cycle defer only when actionable); replant held while same-line `outstanding > 0`.
 
-**0.9.55:** Fix startup crash: same forward-reference bug for `EnsureBrewStats`, `PotionActiveRecipeKey`, and `PotionRecipeKeys` in the recipe merge/dedupe path.
+**0.10.5:** Four-operation pipeline — Harvest owns post-harvest seed buffer (bypasses brew-short); `plantAvail = plantHave − outstanding`; per-seed-line plant hold until buffer credit settles; defer grow-cycle while harvest maintenance pending; plant-need refine (1 op when live=0); uproot triggers same buffer maintenance; harvest blocked during brew session.
 
-**0.9.56:** AutoGrow grow-cycle refine no longer blocked by brew surplus cap when seeds are needed to plant (fixes no-plant stall at 29/40 stabilizers with 0 seeds). `/stp growwhy` shows grow-cycle refine diagnostics.
+**0.10.4:** Refine operation ledger — FIFO per-`SendUseItem` ops trusted until bags confirm; credit-aware post-harvest buffer (`seedAvail = live + outstanding`); plant hold stalls on live seeds only; brew reserves in-flight refines; pipeline deviation toasts; `ledger|`, `pipeline|`, `reserve|` debug prefixes.
 
-**0.9.57:** AutoGrow refine policy — pre-plant converts only enough plants for empty plots; seed buffer refill and byproduct convert wait until after a successful harvest (aborted crops can refund seeds).
+**0.10.3:** Fix refine-credit deadlock — release plant/harvest hold once seed need is satisfied; decay pending when credited; 10s stale-credit timeout; coalesce macro refresh.
 
-**0.9.58:** Post-harvest refine targets the seed buffer only (not max(emptyPlots, buffer)), so replanting does not keep converting one extra plant between each plot.
+**0.10.2:** Durable seed refine credit until bags catch up — stops grow-cycle re-fire while pending decays and seedHave stays flat (no more 7 spores vs buffer 4).
 
-**0.9.59:** After harvest, keep buffer refill active until 4 seeds remain in bags *after* replanting (do not clear harvest when buffer is filled then immediately planted).
+**0.10.1:** Stop AutoGrow over-refine — queue plant-need only counts empty plots that want fill; credit in-flight refine toward seed need (no spam while bags lag).
 
-**0.9.60:** Post-harvest refine wants emptyPlots+seedBuffer in one pass (so 4 empty + buffer 4 with 2 on hand → refine 6, plant 4, leave 4). Re-arm harvest refine after the last plot is planted if the buffer is still short.
+**0.10.0:** WorkCoordinator (auto plant/refine vs user harvest/load/brew), refine policy (plant-need without surplus stall; post-harvest buffer only), brew/grow time+material mutex, combat/RvR lake defer for full bag snaps, chat quiet = settings/harvest/load/brew, slash trim, drop Watch “Converting material” status.
 
-**0.9.61:** AutoGrow continues after plant targets are met when the seed buffer is short — plant remaining seeds for a buffer grow cycle (no longer blocked by brew-stocked plants that cannot be refined).
-
-**0.9.62:** At plant-target + short buffer (e.g. 40 plants / 3 seeds), refine only the buffer gap (1) instead of planting leftover seeds. Harvest macro waits until harvest animation and post-harvest refine settle before the next harvest.
-
-**0.9.63:** AutoGrow sizes plots from learned harvest yield (observed plants per harvest; default 1 until sampled). Level-200 double yields no longer plant one seed per missing plant.
-
-**0.9.64:** Harvest loot no longer full-scans bags on every inventory event (fixes multi-second frametime spikes). Post-harvest refine targets empty plots only; seed buffer refill is surplus-gated while plant stock is still short of brew need.
-
-**0.9.65:** Grow-cycle refine sizes seeds with learned harvest yield (ceil(plantDeficit / yield), capped by empty plots) so high-yield harvests do not over-convert into leftover seed stacks.
-
-**0.9.66:** Mutual exclusion for cultivation — plant blocked while harvest op active (stage / pending notify / short lock); harvest macro blocked while plant AddCraftingItem pending or harvest cycle busy (safer under macro spam).
+### 0.9.x (prior release)
 
 **0.9.94:** Persist craft-button checkbox overlays (ActionButton.UpdateInventory was hiding them); RequestRefresh applies immediately; Brew toggle syncs Watch One-Click Brew checkbox.
 
@@ -177,9 +181,11 @@ The brew path will not fire while Load is running, or if the loaded recipe is in
 
 When on (checkbox overlay on Harvest macro or Cultivating skill, or Ctrl-click either): plants from the grow queue, applies additives, refines plants back to the seed buffer. Harvest uses the Harvest macro or hijacked Cultivating skill. Refine byproducts such as Arboreal Resin are not planted: AutoGrow grows extra of the recipe’s other plants and converts the surplus (plant→seed yields resin). If the recipe has no growable ingredients, it prefers same-level extenders, then any seed already in bags at that crafting level.
 
+Four operations (0.10.5): **Plant** uses live seeds only (refines first if needed). **Harvest** maintains the seed buffer after each harvest or uproot (`seedAvail = live + outstanding`; bypasses brew-short). **Refine** reserves plants per in-flight op (`plantAvail = plantHave − outstanding`). **Brew** never consumes seeds; blocks auto ops while a brew session is loaded. Replant for a seed line is held until its post-harvest buffer credit settles.
+
 Shortage chat uses observed yield (bottles of that exact potion per successful brew). A crit (Potent) or an empty cauldron (fail) is not a success for that watch; the plan rebuilds if you are still short.
 
-AutoBuy (Watch tab, off by default) purchases those same Watch shortages from an NPC vendor: flasks, butcher mats, missing seeds, and other non-growable slots. It never buys growable plants or refine byproducts, and it does not use the Auction House. Spending stops at the gold reserve or the per-visit budget. Confirm on Buy does not apply.
+AutoBuy (Watch tab, off by default) purchases those same Watch shortages from an NPC vendor: flasks, butcher mats, and other non-growable slots. Growable plants and seeds are handled by AutoGrow, not AutoBuy. It never buys growable plants or refine byproducts, and it does not use the Auction House. Spending stops at the gold reserve or the per-visit budget. Confirm on Buy does not apply.
 
 ## Domain notes (cultivation / apothecary)
 
@@ -222,6 +228,14 @@ Recipe identity is the ingredient fingerprint; Potent / good / volatile share on
 
 **Same potion, different recipes:** e.g. Draught via Multiplier vs Stimulant (resin or goldweed) are separate fingerprints. Potions tab columns show fingerprint stats (Power, Stability, Super-Crit, Yield); effect/rank/buff/duration stay in the icon tooltip. Watch the row for the path you want. Prefer enabling one recipe-watch per potion uid (bag stock is shared). Legacy watches on `uid:N` remap to `uid:N|rk:<activeRecipe>` on load.
 
+### Planned features (not implemented)
+
+| Feature | Intent |
+| :--- | :--- |
+| **Surplus trim** | When seeds exceed buffer + committed plant queue, stop refining or optionally convert/sell excess (today buffer is a floor only). |
+| **Plant stockpiling** | Keep harvested plants in bags for brewing when watch demand exists, instead of always converting back to seeds at buffer maintenance. |
+| **Auto skill-up** | Separate Cultivating / Apothecary leveling sessions (see below). |
+
 ### Future auto-skill (not implemented)
 
 - **Cultivating:** plant low seeds, use additives for crit / super-crit / fail, harvest; Super-Crit may teach higher-tier plants; respect seed buffer on fails.
@@ -229,7 +243,7 @@ Recipe identity is the ingredient fingerprint; Potent / good / volatile share on
 
 ## Debug
 
-`/stp debug` / `on` / `off` toggles structured `StockPiler| plant|` / `harvest|` / `refine|` / `brew|` / `settings|` / `AutoGrow|` lines in `logs/uilog.log`. Verbose brew `[Load]` breadcrumbs stay under the same gate. `/stp growplan` one-shots a full plan dump. `/stp perf on 100` logs FRAME hitches; `/stp perf summary` prints top trail signatures. `/stp audit` reports saved-data health; `/stp audit fix` prunes orphan refine byproducts. `/stp seedmap` prints learned grows and refines.
+`/stp debug` / `on` / `off` toggles structured `StockPiler| plant|` / `harvest|` / `refine|` / `ledger|` / `pipeline|` / `reserve|` / `brew|` / `buy|` / `settings|` / `AutoGrow|` lines in `logs/uilog.log`. Refine lines use `outstanding=` (in-flight ops), not `credit=`. Pipeline deviation toasts appear in quiet/all chat modes. Verbose brew `[Load]` breadcrumbs stay under the same gate. `/stp growplan` one-shots a full plan dump (includes `LEDGER` per seed line). `/stp buyplan` one-shots the AutoBuy job list. `/stp brewplan` one-shots the brew queue with per-watch why lines. `/stp perf on 100` logs FRAME hitches; `/stp perf summary` prints top trail signatures. `/stp audit` reports saved-data health; `/stp audit fix` prunes orphan refine byproducts. `/stp seedmap` prints learned grows and refines.
 
 ### Perf bisect (after `/reloadui`)
 

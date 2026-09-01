@@ -74,15 +74,20 @@ function StockPiler.StatusMessagesEnabled()
     return StockPiler.StatusChatMode() ~= "off"
 end
 
---- Plant / harvest / stage / learn spam (all only).
+--- Plant / refine / stage / learn spam (all only).
 function StockPiler.StatusMessagesVerbose()
     return StockPiler.StatusChatMode() == "all"
 end
 
---- Manual toggles (enable AutoGrow, additives, AutoBuy) — all and quiet.
+--- User-triggered: settings, harvest, load, brew — all and quiet.
 function StockPiler.StatusMessagesManual()
     local mode = StockPiler.StatusChatMode()
     return mode == "all" or mode == "quiet"
+end
+
+--- Alias: quiet+all for harvest / load / brew / settings.
+function StockPiler.StatusMessagesUserAction()
+    return StockPiler.StatusMessagesManual()
 end
 
 local function ChatPrefix(includeSpace)
@@ -159,6 +164,30 @@ function StockPiler.NotifyManual(featureName, message)
         return
     end
     EmitChat(featureName .. L": " .. message)
+end
+
+--- Refine pipeline deviation or error (all + quiet chat modes).
+function StockPiler.NotifyPipelineDeviation(msg, escalate)
+    if not StockPiler.StatusMessagesEnabled() then
+        return
+    end
+    msg = AsWString(msg)
+    if msg == L"" then
+        return
+    end
+    local color = escalate == true and COLOR_ALERT or COLOR_WARN
+    EmitChat(ColorizeMessage(msg, color))
+    if escalate == true then
+        EmitChat(ColorizeMessage(
+            L"Refine pipeline may be stuck — disable AutoGrow or /reloadui if seeds never arrive.",
+            COLOR_WARN
+        ))
+    end
+end
+
+--- User-triggered harvest / load / brew / settings (quiet + all).
+function StockPiler.NotifyUserAction(featureName, message)
+    StockPiler.NotifyManual(featureName, message)
 end
 
 function StockPiler.ItemDisplayName(uniqueID, fallback)
@@ -338,12 +367,12 @@ function StockPiler.NotifyAutoGrowRefined(plantUid, seedUid)
 end
 
 function StockPiler.NotifyAutoGrowHarvested(plotNum, plantName, manual)
-    if not StockPiler.StatusMessagesVerbose() then
+    if not StockPiler.StatusMessagesUserAction() then
         return
     end
     plantName = AsWString(plantName)
     local detail = L"Harvested plot " .. towstring(tostring(plotNum)) .. L" (" .. plantName .. L")."
-    StockPiler.NotifyFeature(L"AutoGrow", detail)
+    StockPiler.NotifyUserAction(L"AutoGrow", detail)
 end
 
 --- Planted plot lines. Verbose chat only (was always Print).
@@ -553,7 +582,7 @@ function StockPiler.NotifyProgressBlocked(blockers)
 end
 
 function StockPiler.NotifyAutoGrowLastSeeds(seedName, remaining)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     remaining = tonumber(remaining) or 0
@@ -571,7 +600,7 @@ end
 
 --- Critical harvest failure wiped bags + garden + plant mats for this seed.
 function StockPiler.NotifySeedLineLost(seedName)
-    if not StockPiler.StatusMessagesEnabled() then
+    if not StockPiler.StatusMessagesVerbose() then
         return
     end
     seedName = AsWString(seedName)
