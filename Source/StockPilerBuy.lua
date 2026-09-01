@@ -12,11 +12,29 @@ local BUDGET_MIN = 1
 local BUDGET_MAX = 999
 local DEFAULT_RESERVE = 10
 local DEFAULT_BUDGET = 50
+-- Hard cap: one BuyItem per tick, but never more than this many
+-- successful purchases per store visit (runaway / failed-accounting guard).
+local MAX_PURCHASES_PER_VISIT = 80
 
 local function D(msg)
     if StockPiler and StockPiler.D then
         StockPiler.D(msg)
     end
+end
+
+local function LogBuyOp(msg)
+    if StockPiler.LogOp then
+        StockPiler.LogOp("buy", msg)
+    else
+        D("AutoBuy " .. tostring(msg))
+    end
+end
+
+local function ToNarrow(text)
+    if StockPiler.ToNarrow then
+        return StockPiler.ToNarrow(text)
+    end
+    return tostring(text or "")
 end
 
 local function GetSettings()
@@ -71,35 +89,49 @@ local function PersistSettings(s)
     end
 end
 
-function StockPiler.Buy.AdjustReserve(increase)
+function StockPiler.Buy.AdjustReserve(increase, amount)
     local s = GetSettings()
     if type(s) ~= "table" then
         return DEFAULT_RESERVE
     end
     local cur = StockPiler.Buy.ClampReserveGold(s.autoBuyReserveGold)
+    amount = tonumber(amount) or 1
+    if amount < 1 then
+        amount = 1
+    end
     if increase then
-        cur = cur + 1
+        cur = cur + amount
     else
-        cur = cur - 1
+        cur = cur - amount
     end
     s.autoBuyReserveGold = StockPiler.Buy.ClampReserveGold(cur)
     PersistSettings(s)
+    if StockPiler.LogOp then
+        StockPiler.LogOp("settings", "AutoBuy reserveGold=" .. tostring(s.autoBuyReserveGold))
+    end
     return s.autoBuyReserveGold
 end
 
-function StockPiler.Buy.AdjustBudget(increase)
+function StockPiler.Buy.AdjustBudget(increase, amount)
     local s = GetSettings()
     if type(s) ~= "table" then
         return DEFAULT_BUDGET
     end
     local cur = StockPiler.Buy.ClampBudgetGold(s.autoBuyBudgetGold)
+    amount = tonumber(amount) or 1
+    if amount < 1 then
+        amount = 1
+    end
     if increase then
-        cur = cur + 1
+        cur = cur + amount
     else
-        cur = cur - 1
+        cur = cur - amount
     end
     s.autoBuyBudgetGold = StockPiler.Buy.ClampBudgetGold(cur)
     PersistSettings(s)
+    if StockPiler.LogOp then
+        StockPiler.LogOp("settings", "AutoBuy budgetGold=" .. tostring(s.autoBuyBudgetGold))
+    end
     return s.autoBuyBudgetGold
 end
 
@@ -118,7 +150,11 @@ function StockPiler.Buy.SetEnabled(enabled)
     s.autoBuyEnabled = enabled
     PersistSettings(s)
     if changed then
+        if StockPiler.LogOp then
+            StockPiler.LogOp("settings", "AutoBuy enabled=" .. tostring(enabled))
+        end
         if enabled then
+            StockPiler.Buy.InvalidateJobsCache()
             if StockPiler.PrintMaterialsToBuy then
                 StockPiler.PrintMaterialsToBuy(StockPiler.Buy.CollectBuyJobs())
             end
@@ -241,11 +277,46 @@ local function StoreRows()
     return list
 end
 
-function StockPiler.Buy.CollectBuyJobs()
-    if StockPiler.Planner and StockPiler.Planner.CollectVendorBuyJobs then
-        return StockPiler.Planner.CollectVendorBuyJobs()
+--- True when brewing / bag settle / harvest would race AutoBuy bag accounting.
+local function BuyBlockedReason()
+    if StockPiler.BagWorkPending and StockPiler.BagWorkPending() then
+        return "bag-work"
     end
-    return {}
+    if StockPiler.Brew and StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy() then
+        return "brew-busy"
+    end
+    if StockPiler.AutoGrow and StockPiler.AutoGrow.IsHarvestCycleBusy
+        and StockPiler.AutoGrow.IsHarvestCycleBusy()
+    then
+        return "harvest-busy"
+    end
+    if StockPiler.AutoGrow and StockPiler.AutoGrow.HasPlantInProgress
+        and StockPiler.AutoGrow.HasPlantInProgress()
+    then
+        return "plant-busy"
+    end
+    return nil
+end
+
+function StockPiler.Buy.InvalidateJobsCache()
+    StockPiler.Buy._jobsCache = nil
+    StockPiler.Buy._jobsSnapGen = nil
+end
+
+function StockPiler.Buy.CollectBuyJobs()
+    local snapGen = StockPiler.Inventory and tonumber(StockPiler.Inventory._snapshotGen) or 0
+    if type(StockPiler.Buy._jobsCache) == "table"
+        and StockPiler.Buy._jobsSnapGen == snapGen
+    then
+        return StockPiler.Buy._jobsCache
+    end
+    local jobs = {}
+    if StockPiler.Planner and StockPiler.Planner.CollectVendorBuyJobs then
+        jobs = StockPiler.Planner.CollectVendorBuyJobs() or {}
+    end
+    StockPiler.Buy._jobsCache = jobs
+    StockPiler.Buy._jobsSnapGen = snapGen
+    return jobs
 end
 
 local function ItemMatchesJob(item, job)
@@ -257,6 +328,7 @@ local function ItemMatchesJob(item, job)
         local itemUid = tonumber(item.uniqueID) or tonumber(item.id) or 0
         return seedUid > 0 and itemUid == seedUid
     end
+    -- Never buy growable plants or refine byproducts from vendors.
     if IsGrowablePlantItem(item) or IsHarvestByproductItem(item) then
         return false
     end
@@ -307,10 +379,17 @@ local function ChatVisitStop(reason)
     if reason ~= "nothing" then
         buy._visitStopReason = reason
     end
+    local bought = tonumber(buy._visitBought) or 0
+    local spent = tonumber(buy._visitSpentBrass) or 0
+    LogBuyOp(string.format(
+        "stop reason=%s bought=%d spentBrass=%d",
+        tostring(reason),
+        bought,
+        spent
+    ))
     if not StockPiler.StatusMessagesVerbose() then
         return
     end
-    local bought = tonumber(buy._visitBought) or 0
     local msg
     if reason == "reserved" then
         if bought > 0 then
@@ -324,6 +403,8 @@ local function ChatVisitStop(reason)
         else
             msg = L"Stopped at visit budget."
         end
+    elseif reason == "cap" then
+        msg = L"Stopped at purchase cap (bought " .. towstring(tostring(bought)) .. L")."
     elseif reason == "nothing" then
         if bought > 0 then
             return
@@ -342,10 +423,79 @@ end
 local function ResetVisit()
     StockPiler.Buy._visitSpentBrass = 0
     StockPiler.Buy._visitBought = 0
+    StockPiler.Buy._visitPurchases = 0
     StockPiler.Buy._visitStopReason = nil
     StockPiler.Buy._visitChatted = false
     StockPiler.Buy._visitSawMatch = false
     StockPiler.Buy._visitHadJobs = false
+    StockPiler.Buy._visitAcquiredByKey = {}
+    StockPiler.Buy._visitMoneyBrass = PlayerMoneyBrass()
+    StockPiler.Buy.InvalidateJobsCache()
+end
+
+local function JobAcquireKey(job, item)
+    if type(job) ~= "table" then
+        return nil
+    end
+    if job.kind == "seed" then
+        local uid = tonumber(job.seedUid) or 0
+        if uid > 0 then
+            return "seed:" .. tostring(uid)
+        end
+    end
+    local key = job.specKey
+    if type(key) == "string" and key ~= "" then
+        return key
+    end
+    -- Fallback so VisitAcquired cannot stay 0 forever (rebuy loop).
+    local uid = tonumber(item and (item.uniqueID or item.id)) or 0
+    if uid > 0 then
+        return "uid:" .. tostring(uid)
+    end
+    local name = ToNarrow(job.name or job.label or "")
+    if name ~= "" then
+        return "name:" .. name
+    end
+    return nil
+end
+
+local function VisitAcquired(key)
+    if key == nil then
+        return 0
+    end
+    local map = StockPiler.Buy._visitAcquiredByKey
+    if type(map) ~= "table" then
+        return 0
+    end
+    return tonumber(map[key]) or 0
+end
+
+local function NoteVisitAcquired(key, qty)
+    qty = tonumber(qty) or 0
+    if key == nil or qty <= 0 then
+        return
+    end
+    local map = StockPiler.Buy._visitAcquiredByKey
+    if type(map) ~= "table" then
+        map = {}
+        StockPiler.Buy._visitAcquiredByKey = map
+    end
+    map[key] = VisitAcquired(key) + qty
+end
+
+local function VisitMoneyBrass()
+    local live = PlayerMoneyBrass()
+    local tracked = tonumber(StockPiler.Buy._visitMoneyBrass)
+    if tracked == nil then
+        StockPiler.Buy._visitMoneyBrass = live
+        return live
+    end
+    -- Prefer the lower figure so delayed Player.GetMoney cannot breach reserve.
+    if live > 0 and live < tracked then
+        StockPiler.Buy._visitMoneyBrass = live
+        return live
+    end
+    return tracked
 end
 
 function StockPiler.Buy.OnStoreUpdated()
@@ -353,14 +503,42 @@ function StockPiler.Buy.OnStoreUpdated()
     if showing and StockPiler.Buy._visitStoreOpen ~= true then
         StockPiler.Buy._visitStoreOpen = true
         ResetVisit()
-        D("AutoBuy visit started")
+        local jobs = StockPiler.Buy.IsEnabled() and StockPiler.Buy.CollectBuyJobs() or {}
+        LogBuyOp(string.format(
+            "visit-start enabled=%s jobs=%d money=%d reserveGold=%d budgetGold=%d",
+            tostring(StockPiler.Buy.IsEnabled()),
+            type(jobs) == "table" and #jobs or 0,
+            tonumber(StockPiler.Buy._visitMoneyBrass) or 0,
+            StockPiler.Buy.GetReserveGold(),
+            StockPiler.Buy.GetBudgetGold()
+        ))
     elseif not showing and StockPiler.Buy._visitStoreOpen == true then
         StockPiler.Buy._visitStoreOpen = false
         if (tonumber(StockPiler.Buy._visitBought) or 0) > 0 then
             ChatVisitStop("bought")
         elseif StockPiler.Buy._visitHadJobs == true and StockPiler.Buy._visitSawMatch ~= true then
             ChatVisitStop("nothing")
+        else
+            LogBuyOp(string.format(
+                "visit-end bought=%d spentBrass=%d",
+                tonumber(StockPiler.Buy._visitBought) or 0,
+                tonumber(StockPiler.Buy._visitSpentBrass) or 0
+            ))
         end
+        StockPiler.Buy.InvalidateJobsCache()
+    end
+end
+
+local function AfterPurchaseRefresh()
+    StockPiler.Buy.InvalidateJobsCache()
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.ClearCountCaches then
+        StockPiler.RecipeSpec.ClearCountCaches()
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.InvalidateSnapshot then
+        StockPiler.Inventory.InvalidateSnapshot()
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.RefreshAll then
+        StockPiler.Inventory.RefreshAll(true)
     end
 end
 
@@ -374,6 +552,22 @@ function StockPiler.Buy.TryBuyNext()
     if not StoreIsShowing() or IsBuybackView() then
         return false
     end
+    local busy = BuyBlockedReason()
+    if busy ~= nil then
+        if StockPiler.Buy._lastBusyLog ~= busy then
+            StockPiler.Buy._lastBusyLog = busy
+            LogBuyOp("wait " .. busy)
+        end
+        return false
+    end
+    StockPiler.Buy._lastBusyLog = nil
+
+    local purchases = tonumber(StockPiler.Buy._visitPurchases) or 0
+    if purchases >= MAX_PURCHASES_PER_VISIT then
+        ChatVisitStop("cap")
+        return false
+    end
+
     local store = EA_Window_InteractionStore
     if type(store) ~= "table" or type(store.BuyItem) ~= "function" then
         return false
@@ -388,24 +582,28 @@ function StockPiler.Buy.TryBuyNext()
     end
     StockPiler.Buy._visitHadJobs = true
 
-    local money = PlayerMoneyBrass()
+    local money = VisitMoneyBrass()
+    local liveMoney = PlayerMoneyBrass()
+    if liveMoney > 0 and liveMoney < money then
+        money = liveMoney
+        StockPiler.Buy._visitMoneyBrass = liveMoney
+    end
     local reserve = StockPiler.Buy.GetReserveGold() * BRASS_PER_GOLD
     local budget = StockPiler.Buy.GetBudgetGold() * BRASS_PER_GOLD
     local spent = tonumber(StockPiler.Buy._visitSpentBrass) or 0
-    local sawMatch = false
     local reserveBlock = false
     local budgetBlock = false
 
     for i = 1, #jobs do
         local job = jobs[i]
         local item, cost = StockPiler.Buy.FindStoreMatch(job)
-        if type(item) == "table" and (tonumber(cost) or 0) > 0 then
-            sawMatch = true
+        local acquireKey = JobAcquireKey(job, item)
+        local bagDeficit = tonumber(job.deficit) or 0
+        local remaining = math.max(0, bagDeficit - VisitAcquired(acquireKey))
+        if remaining < 1 then
+            -- Already bought enough this visit; bag snapshot may still be catching up.
+        elseif type(item) == "table" and (tonumber(cost) or 0) > 0 then
             StockPiler.Buy._visitSawMatch = true
-            local deficit = tonumber(job.deficit) or 1
-            if deficit < 1 then
-                deficit = 1
-            end
             -- Same cap as ItemStackingWindow for merchant buy-N (stackCount <= 1).
             local vendorMax = 100
             local stackCount = tonumber(item.stackCount) or 1
@@ -414,40 +612,69 @@ function StockPiler.Buy.TryBuyNext()
             end
             local maxByReserve = math.floor((money - reserve) / cost)
             local maxByBudget = math.floor((budget - spent) / cost)
-            local qty = math.min(deficit, vendorMax, maxByReserve, maxByBudget)
+            local qty = math.min(remaining, vendorMax, maxByReserve, maxByBudget)
             if qty < 1 then
                 if maxByReserve < 1 then
                     reserveBlock = true
-                else
+                elseif maxByBudget < 1 then
                     budgetBlock = true
                 end
             else
-                local slotNum = tonumber(item.slotNum)
-                if slotNum == nil then
-                    return false
+                local costTotal = cost * qty
+                -- Final live check: never spend into the reserve.
+                if money - costTotal < reserve then
+                    reserveBlock = true
+                else
+                    local slotNum = tonumber(item.slotNum)
+                    if slotNum == nil then
+                        LogBuyOp("skip no-slotNum job=" .. ToNarrow(job.name or job.kind))
+                        return false
+                    end
+                    if acquireKey == nil then
+                        LogBuyOp("skip no-acquireKey job=" .. ToNarrow(job.name or job.kind))
+                        return false
+                    end
+                    -- ConfirmThenBuyItem is UI-only (WARN_BUY dialog). Never call it.
+                    -- BuyItem sets NumItems = buyCount (one vendor purchase of N).
+                    local ok = StockPiler.TryCall(
+                        "StockPiler.Buy.BuyItem",
+                        store.BuyItem,
+                        item,
+                        qty
+                    )
+                    if not ok then
+                        LogBuyOp(string.format(
+                            "fail BuyItem slot=%d qty=%d job=%s",
+                            slotNum,
+                            qty,
+                            ToNarrow(job.name or job.kind)
+                        ))
+                        return false
+                    end
+                    StockPiler.Buy._visitSpentBrass = spent + costTotal
+                    StockPiler.Buy._visitBought = (tonumber(StockPiler.Buy._visitBought) or 0) + qty
+                    StockPiler.Buy._visitPurchases = purchases + 1
+                    StockPiler.Buy._visitMoneyBrass = math.max(0, money - costTotal)
+                    NoteVisitAcquired(acquireKey, qty)
+                    AfterPurchaseRefresh()
+                    LogBuyOp(string.format(
+                        "purchase slot=%d qty=%d cost=%d kind=%s name=%s remainingWas=%d acquired=%d spent=%d budget=%d moneyLeft=%d",
+                        slotNum,
+                        qty,
+                        costTotal,
+                        tostring(job.kind or "buy"),
+                        ToNarrow(item.name or job.name or ""),
+                        remaining,
+                        VisitAcquired(acquireKey),
+                        tonumber(StockPiler.Buy._visitSpentBrass) or 0,
+                        budget,
+                        tonumber(StockPiler.Buy._visitMoneyBrass) or 0
+                    ))
+                    if StockPiler.ScheduleBagWork then
+                        StockPiler.ScheduleBagWork(false)
+                    end
+                    return true
                 end
-                -- ConfirmThenBuyItem is UI-only (WARN_BUY dialog). Never call it.
-                -- BuyItem sets NumItems = buyCount (one vendor purchase of N).
-                local ok = StockPiler.TryCall(
-                    "StockPiler.Buy.BuyItem",
-                    store.BuyItem,
-                    item,
-                    qty
-                )
-                if not ok then
-                    return false
-                end
-                StockPiler.Buy._visitSpentBrass = spent + (cost * qty)
-                StockPiler.Buy._visitBought = (tonumber(StockPiler.Buy._visitBought) or 0) + qty
-                D("AutoBuy purchased slot=" .. tostring(slotNum)
-                    .. " qty=" .. tostring(qty)
-                    .. " cost=" .. tostring(cost * qty)
-                    .. " job=" .. tostring(job.kind)
-                    .. " name=" .. tostring(job.name or ""))
-                if StockPiler.ScheduleBagWork then
-                    StockPiler.ScheduleBagWork(false)
-                end
-                return true
             end
         end
     end

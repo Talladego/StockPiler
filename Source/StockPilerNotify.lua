@@ -4,6 +4,8 @@
 
 local PREFIX_TEXT = "StockPiler"
 local PREFIX_COLOR = { 170, 220, 170 }
+local COLOR_WARN = { 255, 210, 70 }
+local COLOR_ALERT = { 255, 90, 90 }
 
 local function ToNarrow(text)
     return StockPiler.ToNarrow(text)
@@ -20,6 +22,32 @@ local function AsWString(text)
         return L""
     end
     return towstring(tostring(text))
+end
+
+--- Escape text for use inside a chat LINK text="..." attribute.
+local function EscapeLinkText(text)
+    local s = ToNarrow(text)
+    s = string.gsub(s, "\\", "\\\\")
+    s = string.gsub(s, "\"", "'")
+    s = string.gsub(s, "<", "[")
+    s = string.gsub(s, ">", "]")
+    return s
+end
+
+--- Color the message body (prefix stays green). rgb = {r,g,b}.
+local function ColorizeMessage(text, rgb)
+    text = AsWString(text)
+    if type(rgb) ~= "table" then
+        return text
+    end
+    local raw = string.format(
+        "<LINK data=\"0\" color=\"%d,%d,%d\" text=\"%s\">",
+        tonumber(rgb[1]) or 255,
+        tonumber(rgb[2]) or 255,
+        tonumber(rgb[3]) or 255,
+        EscapeLinkText(text)
+    )
+    return towstring(raw)
 end
 
 local function GetSettings()
@@ -525,7 +553,7 @@ function StockPiler.NotifyProgressBlocked(blockers)
 end
 
 function StockPiler.NotifyAutoGrowLastSeeds(seedName, remaining)
-    if not StockPiler.StatusMessagesVerbose() then
+    if not StockPiler.StatusMessagesEnabled() then
         return
     end
     remaining = tonumber(remaining) or 0
@@ -538,7 +566,19 @@ function StockPiler.NotifyAutoGrowLastSeeds(seedName, remaining)
         .. L" ("
         .. towstring(tostring(remaining))
         .. L"). A failed harvest can lose this seed line."
-    EmitChat(msg)
+    EmitChat(ColorizeMessage(msg, COLOR_WARN))
+end
+
+--- Critical harvest failure wiped bags + garden + plant mats for this seed.
+function StockPiler.NotifySeedLineLost(seedName)
+    if not StockPiler.StatusMessagesEnabled() then
+        return
+    end
+    seedName = AsWString(seedName)
+    local msg = L"Lost seed line: "
+        .. seedName
+        .. L". Critical harvest failure — buy seeds or recover from plant materials if any remain."
+    EmitChat(ColorizeMessage(msg, COLOR_ALERT))
 end
 
 --- Slash/load banner; always prints (ignores statusMessages toggle).

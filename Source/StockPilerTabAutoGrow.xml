@@ -144,21 +144,6 @@
                     </Windows>
                 </Window>
 
-                <Button name="$parentHarvest" inherits="StockPiler_RowTextButton" gameactionbutton="left">
-                    <Size>
-                        <AbsPoint x="80" y="28" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="478" y="58" />
-                        </Anchor>
-                    </Anchors>
-                    <EventHandlers>
-                        <EventHandler event="OnLButtonDown" function="StockPilerTabAutoGrow.OnHarvestPrepare" />
-                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverHarvest" />
-                    </EventHandlers>
-                </Button>
-
                 <Button name="$parentAutoBuy" inherits="EA_Button_DefaultCheckBox">
                     <Size>
                         <AbsPoint x="20" y="20" />
@@ -280,7 +265,7 @@
                 </Button>
                 <Label name="$parentBrewMacroLabel" font="font_chat_text" maxchars="32" textalign="leftcenter" handleinput="false">
                     <Size>
-                        <AbsPoint x="180" y="28" />
+                        <AbsPoint x="160" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
@@ -288,6 +273,21 @@
                         </Anchor>
                     </Anchors>
                 </Label>
+
+                <Button name="$parentClearWatches" inherits="EA_Button_DefaultResizeable">
+                    <Size>
+                        <AbsPoint x="120" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright">
+                            <AbsPoint x="-8" y="88" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabAutoGrow.OnClearWatches" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabAutoGrow.OnMouseOverClearWatches" />
+                    </EventHandlers>
+                </Button>
 
                 <!-- Headers: Potion | Status | Stock | Craftable | Target | AutoGrow | Craft (1000px; match row columns) -->
                 <Button name="$parentColPotion" inherits="StockPiler_StaticHeader">

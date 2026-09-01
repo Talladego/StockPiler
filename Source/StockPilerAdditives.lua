@@ -162,11 +162,16 @@ function StockPiler.Additives.SetEnabled(enabled)
     if StockPiler.PersistActiveCharacterSettings then
         StockPiler.PersistActiveCharacterSettings(s)
     end
-    if changed and StockPiler.NotifyManual then
-        if enabled then
-            StockPiler.NotifyManual(L"AutoGrow", L"Additives on. Uses Soil / Watering / Nutrient from the crafting bag during the matching stage.")
-        else
-            StockPiler.NotifyManual(L"AutoGrow", L"Additives off.")
+    if changed then
+        if StockPiler.LogOp then
+            StockPiler.LogOp("settings", "Additives enabled=" .. tostring(enabled))
+        end
+        if StockPiler.NotifyManual then
+            if enabled then
+                StockPiler.NotifyManual(L"AutoGrow", L"Additives on. Uses Soil / Watering / Nutrient from the crafting bag during the matching stage.")
+            else
+                StockPiler.NotifyManual(L"AutoGrow", L"Additives off.")
+            end
         end
     end
     return enabled

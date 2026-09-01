@@ -168,6 +168,13 @@ local function IsIgnoredNoise(text)
     if string.find(lower, "cultivation plot flowering completed", 1, true) then
         return true
     end
+    -- Login after aborted grow (logout mid-cycle): seeds returned to bags.
+    if string.find(lower, "your seeds were restored", 1, true) then
+        return true
+    end
+    if string.find(lower, "unfortunate event", 1, true) then
+        return true
+    end
     return false
 end
 

@@ -601,7 +601,10 @@ function MS.Matches(itemData, spec)
         return tonumber(other.effectId) == tonumber(spec.effectId)
     end
     if role == "container" then
+        -- Must match skill tier. Slot-only match bought every vial on the vendor
+        -- and counted unrelated containers toward (or against) the wrong job.
         return tonumber(other.slotType) == tonumber(spec.slotType)
+            and tonumber(other.skillLevel) == tonumber(spec.skillLevel)
     end
     if role == "stabilizer" or role == "goldweed" then
         local B = CraftBonusRefs()

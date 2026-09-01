@@ -362,18 +362,42 @@ local function SnapshotItems(forceEngineRefresh)
     end
     local countByUid = {}
     local sampleByUid = {}
+    local refinableByPlantUid = {}
+    local seedType = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.SEED) or 1
+    local sporeType = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.SPORE) or 5
+    local function isRefinablePlant(item)
+        if type(item) ~= "table" then
+            return false
+        end
+        if StockPiler.SeedMap and StockPiler.SeedMap.ItemLooksLikeRefinablePlant then
+            return StockPiler.SeedMap.ItemLooksLikeRefinablePlant(item)
+        end
+        if item.isRefinable ~= true then
+            return false
+        end
+        local cultType = tonumber(item.cultivationType) or 0
+        if cultType == seedType or cultType == sporeType then
+            return false
+        end
+        return true
+    end
     for i = 1, #flat do
         local item = flat[i]
         local uid = tonumber(item.uniqueID) or 0
         if uid > 0 then
-            countByUid[uid] = (countByUid[uid] or 0) + StackSize(item)
+            local stack = StackSize(item)
+            countByUid[uid] = (countByUid[uid] or 0) + stack
             if sampleByUid[uid] == nil then
                 sampleByUid[uid] = item
+            end
+            if isRefinablePlant(item) then
+                refinableByPlantUid[uid] = (refinableByPlantUid[uid] or 0) + stack
             end
         end
     end
     StockPiler.Inventory._countByUid = countByUid
     StockPiler.Inventory._sampleByUid = sampleByUid
+    StockPiler.Inventory._refinableCountByPlantUid = refinableByPlantUid
     StockPiler.Inventory._snapshotGen = (tonumber(StockPiler.Inventory._snapshotGen) or 0) + 1
     StockPiler.Inventory._snapshotDone = true
     if StockPiler.Additives and StockPiler.Additives.LearnFromSnapshotSamples then
@@ -449,6 +473,36 @@ end
 function StockPiler.Inventory.InvalidateSnapshot()
     StockPiler.Inventory._snapshotDone = false
     StockPiler.Inventory._uiCachesValid = false
+    StockPiler.Inventory._refinableCountByPlantUid = nil
+end
+
+--- Soft count update without a full bag flatten (brew post-craft).
+--- Returns true when the snapshot indexes were adjusted.
+function StockPiler.Inventory.AdjustCountByUid(uniqueID, delta)
+    uniqueID = tonumber(uniqueID) or 0
+    delta = tonumber(delta) or 0
+    if uniqueID <= 0 or delta == 0 or StockPiler.Inventory._snapshotDone ~= true then
+        return false
+    end
+    local counts = StockPiler.Inventory._countByUid
+    if type(counts) ~= "table" then
+        return false
+    end
+    local nextCount = (counts[uniqueID] or 0) + delta
+    if nextCount < 0 then
+        nextCount = 0
+    end
+    counts[uniqueID] = nextCount
+    local refinable = StockPiler.Inventory._refinableCountByPlantUid
+    if type(refinable) == "table" and refinable[uniqueID] ~= nil then
+        local nextRef = (tonumber(refinable[uniqueID]) or 0) + delta
+        if nextRef < 0 then
+            nextRef = 0
+        end
+        refinable[uniqueID] = nextRef
+    end
+    StockPiler.Inventory._snapshotGen = (tonumber(StockPiler.Inventory._snapshotGen) or 0) + 1
+    return true
 end
 
 function StockPiler.Inventory.CountByUniqueId(uniqueID)
@@ -1645,6 +1699,9 @@ function StockPiler.Inventory.RefreshAllIfNeeded(opts)
     local force = opts.force == true
     if force then
         StockPiler.Inventory.InvalidateSnapshot()
+        if StockPiler._bagCountsStale == true then
+            StockPiler._bagCountsStale = false
+        end
     end
     if StockPiler.Inventory._uiCachesValid == true
         and StockPiler.Inventory._snapshotDone == true

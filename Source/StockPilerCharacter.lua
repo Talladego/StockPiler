@@ -28,6 +28,7 @@ StockPiler.DefaultCharacterSettings = {
     autoBuyBudgetGold = 50,
     growSeedBufferMin = 4,
     brewMacroEnabled = true, -- one-click Brew hotbar (Ctrl-click toggles)
+    brewRespectGrowReserve = true, -- strict: do not brew plants reserved for AutoGrow refine
 }
 
 function StockPiler.GetCharacterKey()
@@ -70,6 +71,7 @@ function StockPiler.EnsureCharacterBucketShape(char)
     char.autoGrowAdditives = char.autoGrowAdditives == true
     char.autoBuyEnabled = char.autoBuyEnabled == true
     char.brewMacroEnabled = char.brewMacroEnabled ~= false
+    char.brewRespectGrowReserve = char.brewRespectGrowReserve ~= false
     char.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
     char.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
     char.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 4)
@@ -96,21 +98,56 @@ local function DeepCopy(value)
 end
 
 function StockPiler.PersistActiveCharacterSettings(s)
+    -- Mid-bind re-entry (e.g. MigrateWatches → EnsureSettings) must not write:
+    -- session aliases may still be nil and would wipe the character bucket to defaults.
+    if StockPiler._bindingCharacter == true then
+        return
+    end
     local bucket = StockPiler._charBucket
     if type(s) ~= "table" or type(bucket) ~= "table" then
         return
     end
-    bucket.autoGrowEnabled = s.autoGrowEnabled == true
-    bucket.autoGrowAdditives = s.autoGrowAdditives == true
-    bucket.autoBuyEnabled = s.autoBuyEnabled == true
-    bucket.brewMacroEnabled = s.brewMacroEnabled ~= false
-    bucket.autoBuyReserveGold = ClampInt(s.autoBuyReserveGold, 1, 99, 10)
-    bucket.autoBuyBudgetGold = ClampInt(s.autoBuyBudgetGold, 1, 999, 50)
-    bucket.growSeedBufferMin = ClampInt(s.growSeedBufferMin, 4, 20, 4)
+    -- Only copy aliases that are present. nil means "not bound yet", not "false".
+    if s.autoGrowEnabled ~= nil then
+        bucket.autoGrowEnabled = s.autoGrowEnabled == true
+    end
+    if s.autoGrowAdditives ~= nil then
+        bucket.autoGrowAdditives = s.autoGrowAdditives == true
+    end
+    if s.autoBuyEnabled ~= nil then
+        bucket.autoBuyEnabled = s.autoBuyEnabled == true
+    end
+    if s.brewMacroEnabled ~= nil then
+        bucket.brewMacroEnabled = s.brewMacroEnabled ~= false
+    end
+    if s.brewRespectGrowReserve ~= nil then
+        bucket.brewRespectGrowReserve = s.brewRespectGrowReserve ~= false
+    end
+    if s.autoBuyReserveGold ~= nil then
+        bucket.autoBuyReserveGold = ClampInt(s.autoBuyReserveGold, 1, 99, 10)
+    end
+    if s.autoBuyBudgetGold ~= nil then
+        bucket.autoBuyBudgetGold = ClampInt(s.autoBuyBudgetGold, 1, 999, 50)
+    end
+    if s.growSeedBufferMin ~= nil then
+        bucket.growSeedBufferMin = ClampInt(s.growSeedBufferMin, 4, 20, 4)
+    end
     if type(s.watches) == "table" then
         bucket.watches = s.watches
     end
     s._charBucket = nil
+end
+
+local function ApplyCharacterAliases(s, char)
+    s.watches = char.watches
+    s.autoGrowEnabled = char.autoGrowEnabled == true
+    s.autoGrowAdditives = char.autoGrowAdditives == true
+    s.autoBuyEnabled = char.autoBuyEnabled == true
+    s.brewMacroEnabled = char.brewMacroEnabled ~= false
+    s.brewRespectGrowReserve = char.brewRespectGrowReserve ~= false
+    s.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
+    s.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
+    s.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 4)
 end
 
 function StockPiler.BindActiveCharacterSettings(s)
@@ -129,7 +166,13 @@ function StockPiler.BindActiveCharacterSettings(s)
     local key = StockPiler.GetCharacterKey()
     local keyChanged = prevKey ~= nil and prevKey ~= key
     if keyChanged then
-        StockPiler.PersistActiveCharacterSettings(s)
+        -- Flush the previous character's aliases into its bucket before switching.
+        local prevBucket = StockPiler._charBucket
+        if type(prevBucket) == "table" then
+            StockPiler._bindingCharacter = false
+            StockPiler.PersistActiveCharacterSettings(s)
+            StockPiler._bindingCharacter = true
+        end
     end
 
     if type(s.characters) ~= "table" then
@@ -143,17 +186,13 @@ function StockPiler.BindActiveCharacterSettings(s)
     s._characterKey = key
     StockPiler._charBucket = char
     s._charBucket = nil
-    s.watches = char.watches
+    -- Apply aliases BEFORE MigrateWatches / anything that re-enters EnsureSettings.
+    -- Watches are a shared table (mutations stick); toggles are scalars and were
+    -- previously wiped when Persist ran mid-bind with nil aliases.
+    ApplyCharacterAliases(s, char)
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigrateWatchesToPotionRecipeKeys then
         StockPiler.RecipeSpec.MigrateWatchesToPotionRecipeKeys()
     end
-    s.autoGrowEnabled = char.autoGrowEnabled == true
-    s.autoGrowAdditives = char.autoGrowAdditives == true
-    s.autoBuyEnabled = char.autoBuyEnabled == true
-    s.brewMacroEnabled = char.brewMacroEnabled ~= false
-    s.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
-    s.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
-    s.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 4)
     local newEnabled = s.autoGrowEnabled == true
     if keyChanged or prevEnabled ~= newEnabled then
         if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
@@ -181,8 +220,21 @@ function StockPiler.OnCharacterSettingsReload()
     local prevKey = type(StockPiler.Settings) == "table" and StockPiler.Settings._characterKey or nil
     local prevEnabled = type(StockPiler.Settings) == "table" and StockPiler.Settings.autoGrowEnabled == true
     StockPiler.EnsureSettings()
+    if StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
+        StockPiler.Inventory.RefreshAllIfNeeded({ force = true })
+    end
+    StockPiler._bagCountsStale = false
+    if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+        StockPiler.Planner.InvalidatePlanCache()
+    end
+    if StockPiler.ScheduleBagWork then
+        StockPiler.ScheduleBagWork(false)
+    end
     if StockPiler.SeedMap and StockPiler.SeedMap.ApplyPendingMapReset then
         StockPiler.SeedMap.ApplyPendingMapReset()
+    end
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairDuplicateRecipeFingerprints then
+        StockPiler.RecipeSpec.RepairDuplicateRecipeFingerprints()
     end
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairIncompleteMainSpecs then
         StockPiler.RecipeSpec.RepairIncompleteMainSpecs()

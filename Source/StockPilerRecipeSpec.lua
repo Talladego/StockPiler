@@ -18,6 +18,74 @@ local function EnsureSettings()
     return StockPiler.Settings
 end
 
+local function RecipesTable(s)
+    s = s or EnsureSettings()
+    if type(s.recipes) ~= "table" then
+        if StockPiler.ClearAccountTable then
+            s.recipes = StockPiler.ClearAccountTable("recipes")
+        else
+            s.recipes = {}
+        end
+    end
+    -- Compat alias
+    s.learnedRecipeSpecs = s.recipes
+    return s.recipes
+end
+
+local function PotionsTable(s)
+    s = s or EnsureSettings()
+    if type(s.potions) ~= "table" then
+        if StockPiler.ClearAccountTable then
+            s.potions = StockPiler.ClearAccountTable("potions")
+        else
+            s.potions = {}
+        end
+    end
+    s.knownPotions = s.potions
+    return s.potions
+end
+
+local function EnsureBrewStats(recipe)
+    if type(recipe) ~= "table" then
+        return
+    end
+    if recipe.brewAttempts == nil then
+        local crafts = tonumber(recipe.crafts) or 0
+        recipe.brewSuccesses = tonumber(recipe.brewSuccesses) or crafts
+        recipe.brewAttempts = tonumber(recipe.brewAttempts) or crafts
+    end
+    recipe.brewSuccesses = tonumber(recipe.brewSuccesses) or 0
+    recipe.brewAttempts = tonumber(recipe.brewAttempts) or 0
+    recipe.brewCrits = tonumber(recipe.brewCrits) or 0
+    recipe.brewSuperCrits = tonumber(recipe.brewSuperCrits) or 0
+    recipe.brewFailures = tonumber(recipe.brewFailures) or 0
+    recipe.brewVolatiles = tonumber(recipe.brewVolatiles) or 0
+    -- Do not invent product counts from an old stored yield.
+    recipe.yieldProductSum = tonumber(recipe.yieldProductSum) or 0
+    recipe.yieldSamples = tonumber(recipe.yieldSamples) or 0
+end
+
+local function PotionActiveRecipeKey(potion)
+    if type(potion) ~= "table" then
+        return nil
+    end
+    local key = potion.activeRecipeKey or potion.activeRecipeSpecKey
+    if type(key) == "string" and key ~= "" then
+        return key
+    end
+    return nil
+end
+
+local function PotionRecipeKeys(potion)
+    if type(potion) ~= "table" then
+        return nil
+    end
+    if type(potion.recipeKeys) == "table" then
+        return potion.recipeKeys
+    end
+    return potion.alternateRecipeSpecKeys
+end
+
 local ROLE_ORDER = {
     container = 1,
     main = 2,
@@ -272,6 +340,263 @@ function RS.SlotsFingerprint(slots)
     return table.concat(parts, "|")
 end
 
+--- Canonical fingerprint for a stored recipe key (re-hydrates slots).
+function RS.RecipeFingerprintForKey(recipes, key)
+    key = tostring(key or "")
+    if key == "" or type(recipes) ~= "table" then
+        return key
+    end
+    local recipe = recipes[key]
+    if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
+        return key
+    end
+    RS.HydrateRecipeSlots(recipe)
+    local fp = RS.SlotsFingerprint(recipe.slots)
+    if fp ~= "" then
+        return fp
+    end
+    return key
+end
+
+--- Find a learned recipe by canonical ingredient fingerprint.
+function RS.FindRecipeByFingerprint(recipes, fingerprint)
+    fingerprint = tostring(fingerprint or "")
+    if fingerprint == "" or type(recipes) ~= "table" then
+        return nil, nil
+    end
+    local direct = recipes[fingerprint]
+    if type(direct) == "table" then
+        return fingerprint, direct
+    end
+    for key, recipe in pairs(recipes) do
+        if type(recipe) == "table" and RS.RecipeFingerprintForKey(recipes, key) == fingerprint then
+            return key, recipe
+        end
+    end
+    return nil, nil
+end
+
+--- Merge brew stats / outcomes when two keys are the same cauldron loadout.
+function RS.MergeRecipeRecords(into, from)
+    if type(into) ~= "table" or type(from) ~= "table" then
+        return into
+    end
+    EnsureBrewStats(into)
+    EnsureBrewStats(from)
+    into.brewAttempts = (tonumber(into.brewAttempts) or 0) + (tonumber(from.brewAttempts) or 0)
+    into.brewSuccesses = (tonumber(into.brewSuccesses) or 0) + (tonumber(from.brewSuccesses) or 0)
+    into.brewCrits = (tonumber(into.brewCrits) or 0) + (tonumber(from.brewCrits) or 0)
+    into.brewSuperCrits = (tonumber(into.brewSuperCrits) or 0) + (tonumber(from.brewSuperCrits) or 0)
+    into.brewFailures = (tonumber(into.brewFailures) or 0) + (tonumber(from.brewFailures) or 0)
+    into.brewVolatiles = (tonumber(into.brewVolatiles) or 0) + (tonumber(from.brewVolatiles) or 0)
+    into.yieldProductSum = (tonumber(into.yieldProductSum) or 0) + (tonumber(from.yieldProductSum) or 0)
+    into.yieldSamples = (tonumber(into.yieldSamples) or 0) + (tonumber(from.yieldSamples) or 0)
+    into.crafts = (tonumber(into.brewSuccesses) or 0)
+    if type(from.outcomes) == "table" then
+        if type(into.outcomes) ~= "table" then
+            into.outcomes = {}
+        end
+        for uidKey, oc in pairs(from.outcomes) do
+            if type(oc) == "table" then
+                local existing = into.outcomes[uidKey]
+                if type(existing) ~= "table" then
+                    into.outcomes[uidKey] = {
+                        successes = tonumber(oc.successes) or 0,
+                        qtySum = tonumber(oc.qtySum) or 0,
+                        quality = oc.quality,
+                    }
+                else
+                    existing.successes = (tonumber(existing.successes) or 0) + (tonumber(oc.successes) or 0)
+                    existing.qtySum = (tonumber(existing.qtySum) or 0) + (tonumber(oc.qtySum) or 0)
+                    if existing.quality == nil then
+                        existing.quality = oc.quality
+                    end
+                end
+            end
+        end
+    end
+    if (tonumber(into.yieldSamples) or 0) > 0 and (tonumber(into.yieldProductSum) or 0) > 0 then
+        into.recipeYield = into.yieldProductSum / into.yieldSamples
+    end
+    if into.activeOutcomeUid == nil and from.activeOutcomeUid ~= nil then
+        into.activeOutcomeUid = from.activeOutcomeUid
+        into.outputUid = from.outputUid
+    end
+    return into
+end
+
+local function DedupePotionRecipeKeys(potion, recipes)
+    if type(potion) ~= "table" or type(recipes) ~= "table" then
+        return false
+    end
+    local keys = PotionRecipeKeys(potion)
+    if type(keys) ~= "table" or #keys < 2 then
+        return false
+    end
+    local seen = {}
+    local out = {}
+    local changed = false
+    for i = 1, #keys do
+        local key = keys[i]
+        local canon = RS.RecipeFingerprintForKey(recipes, key)
+        if type(recipes[canon]) ~= "table" and type(recipes[key]) == "table" then
+            canon = key
+        elseif type(recipes[canon]) ~= "table" then
+            changed = true
+        elseif seen[canon] ~= true then
+            seen[canon] = true
+            out[#out + 1] = canon
+            if canon ~= key then
+                changed = true
+            end
+        else
+            changed = true
+        end
+    end
+    if changed then
+        potion.recipeKeys = out
+        potion.alternateRecipeSpecKeys = nil
+        local active = PotionActiveRecipeKey(potion)
+        if active ~= nil then
+            local canonActive = RS.RecipeFingerprintForKey(recipes, active)
+            if type(recipes[canonActive]) == "table" then
+                potion.activeRecipeKey = canonActive
+            elseif #out > 0 then
+                potion.activeRecipeKey = out[1]
+            end
+        end
+        potion.activeRecipeSpecKey = nil
+    end
+    return changed
+end
+
+local function RemapRecipeSpecKey(s, oldKey, newKey, recipe)
+    if oldKey == newKey or oldKey == "" or newKey == "" then
+        return
+    end
+    local recipes = s.recipes or s.learnedRecipeSpecs
+    if type(recipes) ~= "table" then
+        return
+    end
+    recipe.recipeSpecKey = newKey
+    recipes[newKey] = recipe
+    if recipes[oldKey] == recipe then
+        recipes[oldKey] = nil
+    end
+    local potions = s.potions or s.knownPotions
+    if type(potions) == "table" then
+        for _, potion in pairs(potions) do
+            if type(potion) == "table" then
+                if PotionActiveRecipeKey(potion) == oldKey then
+                    potion.activeRecipeKey = newKey
+                end
+                potion.activeRecipeSpecKey = nil
+                local keys = PotionRecipeKeys(potion)
+                if type(keys) == "table" then
+                    for i = 1, #keys do
+                        if keys[i] == oldKey then
+                            keys[i] = newKey
+                        end
+                    end
+                    potion.recipeKeys = keys
+                end
+                potion.alternateRecipeSpecKeys = nil
+            end
+        end
+    end
+    if type(s.watches) == "table" then
+        local suffix = "|rk:" .. oldKey
+        local rekey = {}
+        for watchKey, watch in pairs(s.watches) do
+            if type(watchKey) == "string"
+                and (watchKey == oldKey or string.sub(watchKey, -#suffix) == suffix)
+            then
+                local newWatchKey = watchKey
+                if watchKey == oldKey then
+                    newWatchKey = newKey
+                else
+                    newWatchKey = string.sub(watchKey, 1, -#suffix - 1) .. "|rk:" .. newKey
+                end
+                if newWatchKey ~= watchKey then
+                    rekey[#rekey + 1] = { oldKey = watchKey, newKey = newWatchKey, watch = watch }
+                end
+            end
+        end
+        for i = 1, #rekey do
+            local entry = rekey[i]
+            if type(s.watches[entry.newKey]) ~= "table" then
+                s.watches[entry.newKey] = entry.watch
+            end
+            s.watches[entry.oldKey] = nil
+        end
+    end
+end
+
+--- Collapse legacy twin keys (e.g. differ only by DESTROY_ON_FAIL bonus ref 15).
+function RS.RepairDuplicateRecipeFingerprints()
+    local s = EnsureSettings()
+    local recipes = RecipesTable(s)
+    local groups = {}
+    for key, recipe in pairs(recipes) do
+        if type(recipe) == "table" and type(recipe.slots) == "table" then
+            RS.HydrateRecipeSlots(recipe)
+            local canon = RS.SlotsFingerprint(recipe.slots)
+            if canon ~= "" then
+                local group = groups[canon]
+                if group == nil then
+                    group = { canon = canon, entries = {} }
+                    groups[canon] = group
+                end
+                group.entries[#group.entries + 1] = { key = key, recipe = recipe }
+            end
+        end
+    end
+
+    local merged = 0
+    for canon, group in pairs(groups) do
+        if #group.entries == 0 then
+            -- skip
+        elseif #group.entries == 1 and group.entries[1].key == canon then
+            -- already canonical
+        elseif #group.entries == 1 and group.entries[1].key ~= canon then
+            RemapRecipeSpecKey(s, group.entries[1].key, canon, group.entries[1].recipe)
+            merged = merged + 1
+        else
+            local combined = group.entries[1].recipe
+            for i = 2, #group.entries do
+                RS.MergeRecipeRecords(combined, group.entries[i].recipe)
+            end
+            combined.recipeSpecKey = canon
+            recipes[canon] = combined
+            for i = 1, #group.entries do
+                local entry = group.entries[i]
+                if entry.key ~= canon then
+                    RemapRecipeSpecKey(s, entry.key, canon, combined)
+                end
+            end
+            merged = merged + 1
+        end
+    end
+
+    local potions = PotionsTable(s)
+    for _, potion in pairs(potions) do
+        if DedupePotionRecipeKeys(potion, recipes) then
+            merged = merged + 1
+        end
+    end
+
+    if merged > 0 then
+        RS.SlimAllRecipesForStorage()
+        if StockPiler.Inventory and StockPiler.Inventory.InvalidateRecipeCaches then
+            StockPiler.Inventory.InvalidateRecipeCaches()
+        end
+        if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+            StockPiler.Planner.InvalidatePlanCache()
+        end
+    end
+    return merged
+end
+
 function RS.ResolveSlotSpec(slot)
     if type(slot) ~= "table" then
         return nil
@@ -368,41 +693,6 @@ function RS.SlimAllPotionsForStorage()
     return n
 end
 
-local function PotionActiveRecipeKey(potion)
-    if type(potion) ~= "table" then
-        return nil
-    end
-    local key = potion.activeRecipeKey or potion.activeRecipeSpecKey
-    if type(key) == "string" and key ~= "" then
-        return key
-    end
-    return nil
-end
-
-local function PotionRecipeKeys(potion)
-    if type(potion) ~= "table" then
-        return nil
-    end
-    if type(potion.recipeKeys) == "table" then
-        return potion.recipeKeys
-    end
-    return potion.alternateRecipeSpecKeys
-end
-
-local function RecipesTable(s)
-    s = s or EnsureSettings()
-    if type(s.recipes) ~= "table" then
-        if StockPiler.ClearAccountTable then
-            s.recipes = StockPiler.ClearAccountTable("recipes")
-        else
-            s.recipes = {}
-        end
-    end
-    -- Compat alias
-    s.learnedRecipeSpecs = s.recipes
-    return s.recipes
-end
-
 function RS.RecipeLabelForKey(recipeSpecKey, potionUid)
     recipeSpecKey = tostring(recipeSpecKey or "")
     if recipeSpecKey == "" then
@@ -415,39 +705,6 @@ function RS.RecipeLabelForKey(recipeSpecKey, potionUid)
         return L"Recipe"
     end
     return RS.RecipeLabelForRecipe(recipe, potionUid)
-end
-
-local function PotionsTable(s)
-    s = s or EnsureSettings()
-    if type(s.potions) ~= "table" then
-        if StockPiler.ClearAccountTable then
-            s.potions = StockPiler.ClearAccountTable("potions")
-        else
-            s.potions = {}
-        end
-    end
-    s.knownPotions = s.potions
-    return s.potions
-end
-
-local function EnsureBrewStats(recipe)
-    if type(recipe) ~= "table" then
-        return
-    end
-    if recipe.brewAttempts == nil then
-        local crafts = tonumber(recipe.crafts) or 0
-        recipe.brewSuccesses = tonumber(recipe.brewSuccesses) or crafts
-        recipe.brewAttempts = tonumber(recipe.brewAttempts) or crafts
-    end
-    recipe.brewSuccesses = tonumber(recipe.brewSuccesses) or 0
-    recipe.brewAttempts = tonumber(recipe.brewAttempts) or 0
-    recipe.brewCrits = tonumber(recipe.brewCrits) or 0
-    recipe.brewSuperCrits = tonumber(recipe.brewSuperCrits) or 0
-    recipe.brewFailures = tonumber(recipe.brewFailures) or 0
-    recipe.brewVolatiles = tonumber(recipe.brewVolatiles) or 0
-    -- Do not invent product counts from an old stored yield.
-    recipe.yieldProductSum = tonumber(recipe.yieldProductSum) or 0
-    recipe.yieldSamples = tonumber(recipe.yieldSamples) or 0
 end
 
 --- Observed bottles of the expected potion per successful brew.
@@ -579,6 +836,7 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
         if not seen then
             keys[#keys + 1] = recipeSpecKey
         end
+        DedupePotionRecipeKeys(existing, recipes)
         local recipes = RecipesTable(s)
         local recipe = recipes[recipeSpecKey]
         local crafts = recipe and tonumber(recipe.crafts) or 0
@@ -701,7 +959,8 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         return false
     end
 
-    local recipe = recipes[fingerprint]
+    local existingKey, existingRecipe = RS.FindRecipeByFingerprint(recipes, fingerprint)
+    local recipe = existingRecipe
     local isNew = type(recipe) ~= "table"
     if isNew then
         recipe = {
@@ -722,6 +981,9 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     else
         EnsureBrewStats(recipe)
         recipe.slots = SlimSlotsForStorage(slots)
+        if type(existingKey) == "string" and existingKey ~= fingerprint then
+            RemapRecipeSpecKey(s, existingKey, fingerprint, recipe)
+        end
     end
 
     recipe.brewAttempts = (tonumber(recipe.brewAttempts) or 0) + 1
@@ -1090,6 +1352,7 @@ function RS.ListPotionRecipeEntries()
                 keys = { active }
             end
             local seen = {}
+            local seenRow = {}
             for i = 1, #keys do
                 local recipeKey = keys[i]
                 if type(recipeKey) == "string" and recipeKey ~= "" and seen[recipeKey] ~= true then
@@ -1106,24 +1369,32 @@ function RS.ListPotionRecipeEntries()
                         end
                         if include then
                             RS.HydrateRecipeSlots(recipe)
-                            local prKey = RS.PotionRecipeKey(uid, recipeKey)
-                            local stats = RS.RecipeFingerprintStats(recipe, uid)
-                            list[#list + 1] = {
-                                potionRecipeKey = prKey,
-                                potionKey = potion.potionKey or RS.PotionKeyFromUid(uid),
-                                outputUid = uid,
-                                recipeSpecKey = recipeKey,
-                                name = potion.name,
-                                nameNarrow = potion.nameNarrow,
-                                iconNum = tonumber(potion.iconNum) or 0,
-                                effectKey = potion.effectKey,
-                                recipeLabel = RS.RecipeLabelForRecipe(recipe, uid),
-                                power = stats.power,
-                                stability = stats.stability,
-                                superCrit = stats.superCrit,
-                                yield = stats.yield,
-                                potion = potion,
-                            }
+                            local rowFp = RS.SlotsFingerprint(recipe.slots)
+                            if rowFp == "" then
+                                rowFp = recipeKey
+                            end
+                            local rowId = tostring(uid) .. "|" .. rowFp
+                            if seenRow[rowId] ~= true then
+                                seenRow[rowId] = true
+                                local prKey = RS.PotionRecipeKey(uid, recipeKey)
+                                local stats = RS.RecipeFingerprintStats(recipe, uid)
+                                list[#list + 1] = {
+                                    potionRecipeKey = prKey,
+                                    potionKey = potion.potionKey or RS.PotionKeyFromUid(uid),
+                                    outputUid = uid,
+                                    recipeSpecKey = recipeKey,
+                                    name = potion.name,
+                                    nameNarrow = potion.nameNarrow,
+                                    iconNum = tonumber(potion.iconNum) or 0,
+                                    effectKey = potion.effectKey,
+                                    recipeLabel = RS.RecipeLabelForRecipe(recipe, uid),
+                                    power = stats.power,
+                                    stability = stats.stability,
+                                    superCrit = stats.superCrit,
+                                    yield = stats.yield,
+                                    potion = potion,
+                                }
+                            end
                         end
                     end
                 end
@@ -1142,9 +1413,16 @@ function RS.ListPotionRecipeEntries()
 end
 
 --- Remap legacy watches["uid:N"] to watches["uid:N|rk:..."].
+--- Uses Settings in place when already binding (do not re-enter EnsureSettings).
 function RS.MigrateWatchesToPotionRecipeKeys()
-    local s = EnsureSettings()
-    if type(s.watches) ~= "table" then
+    local s = StockPiler.Settings
+    if type(s) ~= "table" or type(s.watches) ~= "table" then
+        if StockPiler._bindingCharacter == true then
+            return 0
+        end
+        s = EnsureSettings()
+    end
+    if type(s) ~= "table" or type(s.watches) ~= "table" then
         return 0
     end
     local potions = PotionsTable(s)
@@ -1275,10 +1553,12 @@ function RS.EffectiveSpecPerCraft(slot, slots)
 end
 
 --- How many full crafts current bags can support (min over every slot).
-function RS.CountCraftsPossible(recipe)
+--- opts.respectGrowReserve: subtract AutoGrow-reserved growable plants (cached plan).
+function RS.CountCraftsPossible(recipe, opts)
     if type(recipe) ~= "table" then
         return 0
     end
+    opts = type(opts) == "table" and opts or nil
     RS.HydrateRecipeSlots(recipe)
     local slots = recipe.slots
     if type(slots) ~= "table" or #slots == 0 then
@@ -1294,6 +1574,12 @@ function RS.CountCraftsPossible(recipe)
                 perCraft = 1
             end
             local have = RS.CountItemsMatchingSpec(spec)
+            if opts and opts.respectGrowReserve == true
+                and StockPiler.Planner
+                and StockPiler.Planner.BrewAvailableForSpec
+            then
+                have = StockPiler.Planner.BrewAvailableForSpec(spec)
+            end
             local craftsHave = math.floor(have / perCraft)
             if possible == nil or craftsHave < possible then
                 possible = craftsHave
@@ -1402,9 +1688,11 @@ end
 
 --- Potion count those crafts would yield (crafts × recipe yield).
 --- Best case: every output is this potion, not a Potent / other rarity.
-function RS.CountPotionsCraftable(recipe)
-    local crafts = RS.CountCraftsPossible(recipe)
-    return crafts * RS.RecipeOutputYield(recipe)
+--- Yield can be a fractional observed average — round for UI / comparisons.
+function RS.CountPotionsCraftable(recipe, opts)
+    local crafts = RS.CountCraftsPossible(recipe, opts)
+    local bottles = crafts * RS.RecipeOutputYield(recipe)
+    return math.floor((tonumber(bottles) or 0) + 0.5)
 end
 
 --- Expected bottles of this potion from current materials, using observed
@@ -1492,6 +1780,39 @@ function RS.EnsureWatch(potionKey)
         s.watches[potionKey].autoGrow = true
     end
     return s.watches[potionKey]
+end
+
+--- Wipe this character's watches table (orphans / forgotten-recipe leftovers).
+--- Returns how many entries were removed.
+function RS.ClearWatchList()
+    local s = EnsureSettings()
+    local n = 0
+    if type(s.watches) == "table" then
+        for _ in pairs(s.watches) do
+            n = n + 1
+        end
+    end
+    s.watches = {}
+    if StockPiler.PersistActiveCharacterSettings then
+        StockPiler.PersistActiveCharacterSettings(s)
+    end
+    if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+        StockPiler.Planner.InvalidatePlanCache()
+    end
+    if StockPiler.AutoGrow then
+        if StockPiler.AutoGrow.InvalidatePlantQueue then
+            StockPiler.AutoGrow.InvalidatePlantQueue()
+        end
+        if StockPiler.AutoGrow.OnDemandChanged then
+            StockPiler.AutoGrow.OnDemandChanged()
+        end
+    end
+    if StockPiler.LogSettingsAlways then
+        StockPiler.LogSettingsAlways("clearWatchList count=" .. tostring(n))
+    elseif StockPiler.LogOp then
+        StockPiler.LogOp("settings", "clearWatchList count=" .. tostring(n))
+    end
+    return n
 end
 
 -- Per-potion AutoGrow preference only (Watch-tab checkbox). Independent of global.
@@ -1960,42 +2281,6 @@ local function MainUidFromLegacyRecipes(outputUid)
         end
     end
     return nil
-end
-
-local function RemapRecipeSpecKey(s, oldKey, newKey, recipe)
-    if oldKey == newKey or oldKey == "" or newKey == "" then
-        return
-    end
-    local recipes = s.recipes or s.learnedRecipeSpecs
-    if type(recipes) ~= "table" then
-        return
-    end
-    recipe.recipeSpecKey = newKey
-    recipes[newKey] = recipe
-    if recipes[oldKey] == recipe then
-        recipes[oldKey] = nil
-    end
-    local potions = s.potions or s.knownPotions
-    if type(potions) == "table" then
-        for _, potion in pairs(potions) do
-            if type(potion) == "table" then
-                if PotionActiveRecipeKey(potion) == oldKey then
-                    potion.activeRecipeKey = newKey
-                end
-                potion.activeRecipeSpecKey = nil
-                local keys = PotionRecipeKeys(potion)
-                if type(keys) == "table" then
-                    for i = 1, #keys do
-                        if keys[i] == oldKey then
-                            keys[i] = newKey
-                        end
-                    end
-                    potion.recipeKeys = keys
-                end
-                potion.alternateRecipeSpecKeys = nil
-            end
-        end
-    end
 end
 
 --- Potion effectKey for a recipe (learned output / linked potion row).

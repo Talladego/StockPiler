@@ -268,11 +268,6 @@ end
 
 
 
-local HARVEST_WIN = "SPTabAutoGrowHarvest"
-local HARVEST_COLOR_IDLE = { 92, 92, 92 }
-local HARVEST_COLOR_GROWING = { 200, 160, 80 }
-local HARVEST_COLOR_READY = { 255, 204, 102 }
-
 local CRAFT_COLOR_BREW = { 140, 210, 140 }
 local CRAFT_COLOR_LOAD = { 255, 220, 120 }
 local CRAFT_COLOR_IDLE = { 140, 140, 140 }
@@ -296,35 +291,8 @@ local function SetButtonTextColorAll(windowName, r, g, b)
     end
 end
 
-local function SetHarvestButtonTextColor(r, g, b)
-    SetButtonTextColorAll(HARVEST_WIN, r, g, b)
-end
-
-local function UpdateHarvestButton()
-    if not DoesWindowExist(HARVEST_WIN) then
-        return
-    end
-    local state = "idle"
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.GetHarvestUiState then
-        state = StockPiler.AutoGrow.GetHarvestUiState() or "idle"
-    end
-    if StockPilerTabAutoGrow._harvestUiState == state then
-        return
-    end
-    StockPilerTabAutoGrow._harvestUiState = state
-    if state == "harvest" then
-        ButtonSetText(HARVEST_WIN, L"Harvest")
-        ButtonSetDisabledFlag(HARVEST_WIN, false)
-        SetHarvestButtonTextColor(HARVEST_COLOR_READY[1], HARVEST_COLOR_READY[2], HARVEST_COLOR_READY[3])
-    elseif state == "growing" then
-        ButtonSetText(HARVEST_WIN, L"Growing")
-        ButtonSetDisabledFlag(HARVEST_WIN, true)
-        SetHarvestButtonTextColor(HARVEST_COLOR_GROWING[1], HARVEST_COLOR_GROWING[2], HARVEST_COLOR_GROWING[3])
-    else
-        ButtonSetText(HARVEST_WIN, L"Idle")
-        ButtonSetDisabledFlag(HARVEST_WIN, true)
-        SetHarvestButtonTextColor(HARVEST_COLOR_IDLE[1], HARVEST_COLOR_IDLE[2], HARVEST_COLOR_IDLE[3])
-    end
+--- Kept for AutoGrow tick callers; top Harvest button removed in 0.9.73.
+function StockPilerTabAutoGrow.RefreshHarvestButton()
 end
 
 local function ApplyRowCraftButton(loadWin, data)
@@ -358,25 +326,36 @@ end
 
 
 
-function StockPilerTabAutoGrow.RefreshHarvestButton()
-
-    UpdateHarvestButton()
-
+local function OrdersEqual(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then
+        return false
+    end
+    for i = 1, #a do
+        if a[i] ~= b[i] then
+            return false
+        end
+    end
+    return true
 end
 
 
 
 local function BuildVisibleList()
 
+    local forceSnap = StockPiler._bagCountsStale == true
     if StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
-        StockPiler.Inventory.RefreshAllIfNeeded()
+        if forceSnap then
+            StockPiler.Inventory.RefreshAllIfNeeded({ force = true })
+        else
+            StockPiler.Inventory.RefreshAllIfNeeded()
+        end
     end
 
     local plan = { rows = {}, queue = {} }
 
     if StockPiler.Planner and StockPiler.Planner.BuildPlan then
 
-        plan = StockPiler.Planner.BuildPlan({ refresh = false })
+        plan = StockPiler.Planner.BuildPlan({ refresh = forceSnap })
 
     end
 
@@ -482,17 +461,15 @@ function StockPilerTabAutoGrow.Initialize()
 
     LabelSetText("SPTabAutoGrowBrewMacroLabel", L"Enable One-Click Brew")
 
+    if DoesWindowExist("SPTabAutoGrowClearWatches") then
+        ButtonSetText("SPTabAutoGrowClearWatches", L"Clear watches")
+    end
+
     TintStepper("SPTabAutoGrowSeedBufferChipBg")
 
     TintStepper("SPTabAutoGrowReserveChipBg")
 
     TintStepper("SPTabAutoGrowBudgetChipBg")
-
-    UpdateHarvestButton()
-
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.EnsureHarvestActionBound then
-        StockPiler.AutoGrow.EnsureHarvestActionBound()
-    end
 
     ButtonSetText("SPTabAutoGrowColPotion", L"Potion")
 
@@ -520,8 +497,6 @@ function StockPilerTabAutoGrow.Initialize()
 
     UpdateAutoBuyChips()
 
-    UpdateHarvestButton()
-
 end
 
 
@@ -546,15 +521,19 @@ function StockPilerTabAutoGrow.Refresh()
 
     UpdateAutoBuyChips()
 
-    UpdateHarvestButton()
+    local prevOrder = StockPilerTabAutoGrow.displayOrder
 
     BuildVisibleList()
 
     if DoesWindowExist("SPTabAutoGrowList") then
 
-        ListBoxSetDisplayOrder("SPTabAutoGrowList", {})
+        if not OrdersEqual(prevOrder, StockPilerTabAutoGrow.displayOrder) then
 
-        ListBoxSetDisplayOrder("SPTabAutoGrowList", StockPilerTabAutoGrow.displayOrder)
+            ListBoxSetDisplayOrder("SPTabAutoGrowList", {})
+
+            ListBoxSetDisplayOrder("SPTabAutoGrowList", StockPilerTabAutoGrow.displayOrder)
+
+        end
 
         StockPilerTabAutoGrow.UpdateRows()
 
@@ -671,7 +650,7 @@ function StockPilerTabAutoGrow.OnToggleEnabled()
 end
 
 function StockPilerTabAutoGrow.OnMouseOverEnabled()
-    local tip = L"Master AutoGrow switch (same as Ctrl-click on the harvest macro). Per-potion AutoGrow boxes also need to be checked for those potions to be grown."
+    local tip = L"Master AutoGrow switch (same as Ctrl-click Harvest macro or Cultivating hotbar skill). Per-potion AutoGrow boxes also need to be checked for those potions to be grown."
     if CultivatorDenied() then
         tip = L"AutoGrow is disabled: this character is not a Cultivator."
     end
@@ -721,12 +700,52 @@ function StockPilerTabAutoGrow.OnToggleBrewMacro()
 end
 
 function StockPilerTabAutoGrow.OnMouseOverBrewMacro()
-    local tip = L"When on: Brew hotbar macro and Watch Craft Load/Brew buttons. Ctrl-click the Brew macro to toggle."
+    local tip = L"When on: Brew hotbar macro, Apothecary hotbar skill, and Watch Craft Load/Brew buttons. Ctrl-click Brew macro or Apothecary skill to toggle."
     if ApothecaryDenied() then
         tip = L"One-Click Brew is disabled: this character is not an Apothecary."
     end
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, tip)
     Tooltips.Finalize()
+    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+end
+
+function StockPilerTabAutoGrow.ConfirmClearWatches()
+    local n = 0
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.ClearWatchList then
+        n = tonumber(StockPiler.RecipeSpec.ClearWatchList()) or 0
+    end
+    if StockPiler.Print then
+        StockPiler.Print(L"Cleared " .. towstring(tostring(n)) .. L" watch(es) for this character.")
+    end
+    if StockPilerTabAutoGrow.Refresh then
+        StockPilerTabAutoGrow.Refresh()
+    end
+    if StockPilerTabPotions and StockPilerTabPotions.Refresh then
+        StockPilerTabPotions.Refresh()
+    end
+end
+
+function StockPilerTabAutoGrow.OnClearWatches()
+    if type(DialogManager) == "table" and type(DialogManager.MakeTwoButtonDialog) == "function" then
+        local yes = GetString and GetString(StringTables.Default.LABEL_YES) or L"Yes"
+        local no = GetString and GetString(StringTables.Default.LABEL_NO) or L"No"
+        DialogManager.MakeTwoButtonDialog(
+            L"Clear this character's entire watch list?\nYou can re-watch potions from the Potions tab.",
+            yes,
+            StockPilerTabAutoGrow.ConfirmClearWatches,
+            no,
+            nil
+        )
+        return
+    end
+    StockPilerTabAutoGrow.ConfirmClearWatches()
+end
+
+function StockPilerTabAutoGrow.OnMouseOverClearWatches()
+    Tooltips.CreateTextOnlyTooltip(
+        SystemData.ActiveWindow.name,
+        L"Remove all watches for this character (including orphans left after forgetting recipes). Does not forget learned recipes."
+    )
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
 end
 
@@ -758,24 +777,44 @@ function StockPilerTabAutoGrow.OnMouseOverAutoBuy()
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
 end
 
-local function AdjustAutoBuyChip(kind, increase)
+local function ChipStep(flags)
+    flags = tonumber(flags) or 0
+    local shift = 4
+    if SystemData and SystemData.ButtonFlags and SystemData.ButtonFlags.SHIFT then
+        shift = tonumber(SystemData.ButtonFlags.SHIFT) or 4
+    end
+    if flags == shift then
+        return 10
+    end
+    if type(bit) == "table" and type(bit.band) == "function" then
+        if bit.band(flags, shift) ~= 0 then
+            return 10
+        end
+    elseif shift > 0 and math.mod(math.floor(flags / shift), 2) == 1 then
+        return 10
+    end
+    return 1
+end
+
+local function AdjustAutoBuyChip(kind, increase, flags)
     if not StockPiler.Buy then
         return
     end
+    local amount = ChipStep(flags)
     if kind == "reserve" and StockPiler.Buy.AdjustReserve then
-        StockPiler.Buy.AdjustReserve(increase)
+        StockPiler.Buy.AdjustReserve(increase, amount)
     elseif kind == "budget" and StockPiler.Buy.AdjustBudget then
-        StockPiler.Buy.AdjustBudget(increase)
+        StockPiler.Buy.AdjustBudget(increase, amount)
     end
     UpdateAutoBuyChips()
 end
 
-function StockPilerTabAutoGrow.OnReserveLButtonUp()
-    AdjustAutoBuyChip("reserve", true)
+function StockPilerTabAutoGrow.OnReserveLButtonUp(flags)
+    AdjustAutoBuyChip("reserve", true, flags)
 end
 
-function StockPilerTabAutoGrow.OnReserveRButtonUp()
-    AdjustAutoBuyChip("reserve", false)
+function StockPilerTabAutoGrow.OnReserveRButtonUp(flags)
+    AdjustAutoBuyChip("reserve", false, flags)
 end
 
 function StockPilerTabAutoGrow.OnMouseOverReserve()
@@ -784,18 +823,18 @@ function StockPilerTabAutoGrow.OnMouseOverReserve()
     Tooltips.SetTooltipText(
         2,
         1,
-        L"AutoBuy will not spend below this many gold. Left-click +1, right-click -1."
+        L"AutoBuy will not spend below this many gold. Left-click +1, right-click -1. Hold Shift for ±10."
     )
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
 end
 
-function StockPilerTabAutoGrow.OnBudgetLButtonUp()
-    AdjustAutoBuyChip("budget", true)
+function StockPilerTabAutoGrow.OnBudgetLButtonUp(flags)
+    AdjustAutoBuyChip("budget", true, flags)
 end
 
-function StockPilerTabAutoGrow.OnBudgetRButtonUp()
-    AdjustAutoBuyChip("budget", false)
+function StockPilerTabAutoGrow.OnBudgetRButtonUp(flags)
+    AdjustAutoBuyChip("budget", false, flags)
 end
 
 function StockPilerTabAutoGrow.OnMouseOverBudget()
@@ -804,74 +843,16 @@ function StockPilerTabAutoGrow.OnMouseOverBudget()
     Tooltips.SetTooltipText(
         2,
         1,
-        L"Gold AutoBuy may spend this vendor visit. Resets when the store window opens. Left-click +1, right-click -1."
+        L"Gold AutoBuy may spend this vendor visit. Resets when the store window opens. Left-click +1, right-click -1. Hold Shift for ±10."
     )
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
 end
 
-
-
-function StockPilerTabAutoGrow.OnHarvest()
-
-    if not (StockPiler.AutoGrow and StockPiler.AutoGrow.ExecuteHarvest) then
-
-        return
-
-    end
-
-    if StockPiler.AutoGrow.ExecuteHarvest(true) then
-
-        StockPilerTabAutoGrow.RefreshHarvestButton()
-
-    end
-
-end
-
-
-
-function StockPilerTabAutoGrow.OnHarvestPrepare()
-
-    if not StockPiler.AutoGrow then
-
-        return
-
-    end
-
-    if StockPiler.AutoGrow.CanHarvestNow and not StockPiler.AutoGrow.CanHarvestNow() then
-
-        return
-
-    end
-
-    if StockPiler.AutoGrow.EnsureHarvestActionBound then
-
-        StockPiler.AutoGrow.EnsureHarvestActionBound()
-
-    end
-
-    if StockPiler.AutoGrow.SelectHarvestPlot then
-
-        StockPiler.AutoGrow.SelectHarvestPlot(true)
-
-    end
-
-end
-
-
-
-function StockPilerTabAutoGrow.OnMouseOverHarvest()
-    if StockPiler.AutoGrow and StockPiler.AutoGrow.ShowHarvestTooltip then
-        StockPiler.AutoGrow.ShowHarvestTooltip(SystemData.ActiveWindow.name, Tooltips.ANCHOR_WINDOW_TOP)
-        return
-    end
-end
-
-
-
-local function AdjustSeedBufferAndRefresh(increase)
+local function AdjustSeedBufferAndRefresh(increase, flags)
+    local amount = ChipStep(flags)
     if StockPiler.Planner and StockPiler.Planner.AdjustSeedBuffer then
-        StockPiler.Planner.AdjustSeedBuffer(increase)
+        StockPiler.Planner.AdjustSeedBuffer(increase, amount)
     end
     UpdateSeedBufferLabel()
     InvalidateAutoGrowPlan()
@@ -879,32 +860,24 @@ local function AdjustSeedBufferAndRefresh(increase)
     UpdateSeedBufferLabel()
 end
 
-function StockPilerTabAutoGrow.OnSeedBufferLButtonUp()
-    AdjustSeedBufferAndRefresh(true)
+function StockPilerTabAutoGrow.OnSeedBufferLButtonUp(flags)
+    AdjustSeedBufferAndRefresh(true, flags)
 end
 
-function StockPilerTabAutoGrow.OnSeedBufferRButtonUp()
-    AdjustSeedBufferAndRefresh(false)
+function StockPilerTabAutoGrow.OnSeedBufferRButtonUp(flags)
+    AdjustSeedBufferAndRefresh(false, flags)
 end
-
-
 
 function StockPilerTabAutoGrow.OnMouseOverSeedBuffer()
-
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name)
-
     Tooltips.SetTooltipText(1, 1, L"Keep this many seeds in bags")
-
     Tooltips.SetTooltipText(
         2,
         1,
-        L"Refine target: AutoGrow may plant down to 0 seeds. When plants are in bags it converts them back up to this count. Left-click +1, right-click -1."
+        L"Refine target: AutoGrow may plant down to 0 seeds. When plants are in bags it converts them back up to this count. Left-click +1, right-click -1. Hold Shift for ±10."
     )
-
     Tooltips.Finalize()
-
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
-
 end
 
 
@@ -975,6 +948,16 @@ function StockPilerTabAutoGrow.OnToggleRowAutoGrow()
     if StockPiler.PersistActiveCharacterSettings then
         StockPiler.PersistActiveCharacterSettings(s)
     end
+    if StockPiler.LogOp then
+        StockPiler.LogOp("settings", string.format(
+            "watch autoGrow=%s potion=%s key=%s target=%d enabled=%s",
+            tostring(watch.autoGrow == true),
+            StockPiler.ToNarrow(data.name or data.id or "?"),
+            StockPiler.ShortLogKey and StockPiler.ShortLogKey(potionKey) or tostring(potionKey),
+            tonumber(watch.targetStock) or 0,
+            tostring(watch.enabled == true)
+        ))
+    end
     InvalidateAutoGrowPlan()
     StockPilerTabAutoGrow.Refresh()
 end
@@ -988,46 +971,31 @@ function StockPilerTabAutoGrow.OnMouseOverRowAutoGrow()
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
 end
 
-local function AdjustTarget(increase)
-
+local function AdjustTarget(increase, flags)
     local data = RowDataFromActiveChild()
-
     if not data or not data.id then
-
         return
-
     end
 
     local s = GetSettings()
-
-    local cur = 0
     local potionKey = data.potionKey or data.id
     if not (StockPiler.RecipeSpec and StockPiler.RecipeSpec.EnsureWatch) then
         return
     end
     local watch = StockPiler.RecipeSpec.EnsureWatch(potionKey)
-    cur = tonumber(watch.targetStock) or 0
+    local cur = tonumber(watch.targetStock) or 0
+    local amount = ChipStep(flags)
 
     if increase then
-
-        cur = cur + 1
-
+        cur = cur + amount
         if cur > TARGET_MAX then
-
             cur = TARGET_MAX
-
         end
-
     else
-
-        cur = cur - 1
-
+        cur = cur - amount
         if cur < 0 then
-
             cur = 0
-
         end
-
     end
 
     watch.targetStock = cur
@@ -1036,31 +1004,31 @@ local function AdjustTarget(increase)
         StockPiler.PersistActiveCharacterSettings(s)
     end
 
+    if StockPiler.LogOp then
+        StockPiler.LogOp("settings", string.format(
+            "watch target=%d potion=%s key=%s enabled=%s autoGrow=%s",
+            cur,
+            StockPiler.ToNarrow(data.name or data.id or "?"),
+            StockPiler.ShortLogKey and StockPiler.ShortLogKey(potionKey) or tostring(potionKey),
+            tostring(watch.enabled == true),
+            tostring(watch.autoGrow ~= false)
+        ))
+    end
+
     InvalidateAutoGrowPlan()
     StockPilerTabAutoGrow.Refresh()
 
     if StockPilerTabPotions and StockPilerTabPotions.Refresh then
-
         StockPilerTabPotions.Refresh()
-
     end
-
 end
 
-
-
-function StockPilerTabAutoGrow.OnTargetLButtonUp()
-
-    AdjustTarget(true)
-
+function StockPilerTabAutoGrow.OnTargetLButtonUp(flags)
+    AdjustTarget(true, flags)
 end
 
-
-
-function StockPilerTabAutoGrow.OnTargetRButtonUp()
-
-    AdjustTarget(false)
-
+function StockPilerTabAutoGrow.OnTargetRButtonUp(flags)
+    AdjustTarget(false, flags)
 end
 
 
@@ -1271,7 +1239,7 @@ end
 function StockPilerTabAutoGrow.OnMouseOverTarget()
     ShowColoredTooltipRows({
         { text = L"Target finished potions in bags", kind = "title" },
-        { text = L"Left-click +1, right-click -1.", kind = "meta" },
+        { text = L"Left-click +1, right-click -1. Hold Shift for ±10.", kind = "meta" },
     }, Tooltips.ANCHOR_WINDOW_TOP)
 end
 

@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"0.9.48"
+StockPiler.Version = L"0.9.94"
 -- Writes to user/logs/uilog.log via engine d(). Toggle with /stockpiler debug
 StockPiler.DebugEnabled = false
 
@@ -22,6 +22,10 @@ StockPiler.DefaultSettings = {
     statusChat = "all",
     statusMessages = true, -- compat: false when statusChat == "off"
     blockInvalidApothecaryBrew = true,
+    -- /stp debug — profile-persisted (survives relog /reloadui)
+    debugEnabled = false,
+    -- Last open StockPiler tab (1=Potions, 2=Watch)
+    selectedTab = 1,
 }
 
 -- Account file (GLOBAL/StockPiler/SavedVariables.lua): shared knowledge.
@@ -71,6 +75,7 @@ local SETTINGS_CHARACTER_ALIASES = {
     "autoBuyBudgetGold",
     "growSeedBufferMin",
     "brewMacroEnabled",
+    "brewRespectGrowReserve",
 }
 
 local function DeepCopy(value)
@@ -98,6 +103,34 @@ function StockPiler.Trace(msg)
         return
     end
     StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(msg))
+end
+
+--- Shorten long recipe/watch keys for settings op lines (uid:N is enough).
+function StockPiler.ShortLogKey(key)
+    key = tostring(key or "?")
+    local uid = string.match(key, "^(uid:%d+)")
+    if uid then
+        return uid
+    end
+    if #key > 40 then
+        return string.sub(key, 1, 40) .. "..."
+    end
+    return key
+end
+
+--- Structured op log for plant / harvest / brew / buy / settings. Gated by /stp debug.
+--- Example: StockPiler| plant| P2 Majestic Goldweed Seed uid=… seedsLeft=1
+function StockPiler.LogOp(kind, msg)
+    if StockPiler.DebugEnabled ~= true then
+        return
+    end
+    kind = tostring(kind or "op")
+    StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText(kind .. "| " .. tostring(msg)))
+end
+
+--- Always write to uilog (debug/perf toggles must be visible when turning debug OFF).
+function StockPiler.LogSettingsAlways(msg)
+    StockPiler._EmitLog("StockPiler| " .. StockPiler._LogText("settings| " .. tostring(msg)))
 end
 
 function StockPiler._LogText(msg)
@@ -589,6 +622,18 @@ function StockPiler.EnsureSettings()
     if s.blockInvalidApothecaryBrew == nil then
         s.blockInvalidApothecaryBrew = true
     end
+    if s.debugEnabled == nil then
+        s.debugEnabled = false
+    end
+    StockPiler.DebugEnabled = s.debugEnabled == true
+    local selectedTab = tonumber(s.selectedTab) or 1
+    if selectedTab < 1 or selectedTab > 2 then
+        selectedTab = 1
+    end
+    s.selectedTab = selectedTab
+    if StockPilerWindow then
+        StockPilerWindow.SelectedTab = selectedTab
+    end
 
     StockPiler.BindAccountIntoSettings(s)
     CleanCharacterBuckets(s)
@@ -606,9 +651,9 @@ function StockPiler.EnsureSettings()
     end
 
     s._charBucket = nil
-    if StockPiler.PersistActiveCharacterSettings then
-        StockPiler.PersistActiveCharacterSettings(s)
-    end
+    -- Do not Persist here. Bind may re-enter via MigrateWatches→EnsureSettings;
+    -- persisting incomplete/nil aliases wiped toggles to defaults while watches
+    -- survived (shared table). Mutators and Shutdown persist explicitly.
     return s
 end
 
@@ -656,7 +701,7 @@ function StockPiler.HandleSlash(input)
         return
     end
     if args == "help" then
-        StockPiler.Print(L"/stockpiler (or /stp) - open  |  potions|watch  |  quiet|chat  |  spec <uid>  |  seedmap|growplan|growwhy|growtrace  |  resetmaps  |  scan  |  debug  |  perf")
+        StockPiler.Print(L"/stockpiler (or /stp) - open  |  potions|watch  |  quiet|chat  |  spec <uid>  |  seedmap|growplan  |  resetmaps  |  clearwatches  |  scan  |  debug [on|off]  |  perf [on|off|<ms>|baseline|summary]  |  audit [fix]")
         return
     end
     if args == "seedmap" or args == "seeds" or args == "growmap" then
@@ -668,30 +713,12 @@ function StockPiler.HandleSlash(input)
     if args == "growplan" or args == "growdump" then
         if StockPiler.AutoGrow and StockPiler.AutoGrow.DumpGrowPlan then
             StockPiler.AutoGrow.DumpGrowPlan({ force = true })
-            StockPiler.Print(L"Grow plan trace written to uilog.log")
+            StockPiler.Print(L"Grow plan written to uilog.log")
         end
         return
     end
-    if args == "growwhy" or args == "why" then
-        if StockPiler.AutoGrow and StockPiler.AutoGrow.DumpDecisionWhy then
-            -- Refresh plan so queue decision is current before dump.
-            if StockPiler.AutoGrow.DumpGrowPlan then
-                StockPiler.AutoGrow.DumpGrowPlan({ force = true })
-            end
-            StockPiler.AutoGrow.DumpDecisionWhy({ force = true })
-            StockPiler.Print(L"Grow decisions written to chat + uilog.log")
-        end
-        return
-    end
-    if args == "growtrace" then
-        if StockPiler.AutoGrow then
-            StockPiler.AutoGrow.TraceEnabled = not (StockPiler.AutoGrow.TraceEnabled == true)
-            local state = (StockPiler.AutoGrow.TraceEnabled == true) and L"ON" or L"OFF"
-            StockPiler.Print(L"AutoGrow decision trace: " .. state .. L" (/stp growwhy for last decisions)")
-            if StockPiler.AutoGrow.TraceEnabled == true and StockPiler.AutoGrow.DumpGrowPlan then
-                StockPiler.AutoGrow.DumpGrowPlan({ force = true })
-            end
-        end
+    if args == "growwhy" or args == "why" or args == "growtrace" then
+        StockPiler.Print(L"Removed. Use /stp debug for live plant|harvest|brew|settings logs in uilog.log, or /stp growplan for a one-shot plan dump.")
         return
     end
     if args == "resetmaps" or args == "resetseedmap" or args == "clearmaps" then
@@ -700,6 +727,19 @@ function StockPiler.HandleSlash(input)
             StockPiler.Print(L"Seed/grow maps reset. Relearn by planting, harvesting, and refining."
                 .. L" (cleared=" .. towstring(tostring(bootstrapped or 0))
                 .. L" repaired=" .. towstring(tostring(repaired or 0)) .. L")")
+        end
+        return
+    end
+    if args == "clearwatches" or args == "clearwatch" or args == "resetwatches" then
+        if type(DialogManager) == "table" and type(DialogManager.MakeTwoButtonDialog) == "function"
+            and StockPilerTabAutoGrow and StockPilerTabAutoGrow.OnClearWatches
+        then
+            StockPilerTabAutoGrow.OnClearWatches()
+        elseif StockPilerTabAutoGrow and StockPilerTabAutoGrow.ConfirmClearWatches then
+            StockPilerTabAutoGrow.ConfirmClearWatches()
+        elseif StockPiler.RecipeSpec and StockPiler.RecipeSpec.ClearWatchList then
+            local n = StockPiler.RecipeSpec.ClearWatchList()
+            StockPiler.Print(L"Cleared " .. towstring(tostring(n)) .. L" watch(es) for this character.")
         end
         return
     end
@@ -729,22 +769,134 @@ function StockPiler.HandleSlash(input)
         end
         return
     end
-    if args == "perf" then
-        if StockPiler.Perf and StockPiler.Perf.SetEnabled then
-            local on = StockPiler.Perf.SetEnabled(not (StockPiler.Perf.Enabled == true))
+    if string.match(args, "^perf") then
+        if not (StockPiler.Perf and StockPiler.Perf.SetEnabled) then
+            return
+        end
+        local tail = string.match(args, "^perf%s*(.*)$") or ""
+        tail = string.gsub(tail, "^%s+", "")
+        tail = string.gsub(tail, "%s+$", "")
+
+        local function announce(on)
             local state = on and L"ON" or L"OFF"
-            StockPiler.Print(L"Perf hitch log: " .. state .. L" (uilog only on frames >=400ms with StockPiler work)")
+            local th = StockPiler.Perf.GetFrameThreshold and StockPiler.Perf.GetFrameThreshold() or 400
+            StockPiler.Print(L"Perf hitch log: " .. state .. L" (FRAME >=" .. towstring(tostring(th)) .. L"ms)")
+            if StockPiler.LogSettingsAlways then
+                StockPiler.LogSettingsAlways("perf=" .. ((on == true) and "ON" or "OFF") .. " threshold=" .. tostring(th))
+            end
+        end
+
+        if tail == "" then
+            local on = StockPiler.Perf.SetEnabled(not (StockPiler.Perf.Enabled == true))
+            announce(on == true)
             if on ~= true and StockPiler.Perf.PrintLast then
                 StockPiler.Perf.PrintLast()
             end
+            return
+        end
+        if tail == "off" then
+            StockPiler.Perf.SetEnabled(false)
+            announce(false)
+            if StockPiler.Perf.PrintLast then
+                StockPiler.Perf.PrintLast()
+            end
+            return
+        end
+        if tail == "summary" or tail == "summary reset" then
+            if tail == "summary reset" and StockPiler.Perf.ResetSummary then
+                StockPiler.Perf.ResetSummary()
+                StockPiler.Print(L"Perf summary reset.")
+                return
+            end
+            if StockPiler.Perf.PrintSummary then
+                StockPiler.Perf.PrintSummary()
+            end
+            return
+        end
+        if tail == "baseline reset" then
+            if StockPiler.Perf.ResetBaseline then
+                StockPiler.Perf.ResetBaseline()
+            end
+            StockPiler.Print(L"Perf baseline reset.")
+            return
+        end
+        if tail == "baseline" or string.match(tail, "^baseline%s+%d+$") then
+            if not (StockPiler.Perf.StartBaseline and StockPiler.Perf.PrintBaseline) then
+                return
+            end
+            if StockPiler.Perf.IsBaselineCollecting and StockPiler.Perf.IsBaselineCollecting() then
+                StockPiler.Perf.PrintBaseline()
+                return
+            end
+            local th = 50
+            local bms = string.match(tail, "^baseline%s+(%d+)$")
+            if bms ~= nil then
+                th = tonumber(bms) or 50
+            end
+            StockPiler.Perf.StartBaseline(th)
+            StockPiler.Print(L"Perf baseline: collecting (threshold " .. towstring(tostring(th))
+                .. L"ms). Stand idle or reproduce, then /stp perf baseline again to print.")
+            if StockPiler.LogSettingsAlways then
+                StockPiler.LogSettingsAlways("perf=baseline threshold=" .. tostring(th))
+            end
+            return
+        end
+        if tail == "on" then
+            StockPiler.Perf.SetEnabled(true)
+            announce(true)
+            return
+        end
+        local word, rest = string.match(tail, "^(%S+)%s*(.*)$")
+        local ms = tonumber(word)
+        if ms ~= nil then
+            StockPiler.Perf.SetFrameThreshold(ms)
+            StockPiler.Perf.SetEnabled(true)
+            announce(true)
+            return
+        end
+        if word == "on" and rest ~= nil and rest ~= "" then
+            ms = tonumber(string.match(rest, "^(%S+)"))
+            if ms ~= nil then
+                StockPiler.Perf.SetFrameThreshold(ms)
+            end
+            StockPiler.Perf.SetEnabled(true)
+            announce(true)
+            return
+        end
+        StockPiler.Print(L"Usage: /stp perf  |  /stp perf on  |  /stp perf off  |  /stp perf <ms>  |  /stp perf on <ms>  |  /stp perf baseline [ms]  |  /stp perf summary")
+        return
+    end
+    if args == "audit" or args == "audit fix" then
+        if StockPiler.Audit and StockPiler.Audit.Run then
+            StockPiler.Audit.Run({ fix = args == "audit fix" })
         end
         return
     end
-    if args == "debug" then
-        StockPiler.DebugEnabled = not (StockPiler.DebugEnabled == true)
+    if args == "debug" or args == "debug on" or args == "debug off"
+        or string.match(args, "^debug%s+")
+    then
+        local mode = string.match(args, "^debug%s+(%S+)$")
+        mode = mode and string.lower(mode) or nil
+        local enabled
+        if mode == "on" or mode == "1" or mode == "true" then
+            enabled = true
+        elseif mode == "off" or mode == "0" or mode == "false" then
+            enabled = false
+        elseif mode == nil then
+            enabled = not (StockPiler.DebugEnabled == true)
+        else
+            StockPiler.Print(L"Usage: /stp debug  |  /stp debug on  |  /stp debug off")
+            return
+        end
+        local s = StockPiler.EnsureSettings()
+        s.debugEnabled = enabled == true
+        StockPiler.DebugEnabled = s.debugEnabled
         local state = (StockPiler.DebugEnabled == true) and L"ON" or L"OFF"
-        StockPiler.Print(L"uilog d() debug: " .. state)
-        StockPiler.D("debug toggled -> " .. ((StockPiler.DebugEnabled == true) and "ON" or "OFF"))
+        StockPiler.Print(L"Debug uilog: " .. state
+            .. L" (plant|harvest|refine|brew|settings|AutoGrow; persists)")
+        if StockPiler.LogSettingsAlways then
+            StockPiler.LogSettingsAlways("debug=" .. ((StockPiler.DebugEnabled == true) and "ON" or "OFF") .. " (saved)")
+        end
         return
     end
     if args == "scan" or args == "debugscan" then
@@ -853,6 +1005,7 @@ StockPiler._deferUiRefresh = false
 StockPiler._bagWorkDue = false
 StockPiler._bagWorkAt = 0
 StockPiler._bagNeedQueue = false
+StockPiler._bagCountsStale = true
 -- Harvest is one click per plot, typically ~1s apart. 0.4s flushed
 -- between clicks and rebuilt the grow plan four times.
 local BAG_WORK_COALESCE_SEC = 2.0
@@ -864,16 +1017,37 @@ local function GameNow()
     return 0
 end
 
---- Debounce harvest/loot bag work. Each event pushes the flush out 2s.
+--- Debounce harvest/loot bag work.
 --- needQueue: true after plots empty; false after refine/trade-skill bag noise.
 function StockPiler.ScheduleBagWork(needQueue)
+    local now = GameNow()
+    needQueue = needQueue ~= false
+    if StockPiler._bagWorkDue == true then
+        -- FlushBagWorkIfDue owns the coalesce timer; extending here prevented
+        -- flushes during cultivation inventory bursts (stuck snap=1 / stock 0).
+        if needQueue then
+            StockPiler._bagNeedQueue = true
+        end
+        return
+    end
+    -- Snap-only reschedules from crafting-bag noise were flushing every ~10s
+    -- (cultivation stage ticks). Skip until a post-login snap has landed.
+    if not needQueue and StockPiler._bagCountsStale ~= true then
+        local last = tonumber(StockPiler._lastBagSnapAt) or 0
+        if last > 0 and (now - last) < 10.0 then
+            return
+        end
+    end
     StockPiler._bagWorkDue = true
-    StockPiler._bagWorkAt = GameNow() + BAG_WORK_COALESCE_SEC
+    StockPiler._bagWorkAt = now + BAG_WORK_COALESCE_SEC
     StockPiler._deferInvLearn = true
-    if needQueue ~= false then
+    if needQueue then
         StockPiler._bagNeedQueue = true
     end
-    if DoesWindowExist("StockPilerWindow") and WindowGetShowing("StockPilerWindow") then
+    if needQueue
+        and DoesWindowExist("StockPilerWindow")
+        and WindowGetShowing("StockPilerWindow")
+    then
         StockPiler._deferUiRefresh = true
     end
 end
@@ -895,12 +1069,32 @@ function StockPiler.FlushBagWorkIfDue()
         StockPiler._bagWorkAt = GameNow() + BAG_WORK_COALESCE_SEC
         return false
     end
+    -- Do not flush mid brew-spam (loaded session / busy craft). Push out.
+    if StockPiler.Brew then
+        local brewBusy = StockPiler.Brew.IsBusy and StockPiler.Brew.IsBusy() == true
+        local session = StockPiler.Brew.GetSession and StockPiler.Brew.GetSession()
+        local brewActive = type(session) == "table"
+            and (session.phase == "loaded" or session.phase == "loading")
+        if brewBusy or brewActive then
+            StockPiler._bagWorkAt = GameNow() + BAG_WORK_COALESCE_SEC
+            return false
+        end
+    end
     if GameNow() < (tonumber(StockPiler._bagWorkAt) or 0) then
         return false
     end
     StockPiler._bagWorkDue = false
     if StockPiler.Perf and StockPiler.Perf.Begin then
         StockPiler.Perf.Begin("FlushBagWork")
+    end
+    if StockPiler._brewDeferPlanRefresh == true then
+        StockPiler._brewDeferPlanRefresh = false
+        if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+            StockPiler.Planner.InvalidatePlanCache()
+        end
+        if StockPiler.Inventory and StockPiler.Inventory.InvalidateSnapshot then
+            StockPiler.Inventory.InvalidateSnapshot()
+        end
     end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidateBagCache then
         StockPiler.AutoGrow.InvalidateBagCache()
@@ -909,13 +1103,26 @@ function StockPiler.FlushBagWorkIfDue()
     if StockPiler.Inventory and StockPiler.Inventory.LearnNewFromBags then
         StockPiler.Inventory.LearnNewFromBags("bag-flush")
     end
+    local wasStale = StockPiler._bagCountsStale == true
+    StockPiler._bagCountsStale = false
+    if needQueue or wasStale then
+        if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+            StockPiler.Planner.InvalidatePlanCache()
+        end
+    end
     if StockPiler.Brew and StockPiler.Brew.OnInventoryDeferred then
         StockPiler.Brew.OnInventoryDeferred()
     end
     local needQueue = StockPiler._bagNeedQueue == true
     StockPiler._bagNeedQueue = false
+    if not needQueue then
+        StockPiler._lastBagSnapAt = GameNow()
+    end
     if needQueue and StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then
         StockPiler.AutoGrow.InvalidatePlantQueue()
+    end
+    if needQueue and StockPiler.AutoGrow then
+        StockPiler.AutoGrow._watchUiLastKey = nil
     end
     if StockPiler._deferUiRefresh == true then
         StockPiler._deferUiRefresh = false
@@ -967,9 +1174,11 @@ function StockPiler.OnInventoryUpdated()
         and tonumber(StockPiler.AutoGrow._suppressInvTicks) and StockPiler.AutoGrow._suppressInvTicks > 0
     if not suppress
         and StockPiler.SeedMap
-        and StockPiler.SeedMap.MaybeCompletePendingHarvest
+        and StockPiler.SeedMap.MarkHarvestLootDirty
     then
-        StockPiler.SeedMap.MaybeCompletePendingHarvest()
+        -- Do not snapshot bags here — multi-item harvest loot was causing
+        -- multi-second frametime spikes. Completion runs throttled from OnUpdate.
+        StockPiler.SeedMap.MarkHarvestLootDirty()
     end
     if StockPiler.Inventory and StockPiler.Inventory.MaybeCompletePendingCraftFromInventory then
         local learned = StockPiler.Inventory.MaybeCompletePendingCraftFromInventory()
@@ -988,17 +1197,6 @@ function StockPiler.OnInventoryUpdated()
         end
         -- Loot/vendor: resnap only. Plot-empty is what rebuilds the grow queue.
         StockPiler.ScheduleBagWork(false)
-    end
-    -- Bags changed (brew, harvest, vendor). Empty plots that never left Empty
-    -- never get _wantFill from OnPlotUpdated — mark them so AutoGrow plants.
-    -- Skip while we just planted/applied; those ticks set _suppressInvTicks.
-    if not suppress
-        and StockPiler.AutoGrow
-        and StockPiler.AutoGrow.IsEnabled
-        and StockPiler.AutoGrow.IsEnabled()
-        and StockPiler.AutoGrow.MarkAllPlotsWantFill
-    then
-        StockPiler.AutoGrow.MarkAllPlotsWantFill()
     end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.OnCraftingSlotUpdated then
         StockPiler.AutoGrow.OnCraftingSlotUpdated()
@@ -1026,6 +1224,10 @@ function StockPiler.ProcessDeferredInventoryWork()
         StockPiler._deferInvLearn = false
         if StockPiler.Inventory and StockPiler.Inventory.LearnNewFromBags then
             StockPiler.Inventory.LearnNewFromBags("bag-deferred")
+        end
+        StockPiler._bagCountsStale = false
+        if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
+            StockPiler.Planner.InvalidatePlanCache()
         end
     end
     if bagsChanged and StockPiler.Brew and StockPiler.Brew.OnInventoryDeferred then
@@ -1399,6 +1601,12 @@ function StockPiler.Initialize()
         end
     end
 
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairDuplicateRecipeFingerprints then
+        local deduped = tonumber(StockPiler.RecipeSpec.RepairDuplicateRecipeFingerprints()) or 0
+        if deduped > 0 and StockPiler.Trace then
+            StockPiler.Trace("Merged " .. tostring(deduped) .. " duplicate recipe fingerprint(s)")
+        end
+    end
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RepairIncompleteMainSpecs then
         local repaired = tonumber(StockPiler.RecipeSpec.RepairIncompleteMainSpecs()) or 0
         if repaired > 0 and StockPiler.Trace then
@@ -1432,12 +1640,24 @@ function StockPiler.Initialize()
         if StockPiler.SeedMap and StockPiler.SeedMap.CountLearnedGrowPairs then
             pairsN = StockPiler.SeedMap.CountLearnedGrowPairs() or 0
         end
-        StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded. /stockpiler | /stp seedmap | /stp growplan | /stp growwhy | /stp growtrace | /stp debug | /stp perf | "
-            .. pb .. L" | grows=" .. towstring(tostring(pairsN)))
+        StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded. /stockpiler | /stp seedmap | /stp growplan | /stp debug | /stp perf | "
+            .. pb .. L" | grows=" .. towstring(tostring(pairsN))
+            .. ((StockPiler.DebugEnabled == true) and L" | debug=ON" or L""))
+        if StockPiler.LogSettingsAlways then
+            StockPiler.LogSettingsAlways(string.format(
+                "init v%s debug=%s perf=%s",
+                tostring(StockPiler.Version),
+                (StockPiler.DebugEnabled == true) and "ON" or "OFF",
+                (StockPiler.Perf and StockPiler.Perf.Enabled == true) and "ON" or "OFF"
+            ))
+        end
         StockPiler.D("Initialize v" .. tostring(StockPiler.Version)
             .. " DebugEnabled=" .. tostring(StockPiler.DebugEnabled)
-            .. " GrowTrace=" .. tostring(StockPiler.AutoGrow and StockPiler.AutoGrow.TraceEnabled)
             .. " PotionBar=" .. tostring(StockPiler.Classify and StockPiler.Classify.PotionBarAvailable and StockPiler.Classify.PotionBarAvailable()))
+        StockPiler._bagCountsStale = true
+        if StockPiler.ScheduleBagWork then
+            StockPiler.ScheduleBagWork(false)
+        end
     else
         StockPiler.Print(L"v" .. StockPiler.Version .. L" loaded (no LibSlash - enable LibSlash for /stockpiler).")
     end

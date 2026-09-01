@@ -39,6 +39,21 @@ local function D(msg)
     end
 end
 
+local function LogBrewOp(msg)
+    if StockPiler.LogOp then
+        StockPiler.LogOp("brew", msg)
+    else
+        D(msg)
+    end
+end
+
+local function ShortKey(key)
+    if StockPiler.ShortLogKey then
+        return StockPiler.ShortLogKey(key)
+    end
+    return tostring(key or "?")
+end
+
 -- Forward declarations (Lua 5.1).
 local CraftingState
 local CraftingSkillType
@@ -624,6 +639,8 @@ local function ClaimBrewOwnedSession()
     if ApothecaryWindowOpen and ApothecaryWindowOpen() then
         return false
     end
+    StockPiler.Brew._idleForceClosed = false
+    StockPiler.Brew._loggedApoClose = false
     StockPiler.Brew._brewOwnedSession = true
     StockPiler.Brew._brewApoStealth = true
     EnsureBrewApothecarySoftLocks(true)
@@ -646,6 +663,7 @@ local function CloseApothecarySession()
     local stealth = StockPiler.Brew._brewApoStealth == true
     local playerVisible = ApothecaryWindowOpen and ApothecaryWindowOpen() == true
     local apoSkillActive = CraftingSkillType and CraftingSkillType() == apo
+    local hadOwnership = closeApo or closeBag or ownedSession or stealth
 
     ClearServerApothecarySlots()
     -- Always clear blue tint — ownership is often unset when Load skipped OpenApothecary.
@@ -711,10 +729,14 @@ local function CloseApothecarySession()
         end
     end
 
-    D("apo session closed owned=" .. tostring(ownedSession)
-        .. " stealth=" .. tostring(stealth)
-        .. " skillActive=" .. tostring(apoSkillActive)
-        .. " playerVisible=" .. tostring(playerVisible))
+    -- Log once per real close; skip repeats when already cleaned (macro spam / idle).
+    if hadOwnership == true or StockPiler.Brew._loggedApoClose ~= true then
+        StockPiler.Brew._loggedApoClose = true
+        D("apo session closed owned=" .. tostring(ownedSession)
+            .. " stealth=" .. tostring(stealth)
+            .. " skillActive=" .. tostring(apoSkillActive)
+            .. " playerVisible=" .. tostring(playerVisible))
+    end
 end
 
 local function BackpackWindowOpen()
@@ -776,8 +798,47 @@ local function IsPerformingState()
     return type(ApothecaryWindow) == "table" and ApothecaryWindow.PerformingLock == true
 end
 
+local function BrewNowSec()
+    if type(GetGameTime) == "function" then
+        return tonumber(GetGameTime()) or 0
+    end
+    return 0
+end
+
+--- Short lock after PerformCrafting so spam clicks cannot double-brew before
+--- PERFORMING / PerformingLock is visible.
+function StockPiler.Brew.ArmBrewOpLock(seconds)
+    seconds = tonumber(seconds) or 1.25
+    if seconds < 0.4 then
+        seconds = 0.4
+    end
+    local untilT = BrewNowSec() + seconds
+    local cur = tonumber(StockPiler.Brew._brewOpLockUntil) or 0
+    if untilT > cur then
+        StockPiler.Brew._brewOpLockUntil = untilT
+    end
+end
+
+function StockPiler.Brew.ClearBrewOpLock()
+    StockPiler.Brew._brewOpLockUntil = 0
+end
+
+--- True while a load job is running, apo is performing, or a brew op lock is armed.
 function StockPiler.Brew.IsBusy()
-    return type(StockPiler.Brew._job) == "table"
+    if type(StockPiler.Brew._job) == "table" then
+        return true
+    end
+    if IsPerformingState() then
+        return true
+    end
+    local lockUntil = tonumber(StockPiler.Brew._brewOpLockUntil) or 0
+    if lockUntil > 0 then
+        if BrewNowSec() < lockUntil then
+            return true
+        end
+        StockPiler.Brew._brewOpLockUntil = 0
+    end
+    return false
 end
 
 local function EmptySession()
@@ -786,6 +847,12 @@ local function EmptySession()
         potionKey = nil,
         rowId = nil,
         name = nil,
+        potionUid = nil,
+        potionHave = nil,
+        potionMin = nil,
+        potionDeficit = nil,
+        craftable = nil,
+        recipeYield = nil,
     }
 end
 
@@ -802,10 +869,86 @@ local function ClearSession()
     StockPiler.Brew._session = EmptySession()
 end
 
-local function RefreshBrewAppearance()
-    if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        StockPilerMacro.RefreshMacroButtonAppearance()
+--- Soft row for brew spam: avoid BuildPlan on every macro click.
+local function SoftSessionRow()
+    local session = GetSession()
+    if session.phase ~= "loaded" and session.phase ~= "loading" then
+        return nil
     end
+    if session.potionDeficit == nil and session.potionKey == nil and session.rowId == nil then
+        return nil
+    end
+    return {
+        id = session.rowId,
+        potionKey = session.potionKey,
+        name = session.name,
+        uniqueID = session.potionUid,
+        potionHave = session.potionHave,
+        potionDeficit = session.potionDeficit,
+        craftable = session.craftable,
+        target = session.potionMin,
+        potionMin = session.potionMin,
+    }
+end
+
+local function CaptureSessionStatsFromRow(row, recipe)
+    local session = GetSession()
+    if type(row) ~= "table" then
+        return
+    end
+    session.potionUid = tonumber(row.uniqueID) or session.potionUid
+    session.potionHave = tonumber(row.potionHave)
+    session.potionMin = tonumber(row.target or row.potionMin)
+    session.potionDeficit = tonumber(row.potionDeficit)
+    session.craftable = tonumber(row.craftable)
+    local yield = 2
+    if type(recipe) == "table"
+        and StockPiler.RecipeSpec
+        and StockPiler.RecipeSpec.RecipeOutputYield
+    then
+        yield = tonumber(StockPiler.RecipeSpec.RecipeOutputYield(recipe, session.potionUid)) or yield
+    elseif type(recipe) == "table" then
+        yield = tonumber(recipe.recipeYield) or yield
+    end
+    if yield < 1 then
+        yield = 1
+    end
+    session.recipeYield = math.floor(yield + 0.5)
+    if session.recipeYield < 1 then
+        session.recipeYield = 1
+    end
+end
+
+local function PatchPlanCacheAfterBrew(session, yieldAdd)
+    local plan = StockPiler.Planner and StockPiler.Planner._planCache
+    local rows = plan and plan.rows
+    if type(rows) ~= "table" or type(session) ~= "table" then
+        return
+    end
+    yieldAdd = tonumber(yieldAdd) or 0
+    for i = 1, #rows do
+        local row = rows[i]
+        if RowMatchesSession(row, session) then
+            if session.potionHave ~= nil then
+                row.potionHave = session.potionHave
+                row.stockText = towstring(tostring(session.potionHave))
+            end
+            if session.potionDeficit ~= nil then
+                row.potionDeficit = session.potionDeficit
+            end
+            local craftable = tonumber(row.craftable) or 0
+            if craftable > 0 then
+                craftable = math.max(0, craftable - 1)
+                row.craftable = craftable
+                row.craftableText = towstring(tostring(craftable)) .. L"*"
+            end
+            session.craftable = row.craftable
+            break
+        end
+    end
+end
+
+local function RefreshBrewAppearance()
     if StockPilerTabAutoGrow and StockPilerTabAutoGrow.RefreshBrewUi then
         StockPilerTabAutoGrow.RefreshBrewUi()
     end
@@ -885,6 +1028,10 @@ local function CurrentPlan(opts)
 end
 
 local function FindSessionRow()
+    local soft = SoftSessionRow()
+    if soft ~= nil and soft.potionDeficit ~= nil then
+        return soft
+    end
     local session = GetSession()
     if session.phase == "idle" and session.potionKey == nil and session.rowId == nil then
         return nil
@@ -892,14 +1039,15 @@ local function FindSessionRow()
     local plan = CurrentPlan({ refresh = false })
     local rows = plan and plan.rows
     if type(rows) ~= "table" then
-        return nil
+        return soft
     end
     for i = 1, #rows do
         if RowMatchesSession(rows[i], session) then
+            CaptureSessionStatsFromRow(rows[i], rows[i].specRecipe or rows[i].recipe)
             return rows[i]
         end
     end
-    return nil
+    return soft
 end
 
 local function SetSessionFromRow(row, phase)
@@ -909,10 +1057,17 @@ local function SetSessionFromRow(row, phase)
         session.potionKey = row.potionKey
         session.rowId = row.id
         session.name = row.name
+        CaptureSessionStatsFromRow(row, row.specRecipe or row.recipe)
     else
         session.potionKey = nil
         session.rowId = nil
         session.name = nil
+        session.potionUid = nil
+        session.potionHave = nil
+        session.potionMin = nil
+        session.potionDeficit = nil
+        session.craftable = nil
+        session.recipeYield = nil
     end
 end
 
@@ -963,6 +1118,56 @@ function StockPiler.Brew.HasReadyToCraft()
     return false
 end
 
+--- True when One-Click Brew would not swallow the click (perform or start load).
+function StockPiler.Brew.CanBrewClick()
+    if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
+        return false
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.IsApothecary
+        and not StockPiler.Inventory.IsApothecary()
+    then
+        return false
+    end
+    if StockPiler.Brew.IsBusy() then
+        return false
+    end
+
+    local session = GetSession()
+    if session.phase == "loading" then
+        return false
+    end
+    if session.phase == "loaded" then
+        local row = FindSessionRow()
+        local stillShort = row == nil or (tonumber(row.potionDeficit) or 0) > 0
+        if stillShort and StockPiler.Brew.ValidateApothecaryPerform() == true then
+            return true
+        end
+    end
+
+    local nextRow = StockPiler.Brew.PickReadyWatch()
+    if type(nextRow) ~= "table" then
+        return false
+    end
+    local recipe = nextRow.specRecipe or nextRow.recipe
+    if StockPiler.Planner and StockPiler.Planner.WouldBrewStarveGrow
+        and type(recipe) == "table"
+        and StockPiler.Planner.WouldBrewStarveGrow(recipe)
+    then
+        return false
+    end
+    local craftable = tonumber(nextRow.craftable) or 0
+    if nextRow.canLoad ~= true and craftable <= 0 then
+        return false
+    end
+    if type(recipe) ~= "table" then
+        return false
+    end
+    if StockPiler.Brew.MaterialsReadyInCraftingBag then
+        return StockPiler.Brew.MaterialsReadyInCraftingBag(recipe) == true
+    end
+    return true
+end
+
 function StockPiler.Brew.IsMacroEnabled()
     local s = StockPiler.EnsureSettings and StockPiler.EnsureSettings() or StockPiler.Settings
     return type(s) == "table" and s.brewMacroEnabled ~= false
@@ -988,6 +1193,7 @@ function StockPiler.Brew.SetMacroEnabled(enabled)
         StockPiler.PersistActiveCharacterSettings(s)
     end
     if changed then
+        LogBrewOp("settings one-click=" .. tostring(enabled))
         if StockPiler.NotifyManual then
             if enabled then
                 StockPiler.NotifyManual(L"Brew", L"one-click enabled.")
@@ -996,8 +1202,18 @@ function StockPiler.Brew.SetMacroEnabled(enabled)
             end
         end
     end
-    if StockPilerMacro and StockPilerMacro.RefreshMacroButtonAppearance then
-        StockPilerMacro.RefreshMacroButtonAppearance()
+    if StockPilerMacro then
+        if StockPilerMacro.SyncCraftSkillBindings then
+            StockPilerMacro.SyncCraftSkillBindings(true)
+        end
+        if StockPilerMacro.RequestRefreshMacroButtonAppearance then
+            StockPilerMacro.RequestRefreshMacroButtonAppearance(true)
+        elseif StockPilerMacro.RefreshMacroButtonAppearance then
+            StockPilerMacro.RefreshMacroButtonAppearance()
+        end
+    end
+    if StockPilerTabAutoGrow and StockPilerTabAutoGrow.RefreshBrewUi then
+        StockPilerTabAutoGrow.RefreshBrewUi()
     end
     return enabled
 end
@@ -1036,9 +1252,19 @@ function StockPiler.Brew.FirePerform()
     if not (StockPilerMacro and StockPilerMacro.FireApothecaryBrew) then
         return false
     end
+    local session = GetSession()
+    LogBrewOp(string.format(
+        "perform potion=%s key=%s phase=%s",
+        ToNarrow(session and session.name or "?"),
+        ShortKey(session and (session.potionKey or session.rowId) or "?"),
+        tostring(session and session.phase or "?")
+    ))
     StockPilerMacro._brewFired = false
     local ok = StockPilerMacro.FireApothecaryBrew() == true
     StockPilerMacro._brewFired = false
+    if not ok then
+        LogBrewOp("perform failed")
+    end
     return ok
 end
 
@@ -1063,9 +1289,12 @@ function StockPiler.Brew.OnRowCraftClick(row)
     end
     local state = StockPiler.Brew.GetRowCraftUiState(row)
     if state == "brew" then
+        if StockPiler.Brew.IsBusy() then
+            return false
+        end
         local session = GetSession()
         if session.phase == "loaded" and StockPiler.Brew.ValidateApothecaryPerform() == true then
-            D("row brew potion=" .. ToNarrow(row.name) .. " key=" .. RowKey(row))
+            LogBrewOp("row-brew potion=" .. ToNarrow(row.name) .. " key=" .. ShortKey(RowKey(row)))
             return StockPiler.Brew.FirePerform()
         end
         if session.phase == "loading" then
@@ -1129,33 +1358,61 @@ function StockPiler.Brew.RefreshSessionAfterBrew()
         RefreshBrewAppearance()
         return
     end
-    if StockPiler.Planner and StockPiler.Planner.InvalidatePlanCache then
-        StockPiler.Planner.InvalidatePlanCache()
-    end
-    if StockPiler.Inventory and StockPiler.Inventory.InvalidateSnapshot then
-        StockPiler.Inventory.InvalidateSnapshot()
-    end
-    local row = nil
-    local plan = CurrentPlan({ refresh = true })
-    local rows = plan and plan.rows
-    if type(rows) == "table" then
-        for i = 1, #rows do
-            if RowMatchesSession(rows[i], session) then
-                row = rows[i]
-                break
+    -- Soft path during brew spam: UID deltas + session deficit only.
+    -- Full SnapshotItems / BuildPlan wait for coalesced bag flush after the
+    -- brew session ends (avoids 400–900ms hitches on every craft).
+    local yieldAdd = math.max(1, tonumber(session.recipeYield) or 2)
+    local last = StockPiler.Brew._lastLoad
+    if type(last) == "table"
+        and type(last.steps) == "table"
+        and StockPiler.Inventory
+        and StockPiler.Inventory.AdjustCountByUid
+        and StockPiler.Inventory._snapshotDone == true
+    then
+        for i = 1, #last.steps do
+            local step = last.steps[i]
+            local uid = type(step) == "table" and (tonumber(step.uniqueID) or 0) or 0
+            if uid > 0 then
+                StockPiler.Inventory.AdjustCountByUid(uid, -1)
             end
         end
-    end
-    if row and (tonumber(row.potionDeficit) or 0) <= 0 then
-        ClearSession()
-    else
-        session.phase = "loaded"
-        if row then
-            session.name = row.name
+        local potionUid = tonumber(last.potionUid) or tonumber(session.potionUid) or 0
+        if potionUid > 0 then
+            StockPiler.Inventory.AdjustCountByUid(potionUid, yieldAdd)
+            session.potionUid = potionUid
         end
     end
-    -- Last brew with nothing else ready: end headless/owned engine session now
-    -- (do not wait for an extra idle macro click).
+    if session.potionHave ~= nil then
+        session.potionHave = (tonumber(session.potionHave) or 0) + yieldAdd
+    end
+    if session.potionMin ~= nil then
+        session.potionDeficit = math.max(0, (tonumber(session.potionMin) or 0) - (tonumber(session.potionHave) or 0))
+    elseif session.potionDeficit ~= nil then
+        session.potionDeficit = math.max(0, (tonumber(session.potionDeficit) or 0) - yieldAdd)
+    end
+    if session.craftable ~= nil then
+        session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
+    end
+    PatchPlanCacheAfterBrew(session, yieldAdd)
+    StockPiler._brewDeferPlanRefresh = true
+    if StockPiler.ScheduleBagWork then
+        StockPiler.ScheduleBagWork(false)
+    end
+    if session.potionDeficit ~= nil and (tonumber(session.potionDeficit) or 0) <= 0 then
+        ClearSession()
+    else
+        -- Main-kept / SUCCESS_REPEAT often leaves an incomplete board. Keeping
+        -- phase=loaded makes the next macro click Validate-fail → CloseApo,
+        -- dumping leftover mats out of the crafting bag before reload.
+        local stillValid = StockPiler.Brew.ValidateApothecaryPerform
+            and StockPiler.Brew.ValidateApothecaryPerform() == true
+        if stillValid then
+            session.phase = "loaded"
+        else
+            StockPiler.Brew._lastLoad = nil
+            ClearSession()
+        end
+    end
     MaybeCloseBrewSessionIfIdle("after brew nothing ready")
     RefreshBrewAppearance()
 end
@@ -1169,15 +1426,34 @@ local function ChatBrewBlocked()
         end
         return
     end
-    if not MaybeCloseBrewSessionIfIdle("macro idle") then
-        -- Still drop blue tint if a leftover headless session left locks.
-        D("idle: force apo lock release")
+    if StockPiler.Planner and StockPiler.Planner.BrewGrowBlockMessage then
+        local growMsg = StockPiler.Planner.BrewGrowBlockMessage()
+        if growMsg ~= nil and growMsg ~= L"" and StockPiler.Print then
+            StockPiler.Print(growMsg)
+            return
+        end
+    end
+    if MaybeCloseBrewSessionIfIdle("macro idle") then
+        return
+    end
+    -- No owned session flags: clear leftover headless apo at most once until next load.
+    local apo = ApothecarySkill()
+    local apoSkillActive = CraftingSkillType and CraftingSkillType() == apo
+    local playerVisible = ApothecaryWindowOpen and ApothecaryWindowOpen() == true
+    if apoSkillActive == true and playerVisible ~= true
+        and StockPiler.Brew._idleForceClosed ~= true
+    then
+        StockPiler.Brew._idleForceClosed = true
+        D("idle: force apo lock release (once)")
         CloseApothecarySession()
     end
 end
 
 --- Returns "go" to fire PerformCrafting(APOTHECARY), or "blocked" to swallow the click.
 function StockPiler.Brew.TryBrewClick()
+    if StockPiler.Perf and StockPiler.Perf.Mark then
+        StockPiler.Perf.Mark("TryBrewClick")
+    end
     if StockPiler.Brew.IsMacroEnabled and not StockPiler.Brew.IsMacroEnabled() then
         return "blocked"
     end
@@ -1198,10 +1474,13 @@ function StockPiler.Brew.TryBrewClick()
         if stillShort then
             local ok = StockPiler.Brew.ValidateApothecaryPerform()
             if ok == true then
-                D("macro brew potion=" .. ToNarrow((row and row.name) or session.name)
-                    .. " key=" .. tostring(session.potionKey or session.rowId)
-                    .. " def=" .. tostring(row and row.potionDeficit)
-                    .. " craftable=" .. tostring(row and row.craftable))
+                LogBrewOp(string.format(
+                    "macro-perform potion=%s key=%s deficit=%s craftable=%s",
+                    ToNarrow((row and row.name) or session.name),
+                    ShortKey(session.potionKey or session.rowId),
+                    tostring(row and row.potionDeficit),
+                    tostring(row and row.craftable)
+                ))
                 return "go"
             end
             D("session apo mismatch or empty; pick a new watch")
@@ -1210,17 +1489,32 @@ function StockPiler.Brew.TryBrewClick()
         end
         StockPiler.Brew._lastLoad = nil
         ClearSession()
-        -- Always end headless session + clear bag locks before next Load / idle.
-        D("clearing apo before picking next watch")
-        CloseApothecarySession()
+        -- Do not CloseApothecarySession here: after a main-kept brew the board
+        -- still holds leftovers; closing dumps them to backpack and the next
+        -- BeginForRow fails with "materials not in crafting bag". BeginForRow
+        -- reset clears/reloads in place when materials are still craftable.
     end
 
     local nextRow = StockPiler.Brew.PickReadyWatch()
     if type(nextRow) == "table" then
-        D("macro load potion=" .. ToNarrow(nextRow.name)
-            .. " key=" .. RowKey(nextRow)
-            .. " def=" .. tostring(nextRow.potionDeficit)
-            .. " craftable=" .. tostring(nextRow.craftable))
+        local recipe = nextRow.specRecipe or nextRow.recipe
+        if StockPiler.Planner and StockPiler.Planner.WouldBrewStarveGrow
+            and type(recipe) == "table"
+            and StockPiler.Planner.WouldBrewStarveGrow(recipe)
+        then
+            if StockPiler.Print then
+                local msg = StockPiler.Planner.BrewGrowBlockMessage and StockPiler.Planner.BrewGrowBlockMessage()
+                StockPiler.Print(msg or L"Brew held: materials reserved for AutoGrow seed conversion.")
+            end
+            return "blocked"
+        end
+        LogBrewOp(string.format(
+            "macro-load potion=%s key=%s deficit=%s craftable=%s",
+            ToNarrow(nextRow.name),
+            ShortKey(RowKey(nextRow)),
+            tostring(nextRow.potionDeficit),
+            tostring(nextRow.craftable)
+        ))
         StockPiler.Brew.BeginForRow(nextRow)
         return "blocked"
     end
@@ -1288,7 +1582,13 @@ function StockPiler.Brew.ShowBrewTooltip(anchorWindow, anchor)
                     .. towstring(tostring(have)) .. L"/"
                     .. towstring(tostring(target)) .. L"). Click to load.")
             else
-                body(L"No watches ready to craft.")
+                local growMsg = StockPiler.Planner and StockPiler.Planner.BrewGrowBlockMessage
+                    and StockPiler.Planner.BrewGrowBlockMessage()
+                if growMsg ~= nil and growMsg ~= L"" then
+                    body(growMsg)
+                else
+                    body(L"No watches ready to craft.")
+                end
             end
         end
     end
@@ -1308,8 +1608,15 @@ local function FailJob(message)
             .. " complete=" .. LoadLooksCompleteReason(job)
             .. (step and (" | " .. StepWhy(step)) or ""))
         DumpApoBoard("fail")
+        LogBrewOp(string.format(
+            "fail potion=%s key=%s msg=%s",
+            ToNarrow(job.potionName or job.name or "?"),
+            ShortKey(job.potionKey or job.rowId or "?"),
+            ToNarrow(message)
+        ))
     else
         D("FAIL " .. tostring(message))
+        LogBrewOp("fail msg=" .. ToNarrow(message))
     end
     if message and StockPiler.Print then
         StockPiler.Print(message)
@@ -1362,6 +1669,12 @@ local function CompleteJob(message)
     StockPiler.Brew._updateAccum = 0
     if type(job) == "table" then
         LogJob(job, ToNarrow(message) or "complete")
+        LogBrewOp(string.format(
+            "loaded potion=%s key=%s steps=%d",
+            ToNarrow(job.potionName or job.name or "?"),
+            ShortKey(job.potionKey or job.rowId or "?"),
+            type(job.steps) == "table" and #job.steps or 0
+        ))
         local stepsCopy = {}
         if type(job.steps) == "table" then
             for i = 1, #job.steps do
@@ -1387,6 +1700,7 @@ local function CompleteJob(message)
                 recipeKey = recipeKey,
                 rowId = job.rowId,
                 potionKey = job.potionKey,
+                potionUid = tonumber(job.potionUid) or tonumber(job.uniqueID) or 0,
                 steps = stepsCopy,
             }
         end
@@ -1395,6 +1709,14 @@ local function CompleteJob(message)
         session.rowId = job.rowId
         session.potionKey = job.potionKey or session.potionKey
         session.name = job.potionName or session.name
+        session.potionUid = tonumber(job.potionUid) or session.potionUid
+        if type(job.recipe) == "table"
+            and StockPiler.RecipeSpec
+            and StockPiler.RecipeSpec.RecipeOutputYield
+        then
+            local yield = tonumber(StockPiler.RecipeSpec.RecipeOutputYield(job.recipe, session.potionUid)) or 2
+            session.recipeYield = math.max(1, math.floor(yield + 0.5))
+        end
     else
         D(message or "complete")
     end
@@ -1734,6 +2056,8 @@ local function OpenApothecary()
         StockPiler.TryCall("SendInitCrafting", SendInitCrafting, ApothecarySkill())
     end
     EnsureBrewApothecarySoftLocks(true)
+    StockPiler.Brew._idleForceClosed = false
+    StockPiler.Brew._loggedApoClose = false
     StockPiler.Brew._brewOwnedSession = true
     StockPiler.Brew._brewApoStealth = true
     HideApothecaryWindowOnly()
@@ -1770,6 +2094,8 @@ local function OpenApothecary()
         return false
     end
 
+    StockPiler.Brew._idleForceClosed = false
+    StockPiler.Brew._loggedApoClose = false
     StockPiler.Brew._brewOwnedSession = true
     StockPiler.Brew._brewOpenedApo = true
     StockPiler.Brew._brewApoStealth = true
@@ -1868,6 +2194,21 @@ local function CraftingDataOccupied(craftingSlot)
     return cd.sourceSlot ~= nil
 end
 
+local function CraftingSlotOccupied(craftingSlot)
+    craftingSlot = tonumber(craftingSlot) or -1
+    if craftingSlot < 0 then
+        return false
+    end
+    _craftDataCache = nil
+    if GetServerCraftItemId(craftingSlot) > 0 then
+        return true
+    end
+    if CraftingDataOccupied(craftingSlot) then
+        return true
+    end
+    return false
+end
+
 local function ClearStaleIngredientClientSlots()
     if type(ApothecaryWindow) ~= "table" or type(ApothecaryWindow.clientSlotList) ~= "table" then
         return
@@ -1957,6 +2298,23 @@ local function SlotHasItem(step)
         return true
     end
     return false
+end
+
+local function StepAlreadyOnBoard(step)
+    if type(step) ~= "table" then
+        return false
+    end
+    if SlotHasItem(step) then
+        return true
+    end
+    local craftSlot = tonumber(step.craftingSlot) or -1
+    if craftSlot < 0 then
+        return false
+    end
+    if not CraftingSlotOccupied(craftSlot) then
+        return false
+    end
+    return SlotHasWrongItem(step) ~= true
 end
 
 local function SlottedStabilityTotal(slots)
@@ -2064,6 +2422,10 @@ local function SessionReadyToFill()
     if ServerHasCraftingItems() or ApothecaryHasItems() then
         return false
     end
+    local containerSlot = ApothecaryWindow and ApothecaryWindow.SLOT_CONTAINER or 0
+    if CraftingSlotOccupied(containerSlot) then
+        return false
+    end
     local cs = CraftingStates()
     if cs == nil then
         return true
@@ -2077,7 +2439,7 @@ local function StepSatisfied(step)
     if type(step) ~= "table" then
         return false
     end
-    if SlotHasItem(step) then
+    if StepAlreadyOnBoard(step) then
         return true
     end
     -- Optional modifiers (extender, multiplier, stimulant) must still be slotted
@@ -2294,6 +2656,11 @@ local function IssueLoadStep(job, step)
     if type(ApothecaryWindow) ~= "table" or type(step) ~= "table" then
         return false
     end
+    if StepAlreadyOnBoard(step) then
+        step.loadIssued = true
+        LogJob(job, "skip add; already on board " .. StepWhy(step))
+        return true
+    end
     if step.loadIssued == true then
         return true
     end
@@ -2498,16 +2865,12 @@ function StockPiler.Brew.BeginForRow(row)
         end
         return false
     end
+    -- Do not cancel an in-flight load/perform on spam; use CancelSession explicitly.
     if StockPiler.Brew.IsBusy() then
-        D("cancel previous load to start a new one")
-        StockPiler.Brew._job = nil
-        StockPiler.Brew._updateAccum = 0
-    end
-    if type(row) ~= "table" then
+        LogBrewOp("BeginForRow blocked: busy")
         return false
     end
-    local craftable = tonumber(row.craftable) or 0
-    if row.canLoad ~= true and craftable <= 0 then
+    if type(row) ~= "table" then
         return false
     end
     local recipe = nil
@@ -2517,6 +2880,21 @@ function StockPiler.Brew.BeginForRow(row)
         recipe = row.recipe
     elseif type(row.recipe) == "table" and type(row.recipe.materials) == "table" then
         recipe = row.recipe
+    end
+    if type(recipe) == "table"
+        and StockPiler.Planner
+        and StockPiler.Planner.WouldBrewStarveGrow
+        and StockPiler.Planner.WouldBrewStarveGrow(recipe)
+    then
+        if StockPiler.Print then
+            local msg = StockPiler.Planner.BrewGrowBlockMessage and StockPiler.Planner.BrewGrowBlockMessage()
+            StockPiler.Print(msg or L"Brew held: materials reserved for AutoGrow seed conversion.")
+        end
+        return false
+    end
+    local craftable = tonumber(row.craftable) or 0
+    if row.canLoad ~= true and craftable <= 0 then
+        return false
     end
     if type(recipe) ~= "table" then
         if StockPiler.Print then
@@ -2536,8 +2914,11 @@ function StockPiler.Brew.BeginForRow(row)
                 StockPiler.Print(L"Move all recipe materials into the crafting bag first.")
             end
         end
-        -- Stale Craftable* often picks this path after a brew; clear leftover apo loadout.
-        AbortBrewStation("load blocked: materials not in crafting bag")
+        -- Do not AbortBrewStation/CloseApo here — that can yank leftover main-kept
+        -- mats out of the craft bag. Soft-clear session only; player keeps apo state.
+        StockPiler.Brew._lastLoad = nil
+        ClearSession()
+        RefreshBrewAppearance()
         return false
     end
     local steps = BuildLoadSteps(recipe)
@@ -2548,25 +2929,23 @@ function StockPiler.Brew.BeginForRow(row)
         return false
     end
 
-    local bagCount = EachCraftingBagSlot(function() end)
-    D("crafting bag items=" .. tostring(bagCount))
-    if type(recipe.slots) == "table" then
-        for i = 1, #recipe.slots do
-            local slot = recipe.slots[i]
-            if type(slot) == "table" then
-                D("recipe.slot[" .. tostring(i) .. "] role=" .. tostring(slot.role)
-                    .. " perCraft=" .. tostring(slot.perCraft)
-                    .. " spec=" .. SpecKey(slot.spec)
-                    .. " label=" .. SpecSlotLabel(slot.spec))
+    local bagCount = 0
+    if StockPiler.DebugEnabled == true then
+        bagCount = EachCraftingBagSlot(function() end)
+        D("crafting bag items=" .. tostring(bagCount))
+        if type(recipe.slots) == "table" then
+            for i = 1, #recipe.slots do
+                local slot = recipe.slots[i]
+                if type(slot) == "table" then
+                    D("recipe.slot[" .. tostring(i) .. "] role=" .. tostring(slot.role)
+                        .. " perCraft=" .. tostring(slot.perCraft)
+                        .. " spec=" .. SpecKey(slot.spec)
+                        .. " label=" .. SpecSlotLabel(slot.spec))
+                end
             end
         end
     end
-    EachCraftingBagSlot(function(slot, item)
-        D("bag[" .. tostring(slot) .. "] " .. DescribeItem(item))
-    end)
-    if StockPiler.DebugEnabled == true and StockPiler.Print then
-        StockPiler.Print(L"Load debug writing to logs/uilog.log (search StockPiler| [Load]).")
-    end
+    -- Full bag dump omitted (too noisy); brew| begin-load/loaded/fail cover the op.
 
     local stability = "?"
     if type(recipe.slots) == "table" and StockPiler.RecipeSpec and StockPiler.RecipeSpec.SpecStabilityTotal then
@@ -2581,6 +2960,7 @@ function StockPiler.Brew.BeginForRow(row)
         rowId = row.id,
         potionKey = row.potionKey,
         potionName = row.name,
+        potionUid = tonumber(row.uniqueID) or 0,
         recipe = recipe,
         steps = steps,
         stepIndex = 1,
@@ -2590,6 +2970,13 @@ function StockPiler.Brew.BeginForRow(row)
         usedBagSlots = {},
     }
     StockPiler.Brew._updateAccum = 0
+    LogBrewOp(string.format(
+        "begin-load potion=%s key=%s steps=%d stability=%s",
+        ToNarrow(row.name),
+        ShortKey(row.potionKey or row.id or "?"),
+        type(steps) == "table" and #steps or 0,
+        tostring(stability)
+    ))
     LogJob(StockPiler.Brew._job, "BEGIN potion=" .. tostring(row.name or row.id)
         .. " recipeKey=" .. tostring(recipe.recipeKey or recipe.recipeSpecKey or recipe.id or "?")
         .. " steps=" .. DescribeSteps(steps)
@@ -2731,6 +3118,14 @@ function StockPiler.Brew.Tick()
                 .. " complete=" .. LoadLooksCompleteReason(job))
             DumpApoBoard("wait1")
         elseif job.waitTicks > 0 and job.waitTicks < STEP_WAIT_TICKS and job.waitTicks % 15 == 0 then
+            if StepAlreadyOnBoard(step) or SlotLoaded(step) then
+                LogJob(job, "retry saw slot filled " .. StepWhy(step))
+                ConfirmStepBagUse(job, step)
+                job.stepIndex = job.stepIndex + 1
+                job.waitTicks = 0
+                step.retryCount = 0
+                return
+            end
             step.retryCount = (tonumber(step.retryCount) or 0) + 1
             if step.retryCount > 3 then
                 FailJob(L"Could not add the next ingredient. Check the crafting bag for plants (not seeds).")

@@ -684,6 +684,16 @@ function StockPilerTabPotions.OnToggleWatch()
     if StockPiler.PersistActiveCharacterSettings then
         StockPiler.PersistActiveCharacterSettings(s)
     end
+    if StockPiler.LogOp then
+        StockPiler.LogOp("settings", string.format(
+            "watch enabled=%s potion=%s key=%s target=%d autoGrow=%s",
+            tostring(watch.enabled == true),
+            StockPiler.ToNarrow(data.name or data.id or "?"),
+            StockPiler.ShortLogKey and StockPiler.ShortLogKey(potionKey) or tostring(potionKey),
+            tonumber(watch.targetStock) or 0,
+            tostring(watch.autoGrow ~= false)
+        ))
+    end
     if StockPiler.AutoGrow and StockPiler.AutoGrow.OnDemandChanged then
         StockPiler.AutoGrow.OnDemandChanged()
     elseif StockPiler.AutoGrow and StockPiler.AutoGrow.InvalidatePlantQueue then

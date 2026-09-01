@@ -357,6 +357,8 @@ local function UpsertItem(itemData, kindHint)
     return StockPiler.Items.UpsertFromItemData(itemData, kindHint)
 end
 
+local rejectLogged = {}
+
 function StockPiler.SeedMap.PairLooksLikePlantAndSeed(plantUid, seedUid)
     plantUid = tonumber(plantUid) or 0
     seedUid = tonumber(seedUid) or 0
@@ -371,10 +373,14 @@ function StockPiler.SeedMap.PairLooksLikePlantAndSeed(plantUid, seedUid)
     if StockPiler.SeedMap.GrowNamesRelated(plantData.name, seedData.name) then
         return true
     end
-    D("SeedMap reject unrelated plantUid=" .. tostring(plantUid)
-        .. " seedUid=" .. tostring(seedUid)
-        .. " plant=" .. ToNarrow(plantData.name)
-        .. " seed=" .. ToNarrow(seedData.name))
+    local logKey = tostring(plantUid) .. ":" .. tostring(seedUid)
+    if rejectLogged[logKey] ~= true then
+        rejectLogged[logKey] = true
+        D("SeedMap reject unrelated plantUid=" .. tostring(plantUid)
+            .. " seedUid=" .. tostring(seedUid)
+            .. " plant=" .. ToNarrow(plantData.name)
+            .. " seed=" .. ToNarrow(seedData.name))
+    end
     return false
 end
 
@@ -550,11 +556,11 @@ end
 function StockPiler.SeedMap.RecordHarvestChatCues(seedUid, cues, pending)
     seedUid = tonumber(seedUid) or 0
     if seedUid <= 0 then
-        return
+        return false, false
     end
     local bucket = EnsureGrowsBucket(seedUid)
     if type(bucket) ~= "table" then
-        return
+        return false, false
     end
     bucket.harvestAttempts = (tonumber(bucket.harvestAttempts) or 0) + 1
     local critOk = false
@@ -581,6 +587,7 @@ function StockPiler.SeedMap.RecordHarvestChatCues(seedUid, cues, pending)
         .. " attempts=" .. tostring(bucket.harvestAttempts)
         .. " critOk=" .. tostring(critOk)
         .. " critFail=" .. tostring(critFail))
+    return critOk, critFail
 end
 
 --- Critical Failure with no bag gain: clear locked harvest watch and record seed lost.
@@ -590,12 +597,23 @@ function StockPiler.SeedMap.CompletePendingHarvestFromChat(cues)
         return false
     end
     local seedUid = tonumber(pending.seedUid) or 0
-    StockPiler.SeedMap.RecordHarvestChatCues(seedUid, cues, pending)
+    local plotNum = tonumber(pending.plotNum) or 0
+    local _, critFail = StockPiler.SeedMap.RecordHarvestChatCues(seedUid, cues, pending)
     StockPiler.SeedMap._pendingHarvest = nil
     if StockPiler.CraftChat and StockPiler.CraftChat.TakeCues then
         StockPiler.CraftChat.TakeCues()
     end
-    D("SeedMap harvest chat Critical Failure cleared pending seedUid=" .. tostring(seedUid))
+    if StockPiler.LogOp then
+        StockPiler.LogOp("harvest", string.format(
+            "fail P%d seedUid=%d critFail=%s reason=Critical Failure",
+            plotNum,
+            seedUid,
+            tostring(critFail == true)
+        ))
+    end
+    if StockPiler.AutoGrow and StockPiler.AutoGrow.MaybeNotifySeedLineLost then
+        StockPiler.AutoGrow.MaybeNotifySeedLineLost(seedUid, "critical_failure", plotNum)
+    end
     return true
 end
 
@@ -684,11 +702,60 @@ function StockPiler.SeedMap.HarvestProducts(seedUid)
         return list
     end
     for plantKey, row in pairs(bucket) do
-        if type(row) == "table" then
+        if type(row) == "table" and tonumber(plantKey) then
             list[#list + 1] = StatRowToProduct(plantKey, "plant", row)
         end
     end
     return SortedProductList(list)
+end
+
+--- Expected plants gained per successful harvest of this seed.
+--- Uses observed bag deltas (samples/countSum). Returns (yield, samples).
+--- Default yield is 1 until at least one counted harvest (fresh / low skill).
+function StockPiler.SeedMap.ExpectedHarvestYield(seedUid, plantUid)
+    seedUid = tonumber(seedUid) or 0
+    plantUid = tonumber(plantUid) or 0
+    if seedUid <= 0 then
+        return 1, 0
+    end
+    local products = StockPiler.SeedMap.HarvestProducts(seedUid)
+    if plantUid <= 0 and StockPiler.SeedMap.PrimaryPlantForSeed then
+        plantUid = tonumber(StockPiler.SeedMap.PrimaryPlantForSeed(seedUid)) or 0
+    end
+    local function avgOf(prod)
+        local samples = tonumber(prod and prod.samples) or 0
+        if samples <= 0 then
+            return 0, 0
+        end
+        local avg = (tonumber(prod.countSum) or 0) / samples
+        if avg < 1 then
+            avg = 1
+        end
+        return avg, samples
+    end
+    if plantUid > 0 then
+        for i = 1, #products do
+            if (tonumber(products[i].uid) or 0) == plantUid then
+                local avg, samples = avgOf(products[i])
+                if samples > 0 then
+                    return avg, samples
+                end
+                break
+            end
+        end
+    end
+    local bestAvg, bestSamples = 0, 0
+    for i = 1, #products do
+        local avg, samples = avgOf(products[i])
+        if samples > bestSamples then
+            bestSamples = samples
+            bestAvg = avg
+        end
+    end
+    if bestSamples > 0 then
+        return bestAvg, bestSamples
+    end
+    return 1, 0
 end
 
 function StockPiler.SeedMap.RefineProducts(plantUid)
@@ -1575,8 +1642,22 @@ function StockPiler.SeedMap.BeginPendingHarvest(plotNum, plotData)
         countsBefore = SnapshotCraftingMatCounts(),
         started = NowSec(),
         locked = true,
+        lootDirty = false,
+        lootDirtyAt = 0,
+        lastCompleteAttempt = 0,
     }
     D("SeedMap harvest watch plot=" .. tostring(plotNum) .. " seedUid=" .. tostring(seedUid))
+end
+
+--- Inventory events during harvest only mark dirty — do not snapshot here
+--- (multi-item loot was causing multi-second frametime spikes).
+function StockPiler.SeedMap.MarkHarvestLootDirty()
+    local pending = StockPiler.SeedMap._pendingHarvest
+    if type(pending) ~= "table" then
+        return
+    end
+    pending.lootDirty = true
+    pending.lootDirtyAt = NowSec()
 end
 
 --- After refine/brew bag changes, rebase an unlocked harvest snapshot so convert
@@ -1623,7 +1704,35 @@ function StockPiler.SeedMap.RefreshHarvestWatch(plotNum, plotData)
         countsBefore = SnapshotCraftingMatCounts(),
         started = NowSec(),
         locked = false,
+        lootDirty = false,
+        lootDirtyAt = 0,
+        lastCompleteAttempt = 0,
     }
+end
+
+--- Throttled harvest completion: one bag snapshot after loot settles (~200ms),
+--- or immediately when force=true (plot became empty).
+function StockPiler.SeedMap.TryCompletePendingHarvest(force)
+    local pending = StockPiler.SeedMap._pendingHarvest
+    if type(pending) ~= "table" then
+        return false
+    end
+    force = force == true
+    if not force and pending.lootDirty ~= true then
+        return false
+    end
+    local now = NowSec()
+    local dirtyAt = tonumber(pending.lootDirtyAt) or 0
+    if not force and dirtyAt > 0 and (now - dirtyAt) < 0.2 then
+        return false
+    end
+    local lastTry = tonumber(pending.lastCompleteAttempt) or 0
+    if not force and lastTry > 0 and (now - lastTry) < 0.15 then
+        return false
+    end
+    pending.lastCompleteAttempt = now
+    pending.lootDirty = false
+    return StockPiler.SeedMap.MaybeCompletePendingHarvest()
 end
 
 function StockPiler.SeedMap.MaybeCompletePendingHarvest()
@@ -1646,6 +1755,7 @@ function StockPiler.SeedMap.MaybeCompletePendingHarvest()
         end
     end
     if not hasNonSeedGain then
+        -- Loot may still be arriving; keep watch and allow another dirty mark.
         return false
     end
 
@@ -1720,6 +1830,7 @@ function StockPiler.SeedMap.MaybeCompletePendingHarvest()
 
     if seedUid > 0 then
         local harvestProducts = {}
+        local productParts = {}
         for uid, change in pairs(deltas) do
             uid = tonumber(uid) or 0
             if uid > 0 and change > 0 and not IsSeedOrSporeItem(LookupItemData(uid))
@@ -1727,13 +1838,16 @@ function StockPiler.SeedMap.MaybeCompletePendingHarvest()
                 and IsCraftingItem(LookupItemData(uid))
             then
                 harvestProducts[uid] = change
+                local item = LookupItemData(uid)
+                productParts[#productParts + 1] = ToNarrow(item and item.name or uid)
+                    .. "x" .. tostring(change)
             end
         end
         local chatCues = nil
         if StockPiler.CraftChat and StockPiler.CraftChat.TakeCues then
             chatCues = StockPiler.CraftChat.TakeCues()
         end
-        StockPiler.SeedMap.RecordHarvestChatCues(seedUid, chatCues, pending)
+        local critOk, critFail = StockPiler.SeedMap.RecordHarvestChatCues(seedUid, chatCues, pending)
         StockPiler.SeedMap.ObserveHarvest(seedUid, harvestProducts, true)
         local primaryData = LookupItemData(primaryUid)
         if IsCraftingItem(primaryData) and not StockPiler.SeedMap.IsResinUid(primaryUid) then
@@ -1744,8 +1858,30 @@ function StockPiler.SeedMap.MaybeCompletePendingHarvest()
             D("SeedMap harvest plantUid=" .. tostring(primaryUid)
                 .. " seedUid=" .. tostring(seedUid)
                 .. " learned=" .. tostring(learned == true)
-                .. " chatCritOk=" .. tostring(pending.chatCriticalSuccess == true)
-                .. " chatCritFail=" .. tostring(pending.chatCriticalFailure == true))
+                .. " chatCritOk=" .. tostring(critOk == true)
+                .. " chatCritFail=" .. tostring(critFail == true))
+        end
+        local yield = 1
+        if StockPiler.SeedMap.ExpectedHarvestYield then
+            yield = StockPiler.SeedMap.ExpectedHarvestYield(seedUid, primaryUid) or 1
+        end
+        local garden = ""
+        if StockPiler.AutoGrow and StockPiler.AutoGrow.GardenSummary then
+            garden = " " .. StockPiler.AutoGrow.GardenSummary()
+        end
+        if StockPiler.LogOp then
+            StockPiler.LogOp("harvest", string.format(
+                "done P%d seedUid=%d plantUid=%d gained=%d products=%s critOk=%s critFail=%s yieldAvg=%.2f%s",
+                tonumber(pending.plotNum) or 0,
+                seedUid,
+                primaryUid,
+                tonumber(primaryDelta) or 0,
+                (#productParts > 0) and table.concat(productParts, ",") or "none",
+                tostring(critOk == true),
+                tostring(critFail == true),
+                tonumber(yield) or 1,
+                garden
+            ))
         end
     end
 
@@ -2727,10 +2863,42 @@ function StockPiler.SeedMap.PruneNonCraftingItemOrphans()
     return dropped
 end
 
+function StockPiler.SeedMap.PruneOrphanRefineByproducts()
+    local refines = AccountTable("refines")
+    local pruned = 0
+    for plantKey, entry in pairs(refines) do
+        if type(entry) == "table" and type(entry.byproducts) == "table" then
+            local plantUid = tonumber(plantKey) or 0
+            local remove = {}
+            for uidKey, row in pairs(entry.byproducts) do
+                local uid = tonumber(uidKey) or 0
+                if uid > 0 then
+                    local samples = type(row) == "table" and (tonumber(row.samples) or 0) or 0
+                    local countSum = type(row) == "table" and (tonumber(row.countSum) or 0) or 0
+                    local badPair = StockPiler.SeedMap.PairLooksLikePlantAndSeed
+                        and not StockPiler.SeedMap.PairLooksLikePlantAndSeed(plantUid, uid)
+                    if (samples <= 0 and countSum <= 0) or badPair == true then
+                        remove[#remove + 1] = uidKey
+                    end
+                end
+            end
+            for i = 1, #remove do
+                entry.byproducts[remove[i]] = nil
+                pruned = pruned + 1
+            end
+        end
+    end
+    if pruned > 0 and StockPiler.D then
+        StockPiler.D("SeedMap pruned orphan refine byproducts=" .. tostring(pruned))
+    end
+    return pruned
+end
+
 function StockPiler.SeedMap.EnsureSpecBootstrap()
     StockPiler.SeedMap._specBootstrapDone = true
     StockPiler.SeedMap.PruneNonCraftingGrowProducts()
     StockPiler.SeedMap.PruneNonCraftingItemOrphans()
+    StockPiler.SeedMap.PruneOrphanRefineByproducts()
     -- Drop mixed-harvest pairs (e.g. Gobswort Spore → Majestic Goldweed).
     StockPiler.SeedMap.ForgetUnrelatedLearnedMaps()
     return 0
