@@ -1,0 +1,537 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <Scripts>
+        <Script file="Source/View/StockPilerTabWatch.lua" />
+    </Scripts>
+    <Windows>
+        <Window name="StockPilerTabWatch" movable="false">
+            <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" relativeTo="StockPilerWindowSocket">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+                <Anchor point="bottomright" relativePoint="bottomright" relativeTo="StockPilerWindowSocket">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="StockPilerTabWatch.Initialize" />
+            </EventHandlers>
+            <Windows>
+                <Window name="$parentBanner">
+                    <Size>
+                        <AbsPoint x="500" y="88" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                        <Anchor point="topright" relativePoint="topright">
+                            <AbsPoint x="-20" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <FullResizeImage name="$parentBackground" inherits="SettingsSectionBackground" />
+                        <Label name="$parentTitle" inherits="EA_Settings_SectionTitle">
+                            <Size>
+                                <AbsPoint x="400" y="22" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="12" y="4" />
+                                </Anchor>
+                            </Anchors>
+                        </Label>
+                        <Label name="$parentText" font="font_chat_text" maxchars="320" textalign="left" handleinput="false" wordwrap="true">
+                            <Size>
+                                <AbsPoint x="960" y="56" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="12" y="26" />
+                                </Anchor>
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Button name="$parentEnable" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="94" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleEnabled" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverEnabled" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentEnableLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="90" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="24" y="90" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleEnabled" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverEnabled" />
+                    </EventHandlers>
+                </Label>
+
+                <Button name="$parentAdditives" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="120" y="94" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleAdditives" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverAdditives" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentAdditivesLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="116" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="144" y="90" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleAdditives" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverAdditives" />
+                    </EventHandlers>
+                </Label>
+
+                <Button name="$parentSeedBufferEnable" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="266" y="94" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleSeedBuffer" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverSeedBufferEnable" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentSeedBufferLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="102" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="290" y="90" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleSeedBuffer" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverSeedBufferEnable" />
+                    </EventHandlers>
+                </Label>
+                <Window name="$parentSeedBufferChip" handleinput="true">
+                    <Size>
+                        <AbsPoint x="36" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="396" y="93" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnSeedBufferLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPilerTabWatch.OnSeedBufferRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverSeedBuffer" />
+                    </EventHandlers>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                        <Label name="$parentValue" font="font_chat_text" maxchars="4" textalign="center" handleinput="false" layer="overlay">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Button name="$parentUpgradeSeeds" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="440" y="94" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleUpgradeSeeds" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverUpgradeSeeds" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentUpgradeSeedsLabel" font="font_chat_text" maxchars="28" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="128" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="464" y="90" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleUpgradeSeeds" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverUpgradeSeeds" />
+                    </EventHandlers>
+                </Label>
+
+                <Button name="$parentOptimisticMode" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="600" y="94" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleOptimisticMode" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverOptimisticMode" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentOptimisticModeLabel" font="font_chat_text" maxchars="28" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="150" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="624" y="90" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleOptimisticMode" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverOptimisticMode" />
+                    </EventHandlers>
+                </Label>
+
+                <Button name="$parentSkillUpSkills" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="784" y="94" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleSkillUpSkills" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverSkillUpSkills" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentSkillUpSkillsLabel" font="font_chat_text" maxchars="40" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="140" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="808" y="90" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleSkillUpSkills" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverSkillUpSkills" />
+                    </EventHandlers>
+                </Label>
+
+                <!-- Row 2: AutoBrew under AutoGrow, then AutoBuy / Reserve / Budget -->
+                <Button name="$parentAutoBrew" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="124" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleAutoBrew" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverAutoBrew" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentAutoBrewLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="90" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="24" y="120" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleAutoBrew" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverAutoBrew" />
+                    </EventHandlers>
+                </Label>
+
+                <Button name="$parentAutoBuy" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="120" y="124" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleAutoBuy" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverAutoBuy" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentAutoBuyLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="88" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="144" y="120" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleAutoBuy" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverAutoBuy" />
+                    </EventHandlers>
+                </Label>
+
+                <Label name="$parentReserveLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="240" y="120" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <Window name="$parentReserveChip" handleinput="true">
+                    <Size>
+                        <AbsPoint x="36" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="314" y="123" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnReserveLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPilerTabWatch.OnReserveRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverReserve" />
+                    </EventHandlers>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                        <Label name="$parentValue" font="font_chat_text" maxchars="4" textalign="center" handleinput="false" layer="overlay">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Label name="$parentBudgetLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="364" y="120" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <Window name="$parentBudgetChip" handleinput="true">
+                    <Size>
+                        <AbsPoint x="44" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="438" y="123" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnBudgetLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPilerTabWatch.OnBudgetRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverBudget" />
+                    </EventHandlers>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                        <Label name="$parentValue" font="font_chat_text" maxchars="4" textalign="center" handleinput="false" layer="overlay">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Button name="$parentBudgetReset" inherits="StockPiler_RowTextButton" textAutoFitMinScale="0.5">
+                    <Size>
+                        <AbsPoint x="64" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="488" y="120" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnBudgetReset" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverBudgetReset" />
+                    </EventHandlers>
+                </Button>
+
+                <!-- Headers: Prio | Name | Status | Stock | Craftable | Target | AutoGrow | Brew (1000px) -->
+                <Button name="$parentColPrio" inherits="StockPiler_SortHeaderWatch" id="1" textalign="left">
+                    <Size>
+                        <AbsPoint x="56" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColPotion" inherits="StockPiler_SortHeaderWatch" id="2" textalign="left">
+                    <Size>
+                        <AbsPoint x="288" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="56" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColStatus" inherits="StockPiler_SortHeaderWatch" id="3" textalign="left">
+                    <Size>
+                        <AbsPoint x="216" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="344" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColStock" inherits="StockPiler_SortHeaderWatch" id="4" textalign="left">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="560" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColCraftable" inherits="StockPiler_SortHeaderWatch" id="5" textalign="left">
+                    <Size>
+                        <AbsPoint x="96" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="632" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColTarget" inherits="StockPiler_SortHeaderWatch" id="6" textalign="left">
+                    <Size>
+                        <AbsPoint x="70" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="728" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColPriority" inherits="StockPiler_SortHeaderWatch" id="7" textalign="left">
+                    <Size>
+                        <AbsPoint x="100" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="798" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentColBrew" inherits="StockPiler_StaticHeader">
+                    <Size>
+                        <AbsPoint x="102" y="28" />
+                    </Size>
+                    <TextOffset x="2" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="898" y="148" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+
+                <!-- Opaque fill under list + scrollbar gutter (hides world underpaint). -->
+                <FullResizeImage name="$parentListFill" inherits="EA_FullResizeImage_BlackTransparent" handleinput="false" layer="background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="178" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-6" y="-8" />
+                        </Anchor>
+                    </Anchors>
+                </FullResizeImage>
+                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPilerWatchRow" visiblerows="11" rowspacing="2">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="178" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-6" y="-8" />
+                        </Anchor>
+                    </Anchors>
+                    <ListData table="StockPilerTabWatch.listData" populationfunction="StockPilerTabWatch.UpdateRows">
+                        <ListColumns>
+                            <ListColumn windowname="Name" variable="name" format="wstring" />
+                            <ListColumn windowname="Status" variable="statusText" format="wstring" />
+                            <ListColumn windowname="Stock" variable="stockText" format="wstring" />
+                            <ListColumn windowname="Craftable" variable="craftableText" format="wstring" />
+                            <ListColumn windowname="Target" variable="targetText" format="wstring" />
+                        </ListColumns>
+                    </ListData>
+                </ListBox>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>

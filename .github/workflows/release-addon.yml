@@ -1,0 +1,98 @@
+# Build an installable StockPiler zip (not full repo source) and publish it.
+# - Push to main / manual run → moving "latest" prerelease (one zip) and a vX.Y.Z release
+# - Tag v* → versioned GitHub Release
+# Version tags older than the newest 10 are deleted.
+name: Release addon zip
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lua syntax
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+          # WAR wstring literals (L"...") are not valid Lua 5.1. Check a rewritten copy.
+          tmp=$(mktemp -d)
+          find Source -name '*.lua' -print0 | while IFS= read -r -d '' f; do
+            rel=${f#Source/}
+            mkdir -p "$tmp/$(dirname "$rel")"
+            sed -E 's/L"([^"]*)"/"\1"/g' "$f" > "$tmp/$rel"
+            luac5.1 -p "$tmp/$rel"
+          done
+
+      - name: Pack addon zip
+        id: pack
+        shell: pwsh
+        run: ./scripts/pack.ps1 -OutDir dist
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockPiler-addon
+          path: dist/StockPiler-*.zip
+          if-no-files-found: error
+
+      - name: Publish latest zip and keep 10 version tags
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          ZIP: ${{ steps.pack.outputs.zip_path }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          notes=$(printf '%s\n' \
+            "Installable addon zip (not the full git tree)." \
+            "" \
+            "Unzip into \`Interface/AddOns/\` so you get \`Interface/AddOns/StockPiler/\`." \
+            "" \
+            "- Version: ${VERSION}" \
+            "- Commit: ${GITHUB_SHA}")
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" "$ZIP" \
+              --target "$GITHUB_SHA" \
+              --title "StockPiler ${VERSION}" \
+              --latest \
+              --notes "$notes"
+          fi
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest "$ZIP" \
+            --target "$GITHUB_SHA" \
+            --title "Latest build" \
+            --prerelease \
+            --notes "$notes"
+          gh release list --limit 100 --json tagName,publishedAt \
+            --jq '[.[] | select(.tagName | startswith("v"))] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
+            | while IFS= read -r old; do
+                [ -n "$old" ] || continue
+                gh release delete "$old" --yes --cleanup-tag
+              done
+
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: StockPiler ${{ github.ref_name }}
+          body: |
+            Installable addon zip for `${{ github.ref_name }}`.
+
+            Unzip into `Interface/AddOns/` so you get `Interface/AddOns/StockPiler/`.
+          prerelease: false
+          make_latest: true
+          files: dist/StockPiler-*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
