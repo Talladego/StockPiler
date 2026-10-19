@@ -1,5 +1,7 @@
 # Build an installable StockPiler zip (not full repo source) and publish it.
-# - Push to main / manual run → moving "latest" prerelease (one zip) and a vX.Y.Z release
+# - Push to main, or a manual run of main → moving "latest" prerelease (one zip),
+#   a vX.Y.Z release, and an upload to the Return of Reckoning addon site when that version is new
+# - A manual run from another branch only packs the zip
 # - Tag v* → versioned GitHub Release
 # Version tags older than the newest 10 are deleted.
 name: Release addon zip
@@ -13,12 +15,32 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   pack:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Require changelog section
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          section="${RUNNER_TEMP:-/tmp}/stockpiler-changelog.md"
+          notes="${RUNNER_TEMP:-/tmp}/stockpiler-release-notes.md"
+          version=$(python3 scripts/changelog-section.py \
+            --section-out "$section" \
+            --notes-out "$notes")
+          {
+            echo "version=${version}"
+            echo "changelog_path=${section}"
+            echo "release_notes_path=${notes}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Lua syntax
         run: |
@@ -38,6 +60,20 @@ jobs:
         shell: pwsh
         run: ./scripts/pack.ps1 -OutDir dist
 
+      - name: Verify addon zip layout
+        shell: bash
+        env:
+          ZIP: ${{ steps.pack.outputs.zip_path }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.changelog.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "Packed version ${VERSION} does not match StockPiler.mod ${EXPECTED_VERSION}" >&2
+            exit 1
+          fi
+          python3 scripts/verify-addon-zip.py "$ZIP"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -45,15 +81,27 @@ jobs:
           path: dist/StockPiler-*.zip
           if-no-files-found: error
 
+      - name: Upload new release to the addon site
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          ROR_TOKEN: ${{ secrets.ROR_TOKEN }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          ZIP: ${{ steps.pack.outputs.zip_path }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog_path }}
+        run: bash scripts/publish-ror.sh
+
       - name: Publish latest zip and keep 10 version tags
-        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.pack.outputs.version }}
           ZIP: ${{ steps.pack.outputs.zip_path }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.release_notes_path }}
         run: |
           set -euo pipefail
           tag="v${VERSION}"
+          version_notes=$(cat "$RELEASE_NOTES")
           notes=$(printf '%s\n' \
             "Installable addon zip (not the full git tree)." \
             "" \
@@ -66,7 +114,7 @@ jobs:
               --target "$GITHUB_SHA" \
               --title "StockPiler ${VERSION}" \
               --latest \
-              --notes "$notes"
+              --notes "$version_notes"
           fi
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest "$ZIP" \
@@ -86,10 +134,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: StockPiler ${{ github.ref_name }}
-          body: |
-            Installable addon zip for `${{ github.ref_name }}`.
-
-            Unzip into `Interface/AddOns/` so you get `Interface/AddOns/StockPiler/`.
+          body_path: ${{ steps.changelog.outputs.release_notes_path }}
           prerelease: false
           make_latest: true
           files: dist/StockPiler-*.zip
