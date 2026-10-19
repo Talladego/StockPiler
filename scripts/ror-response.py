@@ -241,13 +241,8 @@ def moderation_field_decision(value: str | None) -> str | None:
     return None
 
 
-def checks_settled(checks: list[object]) -> bool:
-    if not checks:
-        return False
-    for item in checks:
-        if check_state(item) not in {"pass", "warn"}:
-            return False
-    return True
+def checks_pending(checks: list[object]) -> bool:
+    return any(check_state(item) == "pending" for item in checks)
 
 
 def poll_document(doc: object) -> str:
@@ -273,9 +268,13 @@ def poll_document(doc: object) -> str:
         return "wait:" + one_line(status or "pending")
     if field == "moderation":
         return "moderation:" + one_line(moderation or status or "moderation pending")
-    if checks_settled(checks):
-        return "ok:" + one_line(status or "checks passed")
-    return "wait:" + one_line("unrecognized status " + (status or ""))
+    # Known in-progress and moderation values are handled above. Anything else
+    # with checks still running is not terminal; a concrete unknown value is.
+    if checks_pending(checks):
+        return "wait:" + one_line(f"unrecognized status {status!r} with checks still running")
+    return "fail:" + one_line(
+        f"unrecognized terminal status {status!r}; refusing to treat it as success"
+    )
 
 
 def find_status_url(doc: object, headers: str, version: str) -> str:
@@ -318,6 +317,14 @@ def is_public_release(doc: object, version: str) -> bool:
 def already_exists(text: str) -> bool:
     lowered = text.lower()
     return any(phrase in lowered for phrase in EXISTS_PHRASES)
+
+
+def emit_status_body(text: str) -> None:
+    """Write one raw status payload to stderr. Status JSON has no secrets."""
+    sys.stderr.write("RoR status response:\n")
+    sys.stderr.write(text)
+    if not text.endswith("\n"):
+        sys.stderr.write("\n")
 
 
 def self_test() -> int:
@@ -381,6 +388,19 @@ def self_test() -> int:
     }
     assert poll_document(nested).startswith("fail:")
 
+    unknown = poll_document({"data": {"status": "verified", "checks": []}})
+    assert unknown.startswith("fail:")
+    assert "unrecognized terminal status" in unknown
+    assert "verified" in unknown
+    settled_unknown = {
+        "data": {"status": "verified", "checks": [{"id": "archive.paths", "status": "pass"}]}
+    }
+    assert poll_document(settled_unknown).startswith("fail:")
+    running_unknown = {
+        "data": {"status": "verified", "checks": [{"id": "archive.paths", "status": "pending"}]}
+    }
+    assert poll_document(running_unknown).startswith("wait:")
+
     public = {"data": {"version": "1.0.0", "status": "published"}}
     assert is_public_release(public, "1.0.0")
     assert not is_public_release(public, "1.0.1")
@@ -411,7 +431,9 @@ def main(argv: list[str]) -> int:
         print(find_status_url(doc, headers, argv[3]))
         return 0
     if command == "poll":
-        doc, _text = load_json(argv[1])
+        doc, text = load_json(argv[1])
+        if "--log" in argv[2:]:
+            emit_status_body(text)
         print(poll_document(doc))
         return 0
     raise SystemExit(f"Unknown command {command}")
