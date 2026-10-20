@@ -44,3 +44,7 @@ Automation starts off. Turn on only the parts you want.
 | `/stp chat off` | No StockPiler chat |
 
 `/stp chat` by itself tells you which mode is on.
+
+## License
+
+StockPiler is MIT-licensed. See [LICENSE](LICENSE).
