@@ -75,7 +75,6 @@ local function PrintHelp()
     Print(T("boot.help.open"))
     Print(T("boot.help.tabs"))
     Print(T("boot.help.chat"))
-    Print(T("boot.help.harvest"))
 end
 
 local function DumpMem(emit)
@@ -489,16 +488,6 @@ function StockPiler.OnSlash(input)
     if lower == "audit" or lower == "audit fix" then
         DumpAudit(function(msg) EmitLog(msg) end, lower == "audit fix")
         Print(T("boot.audit_dumped"))
-        return
-    end
-    if lower == "harvest" then
-        local B = StockPiler.EventBus
-        local E = StockPiler.Events
-        if B and E and E.CMD_HARVEST then
-            B.Fire(E.CMD_HARVEST, {})
-        elseif StockPiler.Grow and StockPiler.Grow.PrepareHarvestPlot then
-            StockPiler.Grow.PrepareHarvestPlot(true)
-        end
         return
     end
     if lower == "perf" or string.sub(lower, 1, 5) == "perf " then

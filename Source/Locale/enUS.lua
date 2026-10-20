@@ -31,7 +31,6 @@ StockPiler.Locale.Packs[LANG] = {
     ["boot.help.perf"] = L"/stp perf - show the hitch summary",
     ["boot.help.audit"] = L"/stp audit - check saved data. /stp audit fix repairs it",
     ["boot.help.mem"] = L"/stp mem - show table sizes",
-    ["boot.help.harvest"] = L"/stp harvest - harvest the next ready plot",
     ["boot.help.chat"] = L"/stp chat on, quiet, or off - how much StockPiler says in chat",
     ["boot.chat"] = L"Chat {state}",
     ["boot.chat_on"] = L"ON (all messages)",

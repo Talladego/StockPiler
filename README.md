@@ -38,7 +38,6 @@ Automation starts off. Turn on only the parts you want.
 | `/stp plants` | Open the Plants tab |
 | `/stp watch` | Open the Watch tab |
 | `/stp help` | Show the command list |
-| `/stp harvest` | Harvest the next ready plot |
 | `/stp chat on` | All StockPiler chat messages |
 | `/stp chat quiet` | Changes, harvests, and brews only |
 | `/stp chat off` | No StockPiler chat |

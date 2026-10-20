@@ -23,14 +23,6 @@ Orch._inTick = false
 Orch.REFINE_FIRST_MAX_MISSES = 3
 Orch._refineFirstMisses = 0
 
-local function TrackBus(token)
-    if token == nil then
-        return
-    end
-    Orch._busTokens = Orch._busTokens or {}
-    Orch._busTokens[#Orch._busTokens + 1] = token
-end
-
 local function SetPhase(phase, reason)
     phase = tostring(phase or "idle")
     if Orch.Phase == phase then
@@ -248,28 +240,6 @@ function Orch.NewOpId()
         Orch._lastOpId = (tonumber(Orch._lastOpId) or 0) + 1
     end
     return Orch._lastOpId
-end
-
-function Orch.DispatchCommand(kind, payload)
-    kind = tostring(kind or "")
-    payload = type(payload) == "table" and payload or {}
-    local opId = Orch.NewOpId()
-    if kind == "harvest" then
-        SetPhase("harvesting", "user-macro")
-        if StockPiler.Grow and StockPiler.Grow.HarvestClick then
-            StockPiler.Grow.HarvestClick()
-        elseif StockPiler.Grow and StockPiler.Grow.HarvestNext then
-            StockPiler.Grow.HarvestNext(opId)
-        end
-        if Orch.Phase == "harvesting" then
-            SetPhase("idle", "harvest-done")
-        end
-        if StockPiler.Scheduler and StockPiler.Scheduler.EnqueueBagFlush then
-            StockPiler.Scheduler.EnqueueBagFlush(true)
-        end
-        return true
-    end
-    return false
 end
 
 function Orch.Tick()
@@ -737,9 +707,6 @@ function Orch.Initialize()
         return
     end
     Orch._initialized = true
-    TrackBus(B.Subscribe(E.CMD_HARVEST, function()
-        Orch.DispatchCommand("harvest", {})
-    end))
 end
 
 function Orch.Shutdown()
