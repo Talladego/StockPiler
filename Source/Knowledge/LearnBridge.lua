@@ -288,7 +288,11 @@ function LB.OnUpdateProcessed()
         LB._harvestCompletePending = false
         LB._harvestCompleteSeenUpdate = false
     end
-    -- Refine completes outside harvest trail (EngineEventBridge -> Refine.OnUpdate).
+    -- After EngineEventBridge flushes both bag queues. Crafting-before-bags
+    -- and bag-only conversions are invisible to OnCraftingUpdated alone.
+    if SM and SM._pendingRefine and SM.TryCompletePendingRefine then
+        SM.TryCompletePendingRefine()
+    end
 end
 
 function LB.Initialize()

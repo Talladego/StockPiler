@@ -2167,6 +2167,116 @@ function SM.TryCompletePendingHarvest(force)
     return learned
 end
 
+--- Shallow-plus-bonus copy. The live slot table is cleared when the last plant is used.
+local function CopyItemData(item)
+    if type(item) ~= "table" then
+        return nil
+    end
+    local copy = {}
+    for k, v in pairs(item) do
+        if type(v) ~= "table" then
+            copy[k] = v
+        else
+            local inner = {}
+            for ik, iv in pairs(v) do
+                if type(iv) ~= "table" then
+                    inner[ik] = iv
+                else
+                    local leaf = {}
+                    for lk, lv in pairs(iv) do
+                        leaf[lk] = lv
+                    end
+                    inner[ik] = leaf
+                end
+            end
+            copy[k] = inner
+        end
+    end
+    return copy
+end
+
+--- Exact plant/seed name after seed/spore suffixes. Genus-token matches are not
+--- a learned link (Dusty Fusk must not be saved as Wolfpaw Fusk's output).
+local function RefineOutputNameMatches(plantName, seedName)
+    local a = NormalizeGrowName(ToNarrow(plantName))
+    local b = NormalizeGrowName(ToNarrow(seedName))
+    if a == "" or b == "" then
+        return false
+    end
+    if a == b then
+        return true
+    end
+    return string.gsub(a, " ", "") == string.gsub(b, " ", "")
+end
+
+local function InventorySnapGen()
+    local Inv = StockPiler.Inventory
+    if Inv and Inv.GetSnapGen then
+        return tonumber(Inv.GetSnapGen()) or 0, true
+    end
+    return 0, false
+end
+
+--- Plant stack plus every seed/spore uid, summed across both bags.
+--- Returns plantCount, seedTotals. A same-uid stack move nets to zero.
+local function SnapshotRefineBags(plantUid)
+    local plantCount = 0
+    local seeds = {}
+    plantUid = tonumber(plantUid) or 0
+    local Inv = StockPiler.Inventory
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(function(item)
+            local uid = tonumber(item.uniqueID) or 0
+            if uid <= 0 or type(item) ~= "table" then
+                return
+            end
+            local stack = tonumber(item.stackCount) or tonumber(item.Count) or 1
+            if stack < 1 then
+                stack = 1
+            end
+            if uid == plantUid then
+                plantCount = plantCount + stack
+            end
+            if IsBagSeedOrSporeItem(item) then
+                seeds[uid] = (seeds[uid] or 0) + stack
+            end
+        end)
+        return plantCount, seeds
+    end
+    if Inv and Inv.CountByUid and plantUid > 0 then
+        plantCount = tonumber(Inv.CountByUid(plantUid)) or 0
+    end
+    return plantCount, seeds
+end
+
+local function LiveBagItem(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local Inv = StockPiler.Inventory
+    if Inv and Inv.GetSample then
+        local sample = Inv.GetSample(uid)
+        if type(sample) == "table" then
+            return sample
+        end
+    end
+    return BagSample(uid)
+end
+
+local function StoreRefinePair(plantItem, seedItem)
+    local Items = StockPiler.Items
+    if not Items or not Items.StoreItem then
+        return
+    end
+    if type(plantItem) == "table" then
+        Items.StoreItem(plantItem, "plant")
+    end
+    if type(seedItem) == "table" then
+        Items.StoreItem(seedItem, "seed")
+    end
+end
+
 function SM.BeginPendingRefine(itemData)
     if type(itemData) ~= "table" then
         return false
@@ -2178,13 +2288,38 @@ function SM.BeginPendingRefine(itemData)
     if SM.IsRefineConvertFailed(plantUid) then
         return false
     end
-    local expected = SM.GetSeedUidsForPlant(plantUid)
-    local best = SM.PickBestSeedUid(plantUid, expected)
+    -- Only a learned grow/refine link may pre-pick the seed. A family or tier
+    -- guess from whatever is already in the bags watches the wrong output.
+    local learned = SM.GetSeedUidsForPlant(plantUid)
+    local expectedSeedUid = 0
+    if type(learned) == "table" and #learned > 0 then
+        expectedSeedUid = tonumber(SM.PickBestSeedUid(plantUid, learned)) or 0
+        if expectedSeedUid <= 0 then
+            expectedSeedUid = tonumber(learned[1]) or 0
+        end
+    end
+    local beforePlant, beforeSeeds = SnapshotRefineBags(plantUid)
+    local snap, hasGen = InventorySnapGen()
+    local beforeSeed = 0
+    if expectedSeedUid > 0 then
+        -- Same counter TryComplete reads, so a split stack cannot look like a gain.
+        if StockPiler.Inventory and StockPiler.Inventory.CountByUid then
+            beforeSeed = tonumber(StockPiler.Inventory.CountByUid(expectedSeedUid)) or 0
+        else
+            beforeSeed = tonumber(beforeSeeds[expectedSeedUid]) or 0
+        end
+    end
     SM._pendingRefine = {
         plantUid = plantUid,
-        expectedSeedUid = best,
+        plantItem = CopyItemData(itemData),
+        expectedSeedUid = expectedSeedUid,
         startedAt = NowSec(),
-        beforeSeed = best > 0 and (StockPiler.Inventory and StockPiler.Inventory.CountByUid(best) or 0) or 0,
+        beforeSeed = beforeSeed,
+        beforePlant = beforePlant,
+        beforeSeeds = beforeSeeds,
+        -- Snapshot already covers this generation; skip until bags change.
+        scannedGen = hasGen and snap or nil,
+        hasSnapGen = hasGen == true,
     }
     return true
 end
@@ -2291,29 +2426,97 @@ function SM.ObserveRefineComplete(plantUid, seedUid, seedDelta)
     return true
 end
 
+local function ClearPendingRefine()
+    SM._pendingRefine = nil
+end
+
+local function AcceptRefineOutput(pending, plantUid, seedUid, delta, seedItem)
+    -- Keep the pre-use plant copy: the last stack is already gone from the bags.
+    StoreRefinePair(pending.plantItem, seedItem or LiveBagItem(seedUid))
+    local learned = SM.ObserveRefineComplete(plantUid, seedUid, delta) == true
+    ClearPendingRefine()
+    return learned
+end
+
 function SM.TryCompletePendingRefine()
     local pending = SM._pendingRefine
     if type(pending) ~= "table" then
         return false
     end
     local elapsed = NowSec() - (tonumber(pending.startedAt) or 0)
+    local timedOut = elapsed >= (tonumber(SM.REFINE_FAST_FAIL_SEC) or 1.5)
     local plantUid = tonumber(pending.plantUid) or 0
     local seedUid = tonumber(pending.expectedSeedUid) or 0
-    local after = 0
-    if seedUid > 0 and StockPiler.Inventory and StockPiler.Inventory.CountByUid then
-        after = StockPiler.Inventory.CountByUid(seedUid)
+
+    -- Known link: watch the learned seed only. Do not replace it with a guess.
+    if seedUid > 0 then
+        local after = 0
+        if StockPiler.Inventory and StockPiler.Inventory.CountByUid then
+            after = tonumber(StockPiler.Inventory.CountByUid(seedUid)) or 0
+        else
+            local _, seeds = SnapshotRefineBags(plantUid)
+            after = tonumber(seeds[seedUid]) or 0
+        end
+        local delta = after - (tonumber(pending.beforeSeed) or 0)
+        if delta > 0 then
+            return AcceptRefineOutput(pending, plantUid, seedUid, delta, LiveBagItem(seedUid))
+        end
+        if timedOut then
+            SM.MarkRefineConvertFailed(plantUid, "fast-fail")
+            -- Do not EnsureRefineEntry here - that created dead seedUid=0 SV rows.
+            ClearPendingRefine()
+            return false
+        end
+        return false
     end
-    local delta = after - (tonumber(pending.beforeSeed) or 0)
-    if delta > 0 then
-        SM.ObserveRefineComplete(plantUid, seedUid, delta)
-        SM._pendingRefine = nil
-        return true
+
+    -- Unknown output. Rescan only when the bag generation moved, or on expiry.
+    local snap, hasGen = InventorySnapGen()
+    if pending.hasSnapGen == true and hasGen and not timedOut
+        and pending.scannedGen == snap
+    then
+        return false
     end
-    -- Fast-fail ~1.5s with no convert.
-    if elapsed >= (tonumber(SM.REFINE_FAST_FAIL_SEC) or 1.5) then
-        SM.MarkRefineConvertFailed(plantUid, "fast-fail")
-        -- Do not EnsureRefineEntry here - that created dead seedUid=0 SV rows.
-        SM._pendingRefine = nil
+    if hasGen then
+        pending.scannedGen = snap
+    end
+
+    local plantNow, seedsNow = SnapshotRefineBags(plantUid)
+    local consumed = plantNow < (tonumber(pending.beforePlant) or 0)
+    local beforeSeeds = type(pending.beforeSeeds) == "table" and pending.beforeSeeds or {}
+    local plantName = type(pending.plantItem) == "table" and pending.plantItem.name or nil
+    local related = {}
+    local disqualify = false
+    for uid, count in pairs(seedsNow) do
+        uid = tonumber(uid) or 0
+        local delta = (tonumber(count) or 0) - (tonumber(beforeSeeds[uid]) or 0)
+        if uid > 0 and uid ~= plantUid and delta > 0 then
+            local item = LiveBagItem(uid)
+            if type(item) ~= "table" or IsSeedPacketItem(item) or not IsBagSeedOrSporeItem(item) then
+                -- Packet, missing name, or a non-seed that only matched by label.
+                disqualify = true
+            elseif RefineOutputNameMatches(plantName, item.name) then
+                related[#related + 1] = { uid = uid, delta = delta, item = item }
+            else
+                disqualify = true
+            end
+        end
+    end
+
+    -- One consumed plant and exactly one related seed/spore. Nothing else.
+    if consumed and not disqualify and #related == 1 then
+        local gain = related[1]
+        return AcceptRefineOutput(pending, plantUid, gain.uid, gain.delta, gain.item)
+    end
+    -- Unrelated gain, seed packet, or several outputs: do not guess, do not
+    -- blacklist the plant, and do not write an empty refine row.
+    if consumed and (disqualify or #related > 1) then
+        ClearPendingRefine()
+        return false
+    end
+    if timedOut then
+        -- Unknown output never becomes convert-failed. Expiry drops the pending.
+        ClearPendingRefine()
         return false
     end
     return false

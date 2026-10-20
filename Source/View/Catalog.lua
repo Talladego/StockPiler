@@ -177,7 +177,7 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
 end
 
 ----------------------------------------------------------------
--- Plants catalog (harvested refinable apo materials)
+-- Plants catalog (refinable plants learned by harvest or by refining)
 ----------------------------------------------------------------
 
 local function PlantBonusValue(bonuses, ref)
@@ -397,7 +397,8 @@ local function BuildPlantRecipeIndex()
     return byUid
 end
 
---- Harvested plants that refine back to a seed (excludes resin / one-way byproducts).
+--- Plants that refine back to a seed (excludes resin / one-way byproducts).
+--- Harvest products and refine-learned plants both belong on Known plants.
 function Catalog.ListPlantEntries()
     local out = {}
     local seen = {}
@@ -798,6 +799,7 @@ function Catalog.ListPlantEntries()
             end
         end
     end
+    -- A plant refined before it was ever harvested is only in Refines.
     local refines = Know and Know.Refines and Know.Refines() or nil
     if type(refines) == "table" then
         for plantUidStr, bucket in pairs(refines) do
