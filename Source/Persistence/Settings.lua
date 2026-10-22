@@ -90,6 +90,8 @@ StockPiler.DefaultSettings = {
     eventTrace = false,
     -- on | quiet | off. on keeps stall/ready lines; quiet is changes and harvest/brew.
     chatMode = "on",
+    -- Craft button display scale (0.25–2.0). Default 0.5. /stp button.
+    craftButtonScale = 0.5,
     language = 0,
     selectedTab = 1,
     potionNameFilter = "",
@@ -273,6 +275,23 @@ function P.EnsureSettings()
     end
     if s.chatMode ~= "on" and s.chatMode ~= "quiet" and s.chatMode ~= "off" then
         s.chatMode = "on"
+    end
+    do
+        -- Migrate former craftBadgeScale key.
+        if s.craftButtonScale == nil and s.craftBadgeScale ~= nil then
+            s.craftButtonScale = s.craftBadgeScale
+        end
+        s.craftBadgeScale = nil
+        local scale = tonumber(s.craftButtonScale)
+        if scale == nil then
+            scale = 0.5
+        end
+        if scale < 0.25 then
+            scale = 0.25
+        elseif scale > 2 then
+            scale = 2
+        end
+        s.craftButtonScale = scale
     end
     if StockPiler.Debug then
         StockPiler.Debug.Enabled = s.debugEnabled == true

@@ -67,8 +67,8 @@
             <File name="Source/View/BrewChrome.lua" />
             <File name="Source/View/BrewTooltip.lua" />
             <File name="Source/View/CraftTooltip.lua" />
-            <File name="Source/View/CraftBadge.xml" />
-            <File name="Source/View/CraftBadge.lua" />
+            <File name="Source/View/CraftButton.xml" />
+            <File name="Source/View/CraftButton.lua" />
             <File name="Source/View/Catalog.lua" />
             <File name="Source/View/ViewList.lua" />
             <File name="Source/View/RecipeTooltip.lua" />

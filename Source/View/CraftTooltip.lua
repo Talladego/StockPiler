@@ -481,9 +481,16 @@ function CraftTooltip.Show(mouseoverWindow, anchor)
         return
     end
     CraftTooltip._liveWindow = mouseoverWindow
-    CraftTooltip._liveAnchor = anchor
-        or (Tooltips and Tooltips.ANCHOR_WINDOW_TOP)
-        or nil
+    -- Floating craft button: side+vertical tip from edge space each paint.
+    local CB = StockPiler.CraftButton
+    local craftWin = CB and CB.WINDOW_NAME or "StockPilerCraftButton"
+    if CB and CB.TipAnchor and mouseoverWindow == craftWin then
+        CraftTooltip._liveAnchor = CB.TipAnchor(mouseoverWindow)
+    else
+        CraftTooltip._liveAnchor = anchor
+            or (Tooltips and Tooltips.ANCHOR_WINDOW_TOP)
+            or nil
+    end
     CraftTooltip._liveFp = Fingerprint()
     CraftTooltip._tipAcc = 0
 

@@ -75,6 +75,30 @@ local function PrintHelp()
     Print(T("boot.help.open"))
     Print(T("boot.help.tabs"))
     Print(T("boot.help.chat"))
+    Print(T("boot.help.button"))
+end
+
+local function SetCraftButtonScale(raw)
+    local CraftButton = StockPiler.CraftButton
+    if not CraftButton or not CraftButton.SetScale then
+        return
+    end
+    local function scaleToken(n)
+        return towstring(string.format("%.2f", tonumber(n) or 0.5))
+    end
+    if raw == nil or raw == "" then
+        local scale = CraftButton.GetScale and CraftButton.GetScale() or 0.5
+        Print(T("boot.button", { scale = scaleToken(scale) }))
+        Print(T("boot.button_usage"))
+        return
+    end
+    raw = string.gsub(tostring(raw), "%%", "")
+    local ok, scale = CraftButton.SetScale(raw)
+    if ok then
+        Print(T("boot.button", { scale = scaleToken(scale) }))
+    else
+        Print(T("boot.button_usage"))
+    end
 end
 
 local function DumpMem(emit)
@@ -330,6 +354,18 @@ function StockPiler.OnSlash(input)
         SetChatMode("off")
         return
     end
+    if lower == "button" then
+        SetCraftButtonScale(nil)
+        return
+    end
+    do
+        local buttonArg = string.match(lower, "^button%s+(.+)$")
+        if buttonArg then
+            buttonArg = string.gsub(buttonArg, "^scale%s+", "")
+            SetCraftButtonScale(buttonArg)
+            return
+        end
+    end
     if lower == "dumpall" then
         DumpAll()
         return
@@ -547,8 +583,8 @@ function StockPiler.Initialize()
     if StockPiler.Macro and StockPiler.Macro.Initialize then
         StockPiler.Macro.Initialize()
     end
-    if StockPiler.CraftBadge and StockPiler.CraftBadge.Initialize then
-        StockPiler.CraftBadge.Initialize()
+    if StockPiler.CraftButton and StockPiler.CraftButton.Initialize then
+        StockPiler.CraftButton.Initialize()
     end
     if StockPiler.EngineEventBridge and StockPiler.EngineEventBridge.Register then
         StockPiler.EngineEventBridge.Register()
@@ -649,6 +685,9 @@ end
 function StockPiler.Shutdown()
     if StockPiler.Debug and StockPiler.Debug.UninstallChatLinkHook then
         StockPiler.Debug.UninstallChatLinkHook()
+    end
+    if StockPiler.CraftButton and StockPiler.CraftButton.Shutdown then
+        StockPiler.CraftButton.Shutdown()
     end
     if StockPiler.Macro and StockPiler.Macro.Shutdown then
         StockPiler.Macro.Shutdown()
