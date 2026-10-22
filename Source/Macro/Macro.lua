@@ -1287,6 +1287,13 @@ function Macro.RefreshMacroButtonAppearance(opts)
         -- Harvest/Brew already match. Still retint Craft: an icon echo can
         -- grey that slot alone without changing this key.
         Macro.AlignCraftEnable(canHarvest, canBrew)
+        if StockPiler.CraftBadge and StockPiler.CraftBadge.SyncAppearance then
+            StockPiler.CraftBadge.SyncAppearance({
+                snap = craftSnap,
+                canHarvest = canHarvest,
+                canBrew = canBrew,
+            })
+        end
         return
     end
 
@@ -1401,6 +1408,14 @@ function Macro.RefreshMacroButtonAppearance(opts)
             Macro._pendingCanBrew = nil
         end
         Macro.RefreshMacroButtonAppearance(dirtyOpts)
+        return
+    end
+    if StockPiler.CraftBadge and StockPiler.CraftBadge.SyncAppearance then
+        StockPiler.CraftBadge.SyncAppearance({
+            snap = craftSnap,
+            canHarvest = canHarvest,
+            canBrew = canBrew,
+        })
     end
 end
 

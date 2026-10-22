@@ -547,6 +547,9 @@ function StockPiler.Initialize()
     if StockPiler.Macro and StockPiler.Macro.Initialize then
         StockPiler.Macro.Initialize()
     end
+    if StockPiler.CraftBadge and StockPiler.CraftBadge.Initialize then
+        StockPiler.CraftBadge.Initialize()
+    end
     if StockPiler.EngineEventBridge and StockPiler.EngineEventBridge.Register then
         StockPiler.EngineEventBridge.Register()
     end

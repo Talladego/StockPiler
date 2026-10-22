@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Windows>
+        <!-- Round craft badge: EA_TempTargets_d3 frame around a native 64x64 craft icon. -->
+        <Window name="StockPilerCraftBadge" handleinput="true" movable="true" sticky="false" savesettings="true" layer="default">
+            <Size>
+                <AbsPoint x="96" y="96"/>
+            </Size>
+            <Anchors>
+                <Anchor point="center" relativePoint="center" relativeTo="Root">
+                    <AbsPoint x="200" y="120"/>
+                </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnLButtonDown" function="StockPiler.CraftBadge.OnLButtonDown"/>
+                <EventHandler event="OnLButtonUp" function="StockPiler.CraftBadge.OnLButtonUp"/>
+                <EventHandler event="OnRButtonUp" function="StockPiler.CraftBadge.OnRButtonUp"/>
+                <EventHandler event="OnMouseOver" function="StockPiler.CraftBadge.OnMouseOver"/>
+            </EventHandlers>
+            <Windows>
+                <DynamicImage name="$parentFrame" handleinput="false" texture="EA_TempTargets_d3" slice="frame" layer="default">
+                    <Size>
+                        <AbsPoint x="96" y="96"/>
+                    </Size>
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parent"/>
+                    </Anchors>
+                </DynamicImage>
+                <DynamicImage name="$parentIcon" handleinput="false" layer="secondary">
+                    <Size>
+                        <AbsPoint x="64" y="64"/>
+                    </Size>
+                    <TexDims x="64" y="64"/>
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parent"/>
+                    </Anchors>
+                </DynamicImage>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>
