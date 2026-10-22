@@ -679,6 +679,11 @@ function StockPiler.Initialize()
     if StockPiler.CraftButton and StockPiler.CraftButton.Initialize then
         StockPiler.CraftButton.Initialize()
     end
+    -- Pre-create DefaultTooltip extra rows so craft/macro tips are not clipped
+    -- on first hover (LabelGetTextDimensions is 0 on brand-new rows).
+    if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.WarmRows then
+        StockPiler.RecipeTooltip.WarmRows()
+    end
     if StockPiler.EngineEventBridge and StockPiler.EngineEventBridge.Register then
         StockPiler.EngineEventBridge.Register()
     end

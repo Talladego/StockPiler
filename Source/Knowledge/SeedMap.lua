@@ -1949,6 +1949,22 @@ end
 
 local function PickPendingHarvest(force)
     SweepExpiredPendingHarvests()
+    -- Crit-fail: crafting chat only, no bag loot. Prefer these so a sticky fail
+    -- consumed at BeginPendingHarvest is not stuck until the next harvest.
+    local failKey, failEntry, failAt = nil, nil, nil
+    for key, entry in pairs(SM.PendingHarvestMap()) do
+        if type(entry) == "table" and entry.chatCriticalFailure == true then
+            local at = tonumber(entry.startedAt) or 0
+            if failEntry == nil or at < failAt then
+                failKey = key
+                failEntry = entry
+                failAt = at
+            end
+        end
+    end
+    if failEntry ~= nil then
+        return failKey, failEntry
+    end
     local after = SnapshotNonSeedCounts()
     local bestKey = nil
     local best = nil
@@ -2060,6 +2076,12 @@ function SM.BeginPendingHarvest(plotNum, seedUid)
     then
         armed.chatSpecialMoment = true
         armed.chatCriticalSuccess = true
+    end
+    -- Fail chat often arrives before plot-empty. Sticky was consumed above; close
+    -- now so NotifyHarvestOutcome is not deferred until the next harvest.
+    if chatFail == true then
+        SM.CompletePendingHarvestAsCritFail(plotNum)
+        return
     end
     -- Snapshot plant counts for delta (no learn yet).
     if StockPiler.Inventory and StockPiler.Inventory.ForEachItem then

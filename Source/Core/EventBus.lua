@@ -30,6 +30,8 @@ Edef.CRAFT_READY_CHANGED = Edef.CRAFT_READY_CHANGED or "sp.craft.ready"
 Edef.FOOTER_DIRTY = Edef.FOOTER_DIRTY or "sp.footer.dirty"
 Edef.WATCH_UI_DIRTY = Edef.WATCH_UI_DIRTY or "sp.watch.ui.dirty"
 Edef.BREW_SESSION_CHANGED = Edef.BREW_SESSION_CHANGED or "sp.brew.session"
+-- Dual Craft macro / HUD actually started harvest or brew.
+Edef.CRAFT_PERFORMED = Edef.CRAFT_PERFORMED or "sp.craft.performed"
 
 --- Domain modules publish footer readiness via EventBus (View owns flush).
 function Bus.FireFooterDirty(payload)
@@ -52,6 +54,14 @@ function Bus.FireBrewSessionChanged(payload)
     local E = StockPiler.Events
     if E and E.BREW_SESSION_CHANGED then
         Bus.Fire(E.BREW_SESSION_CHANGED, type(payload) == "table" and payload or {})
+    end
+end
+
+--- Craft action actually fired (macro or HUD). payload: { mode, source }.
+function Bus.FireCraftPerformed(payload)
+    local E = StockPiler.Events
+    if E and E.CRAFT_PERFORMED then
+        Bus.Fire(E.CRAFT_PERFORMED, type(payload) == "table" and payload or {})
     end
 end
 

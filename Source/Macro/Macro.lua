@@ -514,8 +514,8 @@ function Macro.RemoveCraftMacro()
     if not craftId then
         Macro.CraftMacroId = 0
         Macro.CraftMacroWarningState.missing = false
-        Macro.CraftMacroWarningState.unplaced = false
         Macro.CraftMacroWarningState.full = false
+        Macro.ClearCraftUnplacedWarning()
         Macro._craftIconApplied = nil
         return true
     end
@@ -535,8 +535,8 @@ function Macro.RemoveCraftMacro()
     InvalidateSlotCache()
     Macro.CraftMacroId = 0
     Macro.CraftMacroWarningState.missing = false
-    Macro.CraftMacroWarningState.unplaced = false
     Macro.CraftMacroWarningState.full = false
+    Macro.ClearCraftUnplacedWarning()
     Macro._craftIconApplied = nil
     Macro._craftIconMode = "harvest"
     return true
@@ -1326,6 +1326,7 @@ function Macro.AlignCraftEnable(canHarvest, canBrew)
         end)
         if paintedCraft > 0 then
             Macro._craftUnpainted = false
+            Macro.ClearCraftUnplacedWarning()
         end
     end)
     Macro._aligningCraft = false
@@ -1469,10 +1470,13 @@ function Macro.RefreshMacroButtonAppearance(opts)
                 -- Button was not on a bar yet. Later syncs retry without
                 -- repainting Harvest and Brew (appearance key stays).
                 Macro._craftUnpainted = true
+                Macro.WarnIfCraftUnplaced()
             else
                 Macro._craftUnpainted = false
+                -- Confirmed on a bar (not a GetMacroSlots flicker): allow a
+                -- later remove to warn once again.
+                Macro.ClearCraftUnplacedWarning()
             end
-            Macro.WarnIfCraftUnplaced()
         end
         RememberSlotFingerprint()
     end)
@@ -2043,7 +2047,17 @@ function Macro.HarvestClick()
     end
 end
 
---- Once per placement gap: Craft exists but is not on a hotbar.
+--- Clear the unplaced-Craft warn latch (Craft was seen on a hotbar).
+function Macro.ClearCraftUnplacedWarning()
+    Macro.CraftMacroWarningState.unplaced = false
+    local s = StockPiler.Settings
+    if type(s) == "table" then
+        s._craftUnplacedWarned = nil
+    end
+end
+
+--- Once until Craft is painted on a hotbar. Do not clear the latch on a
+--- transient GetMacroSlots hit — that re-armed the warn every hotbar churn.
 function Macro.WarnIfCraftUnplaced()
     if Macro.IsCraftMacroEnabled() ~= true then
         return
@@ -2057,13 +2071,19 @@ function Macro.WarnIfCraftUnplaced()
     end
     local slots = Macro.GetMacroSlots(craftId) or {}
     if #slots > 0 then
-        Macro.CraftMacroWarningState.unplaced = false
         return
     end
-    if Macro.CraftMacroWarningState.unplaced == true then
+    local s = StockPiler.Settings
+    if Macro.CraftMacroWarningState.unplaced == true
+        or (type(s) == "table" and s._craftUnplacedWarned == true)
+    then
+        Macro.CraftMacroWarningState.unplaced = true
         return
     end
     Macro.CraftMacroWarningState.unplaced = true
+    if type(s) == "table" then
+        s._craftUnplacedWarned = true
+    end
     local msg = T("macro.craft_unplaced")
     if StockPiler.Debug and StockPiler.Debug.Print then
         StockPiler.Debug.Print(msg, "force")
@@ -2134,7 +2154,21 @@ function Macro.BrewClick()
     end
 end
 
-function Macro.CraftClick()
+local function FireCraftPerformed(mode, fromButton)
+    local Bus = StockPiler.EventBus
+    if not Bus or not Bus.FireCraftPerformed then
+        return
+    end
+    Bus.FireCraftPerformed({
+        mode = mode,
+        source = fromButton and "button" or "macro",
+    })
+end
+
+--- Dual Craft macro / HUD brew entry. opts.fromButton → EventBus source="button".
+function Macro.CraftClick(opts)
+    opts = type(opts) == "table" and opts or nil
+    local fromButton = opts and opts.fromButton == true
     Macro.ExpireBrewFiredGuard()
     if Macro._brewFired == true then
         Macro._brewFired = false
@@ -2153,11 +2187,14 @@ function Macro.CraftClick()
         if Grow.PrepareHarvestPlot and Grow.PrepareHarvestPlot(true) ~= true then
             return
         end
+        local did = false
         if Macro.FireHarvestActionPreferred() then
-            return
+            did = true
+        elseif Grow.HarvestClick then
+            did = Grow.HarvestClick() == true
         end
-        if Grow.HarvestClick then
-            Grow.HarvestClick()
+        if did then
+            FireCraftPerformed("harvest", fromButton)
         end
         return
     end
@@ -2172,6 +2209,7 @@ function Macro.CraftClick()
         local result = Brew.TryBrewClick()
         if result == "go" and Brew.FirePerform then
             Brew.FirePerform()
+            FireCraftPerformed("brew", fromButton)
         end
     end
 end

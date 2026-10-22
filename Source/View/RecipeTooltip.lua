@@ -57,6 +57,8 @@ local function RgbDef(rgb)
 end
 
 --- Grow this tooltip's own row windows. The count stays on RecipeTooltip._numRows.
+--- Brand-new rows return 0 from LabelGetTextDimensions until the next frame, so
+--- EnsureRows marks _layoutDirty; ShowColoredRows schedules a one-frame re-Finalize.
 function RecipeTooltip.EnsureRows(want)
     want = tonumber(want) or 0
     if want < 1 then
@@ -75,6 +77,7 @@ function RecipeTooltip.EnsureRows(want)
     then
         return have
     end
+    local grew = false
     for rowNum = have + 1, want do
         local rowName = "DefaultTooltipRow" .. tostring(rowNum)
         if not DoesWindowExist(rowName) then
@@ -88,11 +91,57 @@ function RecipeTooltip.EnsureRows(want)
                 WindowAddAnchor(rowName, "bottomleft", prev, "topleft", 0, 5)
                 WindowAddAnchor(rowName, "bottomright", prev, "topright", 0, 5)
             end
+            grew = true
         end
         have = rowNum
     end
     RecipeTooltip._numRows = have
+    if grew then
+        RecipeTooltip._layoutDirty = true
+    end
     return have
+end
+
+--- Pre-create private tip rows so the first user hover never grows mid-paint.
+function RecipeTooltip.WarmRows(want)
+    InstallClearTooltipHook()
+    local n = RecipeTooltip.EnsureRows(tonumber(want) or RECIPE_TOOLTIP_MAX_ROWS)
+    -- Warmed rows sit idle until first hover; no tip to re-Finalize yet.
+    RecipeTooltip._layoutDirty = false
+    RecipeTooltip._needsRelayout = false
+    return n
+end
+
+--- Second-frame Finalize after EnsureRows grew (LabelGetTextDimensions ready).
+--- Returns true when a relayout ran.
+function RecipeTooltip.TryRelayout()
+    if not RecipeTooltip._needsRelayout then
+        return false
+    end
+    RecipeTooltip._needsRelayout = false
+    RecipeTooltip._layoutDirty = false
+    if not Tooltips or Tooltips.visible ~= true then
+        return false
+    end
+    if Tooltips.curTooltipWindow ~= "DefaultTooltip" then
+        return false
+    end
+    if type(Tooltips.Finalize) ~= "function" then
+        return false
+    end
+    local engineMax = tonumber(RecipeTooltip._numRows) or STOCK_TOOLTIP_ROWS
+    local stockRows = STOCK_TOOLTIP_ROWS
+    if engineMax > stockRows then
+        RecipeTooltip._raisedRows = engineMax
+        Tooltips.NUM_ROWS = engineMax
+    end
+    Tooltips.Finalize()
+    if type(Tooltips.AnchorTooltip) == "function" then
+        Tooltips.AnchorTooltip(
+            RecipeTooltip._pendingAnchor or Tooltips.ANCHOR_WINDOW_RIGHT
+        )
+    end
+    return true
 end
 
 local function RecipeTooltipColor(kind, role)
@@ -183,8 +232,25 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
     for i = rowCount + 1, engineMax do
         Tooltips.SetTooltipText(i, 1, L"", false)
     end
+    local tipAnchor = anchor or Tooltips.ANCHOR_WINDOW_RIGHT
     Tooltips.Finalize()
-    Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)
+    Tooltips.AnchorTooltip(tipAnchor)
+    -- New DefaultTooltipRowN windows report 0 text height until the next frame.
+    if RecipeTooltip._layoutDirty then
+        RecipeTooltip._needsRelayout = true
+        RecipeTooltip._pendingAnchor = tipAnchor
+        RecipeTooltip._layoutDirty = false
+        -- Watch / Plants tips have no live update callback; arm a one-shot.
+        -- CraftTooltip.Show replaces this with OnTooltipUpdate, which calls TryRelayout first.
+        if type(Tooltips.SetUpdateCallback) == "function" then
+            Tooltips.SetUpdateCallback(function()
+                RecipeTooltip.TryRelayout()
+                if type(Tooltips.SetUpdateCallback) == "function" then
+                    Tooltips.SetUpdateCallback(nil)
+                end
+            end)
+        end
+    end
 end
 
 --- Fit row budget without dropping ingredient dividers (--- before next ingredient).

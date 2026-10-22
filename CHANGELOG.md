@@ -8,6 +8,10 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - The `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` commands were removed. Use the window tabs instead. Harvesting still needs the craft button.
 - `/stp reset` restores settings defaults for this character (toggles, watches, HUD prefs). Learned recipes and plants are kept.
 - Floating Craft HUD: idle drag, Shift+left-click lock (same as Layout Editor), optional grow countdown, Watch HUD Button / scale chip / Craft Macro checkbox. Default scale 1.0.
+- Craft HUD stays fully on-screen while dragging; grow cooldown tint matches stock action bars (`20,20,50` @ 0.75).
+- Craft/macro tips paint all rows on first hover (extra DefaultTooltip rows are pre-warmed).
+- Hotbar Craft presses briefly squash the HUD icon via EventBus; unplaced-Craft chat warns once until the macro is on a bar.
+- Harvest critical-fail chat prints on that harvest (no longer delayed until the next click).
 - Craft macro and HUD show a red tint when StockPiler is waiting on you (vendor / buy). Grow countdown uses the stock cooldown wipe and centered timer text.
 - When nothing is ready, the craft tip explains AutoGrow off and lists short watches (including per-watch AutoGrow off).
 - Optimistic mode off also accounts for harvest critical failures (plant extra seeds) once a seed has enough harvest samples.

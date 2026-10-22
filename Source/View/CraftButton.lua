@@ -44,6 +44,9 @@ local _hovering = false
 local _pressed = false
 local _tipSuppressed = false
 local _shiftLockClick = false
+-- Brief press visual when the hotbar Craft macro actually fires (not HUD LMB).
+local _macroFlashRemain = nil
+local MACRO_FLASH_SEC = 0.12
 local _cdMax = 0
 local _cdRemain = nil
 local _cdArmed = false
@@ -88,11 +91,15 @@ function Button.GetScale()
     return DEFAULT_SCALE
 end
 
+-- When true, ready harvest/brew swap the HUD icon to the plant / potion art.
+-- Kept off: always use the stock harvest mushroom / brew seed icons.
+local USE_READY_ITEM_ICONS = false
+
 --- Floating button only. Craft macro keeps mushroom / seed overlay unchanged.
 local function IconIdForMode(iconMode, canUse)
     local Timer = StockPiler.CraftHarvestTimer
     if iconMode == "brew" then
-        if Timer and Timer.ReadyPotionIcon then
+        if USE_READY_ITEM_ICONS == true and Timer and Timer.ReadyPotionIcon then
             local potion = tonumber(Timer.ReadyPotionIcon()) or 0
             if potion > 0 then
                 return potion
@@ -100,13 +107,15 @@ local function IconIdForMode(iconMode, canUse)
         end
         return ICON_BREW
     end
-    -- Harvest ready: show the grown plant (not the generic harvest mushroom).
-    local harvestReady = canUse == true
-        or (Timer and Timer.HasHarvestReady and Timer.HasHarvestReady() == true)
-    if harvestReady and Timer and Timer.ReadyPlantIcon then
-        local plant = tonumber(Timer.ReadyPlantIcon()) or 0
-        if plant > 0 then
-            return plant
+    -- Optional: harvest ready shows the grown plant instead of the mushroom.
+    if USE_READY_ITEM_ICONS == true then
+        local harvestReady = canUse == true
+            or (Timer and Timer.HasHarvestReady and Timer.HasHarvestReady() == true)
+        if harvestReady and Timer and Timer.ReadyPlantIcon then
+            local plant = tonumber(Timer.ReadyPlantIcon()) or 0
+            if plant > 0 then
+                return plant
+            end
         end
     end
     return ICON_HARVEST
@@ -140,8 +149,8 @@ local function SetIconTexture(iconNum, lit)
     WindowSetShowing(ICON_WIN, true)
 end
 
--- Stock action bars use DefaultColor.ActionCooldown; we want black @ 50%.
-local CD_TINT = { r = 0, g = 0, b = 0, a = 0.5 }
+-- Match stock action bars (DefaultColor.ActionCooldown in defaultcolor.lua).
+local CD_TINT = { r = 20, g = 20, b = 50, a = 0.75 }
 
 local function StyleGrowCooldown()
     if type(DoesWindowExist) ~= "function" or not DoesWindowExist(CD_WIN) then
@@ -221,6 +230,78 @@ local function SetIdleMovable(canCraft)
         and Button.IsLocked() ~= true
         and canCraft ~= true
     WindowSetMovable(WIN, allowDrag)
+end
+
+local function UiScale()
+    local s = 1
+    if InterfaceCore and InterfaceCore.GetScale then
+        s = tonumber(InterfaceCore.GetScale()) or 1
+        if s == 0 then
+            s = 1
+        end
+    end
+    return s
+end
+
+--- Keep the whole button on-screen. Off-edge clips icon/frame differently and
+--- looks "dismantled". Returns true when the position changed.
+function Button.ClampToScreen()
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(WIN) then
+        return false
+    end
+    if type(WindowGetScreenPosition) ~= "function"
+        or type(WindowGetDimensions) ~= "function"
+        or type(WindowClearAnchors) ~= "function"
+        or type(WindowAddAnchor) ~= "function"
+    then
+        return false
+    end
+    local scale = UiScale()
+    local sx, sy = WindowGetScreenPosition(WIN)
+    sx = (tonumber(sx) or 0) / scale
+    sy = (tonumber(sy) or 0) / scale
+    local w, h = WindowGetDimensions(WIN)
+    w = tonumber(w) or 0
+    h = tonumber(h) or 0
+    local sw, sh = WindowGetDimensions("Root")
+    sw = tonumber(sw) or 0
+    sh = tonumber(sh) or 0
+    if sw <= 0 or sh <= 0 or w <= 0 or h <= 0 then
+        return false
+    end
+    local cx = sx
+    local cy = sy
+    if cx < 0 then
+        cx = 0
+    end
+    if cy < 0 then
+        cy = 0
+    end
+    if cx + w > sw then
+        cx = math.max(0, sw - w)
+    end
+    if cy + h > sh then
+        cy = math.max(0, sh - h)
+    end
+    if cx == sx and cy == sy then
+        return false
+    end
+    WindowClearAnchors(WIN)
+    WindowAddAnchor(WIN, "topleft", "Root", "topleft", cx, cy)
+    return true
+end
+
+--- While idle-dragging, pin the button fully inside Root every frame.
+--- Macro press flash drains via TickMacroFlash (defined with ApplyIconMotion).
+function Button.OnUpdate(timeElapsed)
+    if type(WindowGetMoving) == "function" and DoesWindowExist(WIN)
+        and WindowGetMoving(WIN) == true
+    then
+        Button.ClampToScreen()
+    end
+    if Button.TickMacroFlash then
+        Button.TickMacroFlash(timeElapsed)
+    end
 end
 
 function Button.SetVisible(on)
@@ -470,13 +551,17 @@ local function MotionSpec(scale)
     }
 end
 
+local function IsPressVisual()
+    return _pressed == true or _macroFlashRemain ~= nil
+end
+
 local function ApplyIconMotion()
     if not DoesWindowExist(ICON_WIN) then
         return
     end
     local motion = MotionSpec(Button.GetScale())
     local spec = motion.idle
-    if _pressed then
+    if IsPressVisual() then
         spec = motion.press
     elseif _hovering then
         spec = motion.hover
@@ -493,6 +578,55 @@ local function ApplyIconMotion()
     end
     -- Pie stays at idle icon size so hover pop does not resize the wipe.
     LayoutCooldown(motion.idle.size)
+end
+
+--- Hotbar Craft macro fired: mirror the HUD press squash briefly (visual only).
+function Button.PlayMacroClickFeedback()
+    if Button.IsVisible() ~= true or not DoesWindowExist(WIN) then
+        return
+    end
+    _macroFlashRemain = MACRO_FLASH_SEC
+    ApplyIconMotion()
+end
+
+function Button.TickMacroFlash(timeElapsed)
+    if _macroFlashRemain == nil then
+        return
+    end
+    _macroFlashRemain = _macroFlashRemain - (tonumber(timeElapsed) or 0)
+    if _macroFlashRemain <= 0 then
+        _macroFlashRemain = nil
+        ApplyIconMotion()
+    end
+end
+
+--- EventBus: hotbar Craft macro performed — mirror press on the HUD button.
+function Button.OnCraftPerformed(payload)
+    if type(payload) == "table" and payload.source == "button" then
+        return
+    end
+    Button.PlayMacroClickFeedback()
+end
+
+local function SubscribeCraftPerformed()
+    if Button._craftPerformedToken then
+        return
+    end
+    local Bus = StockPiler.EventBus
+    local E = StockPiler.Events
+    if not Bus or not Bus.Subscribe or not E or not E.CRAFT_PERFORMED then
+        return
+    end
+    Button._craftPerformedToken = Bus.Subscribe(E.CRAFT_PERFORMED, Button.OnCraftPerformed)
+end
+
+local function UnsubscribeCraftPerformed()
+    local token = Button._craftPerformedToken
+    Button._craftPerformedToken = nil
+    local Bus = StockPiler.EventBus
+    if token and Bus and Bus.Unsubscribe then
+        Bus.Unsubscribe(token)
+    end
 end
 
 function Button.ApplyScale()
@@ -513,6 +647,8 @@ function Button.ApplyScale()
     end
     ApplyIconMotion()
     LayoutGrowTimer()
+    -- Larger scale can push a near-edge button partly off-screen.
+    Button.ClampToScreen()
 end
 
 --- Growing harvest pie + lit icon. Brew / ready / idle leave the pie off.
@@ -539,8 +675,8 @@ function Button.TickGrowVisuals(opts)
     local harvestReady = Timer and Timer.HasHarvestReady and Timer.HasHarvestReady() == true
     local remain = nil
     -- Grow wipe only while plots are still growing and none are ready yet.
-    -- When the first plot finishes, switch to the plant icon — do not re-arm
-    -- the pie for remaining plots.
+    -- When the first plot finishes, drop the pie (ready harvest icon) — do not
+    -- re-arm it for remaining plots.
     if iconMode == "harvest" and not canUse and harvestReady ~= true then
         if Timer and Timer.ShortestSeconds then
             remain = Timer.ShortestSeconds()
@@ -765,6 +901,8 @@ function Button.OnLButtonUp(flags)
     _tipSuppressed = false
     ApplyIconMotion()
     PlayClick(Sound and Sound.ICON_DROP)
+    -- End of idle drag (and any LE nudge): never leave the button clipped.
+    Button.ClampToScreen()
     if wasShiftLock then
         return
     end
@@ -773,7 +911,7 @@ function Button.OnLButtonUp(flags)
     local mode = type(snap) == "table" and snap.mode or _mode
     local canUse = type(snap) == "table" and snap.craftCanUse == true
     if mode == "brew" and canUse and Macro and Macro.CraftClick then
-        Macro.CraftClick()
+        Macro.CraftClick({ fromButton = true })
     elseif _hovering == true and canUse ~= true then
         local tip = StockPiler.CraftTooltip
         if tip and tip.Show and Button.IsTipSuppressed() ~= true then
@@ -867,6 +1005,7 @@ end
 
 function Button.Initialize()
     if _initialized then
+        SubscribeCraftPerformed()
         Button.ApplyVisibility()
         return
     end
@@ -896,7 +1035,12 @@ function Button.Initialize()
             false,
             false,
             true,
-            nil
+            nil, -- setHiddenCallback
+            nil, -- allowableAnchorList
+            nil, -- neverLockAspect
+            nil, -- minSize
+            nil, -- resizeEndCallback
+            Button.ClampToScreen -- moveEndCallback
         )
     end
     -- One-shot: old SP lock → LayoutEditor.isLocked (same as HUD Editor lock).
@@ -914,10 +1058,14 @@ function Button.Initialize()
     _mode = "idle"
     _hovering = false
     _pressed = false
+    _macroFlashRemain = nil
     ClearGrowCooldown()
     StyleGrowCooldown()
     UpdateGrowTimerLabel(nil)
+    SubscribeCraftPerformed()
     Button.ApplyVisibility()
+    -- Saved / LE position may be partly off-screen from older builds.
+    Button.ClampToScreen()
 end
 
 function Button.Shutdown()
@@ -926,6 +1074,8 @@ function Button.Shutdown()
     UpdateGrowTimerLabel(nil)
     _hovering = false
     _pressed = false
+    _macroFlashRemain = nil
+    UnsubscribeCraftPerformed()
     if LayoutEditor and LayoutEditor.UnregisterWindow and DoesWindowExist(WIN) then
         pcall(LayoutEditor.UnregisterWindow, WIN)
     end

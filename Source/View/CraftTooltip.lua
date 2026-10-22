@@ -702,6 +702,11 @@ function CraftTooltip.OnTooltipUpdate(timePassed)
         end
         return
     end
+    -- First frame after EnsureRows grew: re-Finalize so all rows get height.
+    local RT = StockPiler.RecipeTooltip
+    if RT and RT.TryRelayout and RT.TryRelayout() then
+        return
+    end
     local acc = (tonumber(CraftTooltip._tipAcc) or 0) + (tonumber(timePassed) or 0)
     if acc < 1 then
         CraftTooltip._tipAcc = acc
