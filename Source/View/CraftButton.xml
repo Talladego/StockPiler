@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
     <Windows>
-        <!-- Default 50% of 92/64 layout; /stp button sets scale at runtime. -->
+        <!-- Default 100% (92/64); Watch chip / /stp button set scale. Center until Layout Editor / drag saves. -->
         <Button name="StockPilerCraftButton" inherits="EA_Button_Default" handleinput="true" movable="false" sticky="false" savesettings="true" layer="default" gameactionbutton="left" drawchildrenfirst="true">
             <Size>
-                <AbsPoint x="46" y="46"/>
+                <AbsPoint x="92" y="92"/>
             </Size>
             <Anchors>
                 <Anchor point="center" relativePoint="center" relativeTo="Root">
-                    <AbsPoint x="200" y="120"/>
+                    <AbsPoint x="0" y="0"/>
                 </Anchor>
             </Anchors>
             <EventHandlers>
@@ -19,9 +19,9 @@
                 <EventHandler event="OnMouseOverEnd" function="StockPiler.CraftButton.OnMouseOverEnd"/>
             </EventHandlers>
             <Windows>
-                <CircleImage name="$parentIcon" handleinput="false" layer="background" textureScale="0.5" numsegments="32">
+                <CircleImage name="$parentIcon" handleinput="false" layer="background" textureScale="1.0" numsegments="32">
                     <Size>
-                        <AbsPoint x="32" y="32"/>
+                        <AbsPoint x="64" y="64"/>
                     </Size>
                     <Anchors>
                         <Anchor point="center" relativePoint="center" relativeTo="$parent">
@@ -29,9 +29,29 @@
                         </Anchor>
                     </Anchors>
                 </CircleImage>
-                <DynamicImage name="$parentFrame" handleinput="false" texture="EA_TempTargets_d3" slice="frame" textureScale="0.359" layer="overlay">
+                <!-- Growing-plot pie: fades harvest icon until ready. Sized in Lua. -->
+                <CooldownDisplay name="$parentCooldown" handleinput="false" cooldownshape="circle" segments="16" layer="default">
                     <Size>
-                        <AbsPoint x="46" y="46"/>
+                        <AbsPoint x="64" y="64"/>
+                    </Size>
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parent"/>
+                    </Anchors>
+                    <Windows>
+                        <Label name="$parentTimer" handleinput="false" font="font_chat_text" maxchars="1" text="" textalign="center">
+                            <Size>
+                                <AbsPoint x="1" y="1"/>
+                            </Size>
+                            <Anchors>
+                                <Anchor point="center" relativePoint="center"/>
+                            </Anchors>
+                            <Color r="0" g="0" b="0" a="0"/>
+                        </Label>
+                    </Windows>
+                </CooldownDisplay>
+                <DynamicImage name="$parentFrame" handleinput="false" texture="EA_TempTargets_d3" slice="frame" textureScale="0.719" layer="overlay">
+                    <Size>
+                        <AbsPoint x="92" y="92"/>
                     </Size>
                     <Anchors>
                         <Anchor point="center" relativePoint="center" relativeTo="$parent">
@@ -39,6 +59,16 @@
                         </Anchor>
                     </Anchors>
                 </DynamicImage>
+                <!-- Optional grow countdown (/stp button timer). Centered on the floating button. -->
+                <Label name="$parentGrowTimer" handleinput="false" font="font_chat_text" maxchars="12" text="" textalign="center" wordwrap="false" layer="popup">
+                    <Size>
+                        <AbsPoint x="72" y="20"/>
+                    </Size>
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parent"/>
+                    </Anchors>
+                    <Color r="255" g="255" b="0" a="255"/>
+                </Label>
             </Windows>
         </Button>
     </Windows>

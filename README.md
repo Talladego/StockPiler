@@ -34,10 +34,8 @@ Automation starts off. Turn on only the parts you want.
 | :--- | :--- |
 | `/stp` | Open or close the window |
 | `/stockpiler` | Same as `/stp` |
-| `/stp potions` | Open the Potions tab |
-| `/stp plants` | Open the Plants tab |
-| `/stp watch` | Open the Watch tab |
 | `/stp help` | Show the command list |
+| `/stp reset` | Restore settings to defaults (keeps learned recipes/plants) |
 | `/stp chat on` | All StockPiler chat messages |
 | `/stp chat quiet` | Changes, harvests, and brews only |
 | `/stp chat off` | No StockPiler chat |

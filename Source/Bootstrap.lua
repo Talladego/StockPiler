@@ -73,9 +73,50 @@ end
 local function PrintHelp()
     Print(T("boot.help.header"))
     Print(T("boot.help.open"))
-    Print(T("boot.help.tabs"))
     Print(T("boot.help.chat"))
     Print(T("boot.help.button"))
+    Print(T("boot.help.reset"))
+end
+
+--- Settings only (prefs / watches / toggles). Leaves learned Account data alone.
+local function ResetAllSettings()
+    local P = StockPiler.Persistence
+    if not (P and P.ResetSettingsToDefaults) then
+        return
+    end
+    P.ResetSettingsToDefaults()
+    local s = P.EnsureSettings and P.EnsureSettings() or StockPiler.Settings
+    if StockPiler.Debug then
+        StockPiler.Debug.Enabled = type(s) == "table" and s.debugEnabled == true
+        StockPiler.Debug.EventTrace = type(s) == "table" and s.eventTrace == true
+        StockPiler.Debug.ChatMode = (type(s) == "table" and s.chatMode) or "on"
+    end
+    local Macro = StockPiler.Macro
+    if Macro and Macro.SetCraftMacroEnabled then
+        local on = type(s) ~= "table" or s.craftMacroEnabled ~= false
+        Macro.SetCraftMacroEnabled(on)
+    end
+    local CraftButton = StockPiler.CraftButton
+    if CraftButton and CraftButton.ResetToDefaults then
+        CraftButton.ResetToDefaults()
+    end
+    if StockPiler.Ui then
+        if StockPiler.Ui.MarkWatchUiDirty then
+            pcall(StockPiler.Ui.MarkWatchUiDirty)
+        end
+        if StockPiler.Ui.RequestFooterRefresh then
+            pcall(StockPiler.Ui.RequestFooterRefresh)
+        end
+    end
+    if StockPilerTabWatch then
+        StockPilerTabWatch._skillGatesKey = nil
+        if StockPilerTabWatch.RefreshHudButtonUi then
+            pcall(StockPilerTabWatch.RefreshHudButtonUi)
+        elseif StockPilerTabWatch.RefreshSkillGates then
+            pcall(StockPilerTabWatch.RefreshSkillGates)
+        end
+    end
+    Print(T("boot.settings_reset"))
 end
 
 local function SetCraftButtonScale(raw)
@@ -84,10 +125,10 @@ local function SetCraftButtonScale(raw)
         return
     end
     local function scaleToken(n)
-        return towstring(string.format("%.2f", tonumber(n) or 0.5))
+        return towstring(string.format("%.2f", tonumber(n) or 1.0))
     end
     if raw == nil or raw == "" then
-        local scale = CraftButton.GetScale and CraftButton.GetScale() or 0.5
+        local scale = CraftButton.GetScale and CraftButton.GetScale() or 1.0
         Print(T("boot.button", { scale = scaleToken(scale) }))
         Print(T("boot.button_usage"))
         return
@@ -306,22 +347,8 @@ function StockPiler.OnSlash(input)
         PrintHelp()
         return
     end
-    if lower == "potions" then
-        if StockPiler.Ui and StockPiler.Ui.ShowWindow then
-            StockPiler.Ui.ShowWindow(1)
-        end
-        return
-    end
-    if lower == "plants" then
-        if StockPiler.Ui and StockPiler.Ui.ShowWindow then
-            StockPiler.Ui.ShowWindow(2)
-        end
-        return
-    end
-    if lower == "watch" then
-        if StockPiler.Ui and StockPiler.Ui.ShowWindow then
-            StockPiler.Ui.ShowWindow(3)
-        end
+    if lower == "reset" then
+        ResetAllSettings()
         return
     end
     if lower == "debug" then
@@ -358,10 +385,60 @@ function StockPiler.OnSlash(input)
         SetCraftButtonScale(nil)
         return
     end
+    if lower == "button reset" then
+        local CraftButton = StockPiler.CraftButton
+        if CraftButton and CraftButton.ResetToDefaults then
+            CraftButton.ResetToDefaults()
+            Print(T("boot.button_reset"))
+        end
+        return
+    end
+    if lower == "button timer" then
+        local CraftButton = StockPiler.CraftButton
+        if CraftButton and CraftButton.ToggleShowTimer then
+            local on = CraftButton.ToggleShowTimer()
+            Print(T("boot.button_timer", {
+                state = on and T("boot.button_timer_on") or T("boot.button_timer_off"),
+            }))
+        end
+        return
+    end
+    do
+        local timerArg = string.match(lower, "^button%s+timer%s+(.+)$")
+        if timerArg then
+            timerArg = string.gsub(timerArg, "^%s+", "")
+            timerArg = string.gsub(timerArg, "%s+$", "")
+            local CraftButton = StockPiler.CraftButton
+            if not (CraftButton and CraftButton.SetShowTimer) then
+                return
+            end
+            local on = nil
+            if timerArg == "on" or timerArg == "center" or timerArg == "centred" then
+                on = true
+            elseif timerArg == "off" then
+                on = false
+            end
+            if on == nil then
+                Print(T("boot.button_timer_usage"))
+                return
+            end
+            CraftButton.SetShowTimer(on)
+            Print(T("boot.button_timer", {
+                state = on and T("boot.button_timer_on") or T("boot.button_timer_off"),
+            }))
+            return
+        end
+    end
     do
         local buttonArg = string.match(lower, "^button%s+(.+)$")
         if buttonArg then
             buttonArg = string.gsub(buttonArg, "^scale%s+", "")
+            -- "button reset" / "button timer …" are handled above; do not treat as scale.
+            if buttonArg == "reset" or buttonArg == "timer"
+                or string.match(buttonArg, "^timer%s")
+            then
+                return
+            end
             SetCraftButtonScale(buttonArg)
             return
         end

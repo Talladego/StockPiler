@@ -272,6 +272,91 @@ local function EnsureGrowBucket(seedUid)
     return bucket
 end
 
+--- Min harvestAttempts before AutoGrow may trust crit-fail rates (same floor as brew).
+local HARVEST_RATE_MIN_ATTEMPTS = 5
+
+local function GrowBucketReadonly(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return nil
+    end
+    local grows = GrowsTable()
+    if type(grows) ~= "table" then
+        return nil
+    end
+    local bucket = grows[tostring(seedUid)]
+    if type(bucket) ~= "table" then
+        return nil
+    end
+    return bucket
+end
+
+--- Fraction of harvests that were not chat critical failures.
+--- Returns nil, successes, attempts, fails when sample size is below the floor.
+function SM.HarvestSuccessRate(seedUid)
+    local bucket = GrowBucketReadonly(seedUid)
+    if type(bucket) ~= "table" then
+        return nil
+    end
+    local attempts = tonumber(bucket.harvestAttempts) or 0
+    if attempts < HARVEST_RATE_MIN_ATTEMPTS then
+        return nil
+    end
+    local fails = tonumber(bucket.chatCriticalFailure) or 0
+    if fails < 0 then
+        fails = 0
+    elseif fails > attempts then
+        fails = attempts
+    end
+    local successes = attempts - fails
+    local rate = successes / attempts
+    if rate < 0 then
+        rate = 0
+    elseif rate > 1 then
+        rate = 1
+    end
+    return rate, successes, attempts, fails
+end
+
+--- Plants still wanted → seeds to plant when Optimistic is off and rate is known.
+function SM.PlantingsForExpectedPlants(seedUid, plantsNeeded)
+    plantsNeeded = math.max(0, math.floor((tonumber(plantsNeeded) or 0) + 0.5))
+    if plantsNeeded <= 0 then
+        return 0
+    end
+    local Watch = StockPiler.Watch
+    if not (Watch and Watch.IsOptimisticOutcomeEstimate
+        and Watch.IsOptimisticOutcomeEstimate() == false)
+    then
+        return plantsNeeded
+    end
+    local rate = SM.HarvestSuccessRate(seedUid)
+    if rate == nil or rate <= 0 then
+        return plantsNeeded
+    end
+    if rate >= 1 then
+        return plantsNeeded
+    end
+    return math.max(plantsNeeded, math.ceil(plantsNeeded / rate))
+end
+
+--- Bag plants + expected yield from in-ground seeds (Optimistic off discounts ground).
+function SM.EffectivePlantCredit(seedUid, bagPlants, groundSeeds)
+    bagPlants = math.max(0, tonumber(bagPlants) or 0)
+    groundSeeds = math.max(0, tonumber(groundSeeds) or 0)
+    local Watch = StockPiler.Watch
+    if not (Watch and Watch.IsOptimisticOutcomeEstimate
+        and Watch.IsOptimisticOutcomeEstimate() == false)
+    then
+        return bagPlants + groundSeeds
+    end
+    local rate = SM.HarvestSuccessRate(seedUid)
+    if rate == nil then
+        return bagPlants + groundSeeds
+    end
+    return bagPlants + (groundSeeds * rate)
+end
+
 local function EnsureRefineEntry(plantUid, persist)
     local refines = RefinesTable()
     if type(refines) ~= "table" then
@@ -2609,13 +2694,21 @@ function SM.DumpCraftCycleStats(emit)
                 growN = growN + 1
                 local cultHits = tonumber(bucket.cultSkillHits) or 0
                 local cultPct = harvests > 0 and (cultHits / harvests * 100) or 0
+                local critFail = tonumber(bucket.chatCriticalFailure) or 0
+                local critOk = tonumber(bucket.chatCriticalSuccess) or 0
+                local harvestOk = math.max(0, harvests - critFail)
+                local harvestPct = harvests > 0 and (harvestOk / harvests * 100) or 0
                 local sample = BagSample(tonumber(seedKey) or 0)
                 emit(string.format(
-                    "  %s uid=%s plant=%d harvest=%d cultSkillUp=%.0f%%",
+                    "  %s uid=%s plant=%d harvest=%d ok=%d critFail=%d critOk=%d harvestOk=%.0f%% cultSkillUp=%.0f%%",
                     tostring(ToNarrow(sample and sample.name) ~= "" and ToNarrow(sample.name) or seedKey),
                     tostring(seedKey),
                     plants,
                     harvests,
+                    harvestOk,
+                    critFail,
+                    critOk,
+                    harvestPct,
                     cultPct
                 ))
             end

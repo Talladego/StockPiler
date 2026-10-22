@@ -411,6 +411,94 @@
                     </EventHandlers>
                 </Button>
 
+                <!-- Align under Optimistic mode / Level up skills (same x as row 1). -->
+                <Button name="$parentHudButton" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="600" y="124" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleHudButton" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverHudButton" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentHudButtonLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="100" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="624" y="120" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleHudButton" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverHudButton" />
+                    </EventHandlers>
+                </Label>
+                <Window name="$parentHudScaleChip" handleinput="true">
+                    <Size>
+                        <AbsPoint x="44" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="728" y="123" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnHudScaleLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPilerTabWatch.OnHudScaleRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverHudScale" />
+                    </EventHandlers>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                        <Label name="$parentValue" font="font_chat_text" maxchars="4" textalign="center" handleinput="false" layer="overlay">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <Button name="$parentCraftMacro" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="784" y="124" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleCraftMacro" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverCraftMacro" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentCraftMacroLabel" font="font_chat_text" maxchars="28" textalign="leftcenter" handleinput="true">
+                    <Size>
+                        <AbsPoint x="140" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="808" y="120" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnToggleCraftMacro" />
+                        <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverCraftMacro" />
+                    </EventHandlers>
+                </Label>
+
                 <!-- Headers: Prio | Name | Status | Stock | Craftable | Target | AutoGrow | Brew (1000px) -->
                 <Button name="$parentColPrio" inherits="StockPiler_SortHeaderWatch" id="1" textalign="left">
                     <Size>

@@ -4604,7 +4604,7 @@ local function BuildCultWatchStatusRow()
             craftable = 0,
             craftableText = L"",
             statusKey = "skill_blip",
-            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills…"),
+            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills..."),
             statusLines = {
                 TOr("skillup.watch.cult_tip", L"Addon-controlled Cultivating Skill up (not a saved watch)."),
             },
@@ -4807,7 +4807,7 @@ local function BuildApoWatchStatusRow()
             craftableText = L"",
             craftableSafe = false,
             statusKey = "skill_blip",
-            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills…"),
+            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills..."),
             statusLines = {
                 TOr("skillup.watch.apo_tip", L"Addon-controlled Apothecary Skill up (not a saved watch)."),
             },

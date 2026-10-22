@@ -223,6 +223,7 @@ local function BuildActionRows()
         rows[#rows + 1] = { text = text, kind = kind or "body" }
     end
 
+    local showedIdle = false
     if mode == "harvest" then
         if canHarvest and ready > 0 then
             push(T("macro.craft_tip_harvest", { count = tostring(ready) }), "title")
@@ -230,6 +231,7 @@ local function BuildActionRows()
             push(T("macro.craft_tip_harvest_wait", { count = tostring(ready) }), "title")
         else
             push(T("macro.craft_tip_idle"), "title")
+            showedIdle = true
         end
         if ready > 1 then
             push(T("macro.craft_tip_then_harvest", { count = tostring(ready - 1) }), "meta")
@@ -251,12 +253,14 @@ local function BuildActionRows()
             push(T("macro.craft_tip_then_brew", { name = brewName }), "meta")
         else
             push(T("macro.craft_tip_idle"), "title")
+            showedIdle = true
         end
         if ready > 0 then
             push(T("macro.craft_tip_then_harvest_ready", { count = tostring(ready) }), "meta")
         end
     else
         push(T("macro.craft_tip_idle"), "title")
+        showedIdle = true
         if ready > 0 then
             push(T("macro.craft_tip_then_harvest_ready", { count = tostring(ready) }), "meta")
         elseif canBrew then
@@ -272,6 +276,53 @@ local function BuildActionRows()
                 push(T("brew.blocked_refine"), "warning")
             elseif why == "harvest" then
                 push(T("brew.blocked_harvest"), "warning")
+            end
+        end
+    end
+
+    -- Idle + AutoGrow gaps: master off (all short watches), or master on with
+    -- per-watch AutoGrow still off for short watches.
+    if showedIdle == true then
+        local Watch = StockPiler.Watch
+        if Watch and Watch.IsAutoGrowEnabled then
+            local masterOn = Watch.IsAutoGrowEnabled() == true
+            local waiting = Watch.CollectShortEnabledWatches and Watch.CollectShortEnabledWatches() or nil
+            if type(waiting) ~= "table" then
+                waiting = {}
+            end
+            local show = {}
+            if masterOn ~= true then
+                push(T("macro.craft_tip_autogrow_off"), "warning")
+                show = waiting
+                if #show > 0 then
+                    push(T("macro.craft_tip_autogrow_waiting", { count = tostring(#show) }), "warning")
+                end
+            else
+                for i = 1, #waiting do
+                    local entry = waiting[i]
+                    if type(entry) == "table" and entry.perWatchOff == true then
+                        show[#show + 1] = entry
+                    end
+                end
+                if #show > 0 then
+                    push(T("macro.craft_tip_autogrow_watch_off_n", { count = tostring(#show) }), "warning")
+                end
+            end
+            local maxShow = 6
+            for i = 1, math.min(#show, maxShow) do
+                local entry = show[i]
+                local name = entry and entry.name
+                if name == nil or name == L"" then
+                    name = T("watch.fallback")
+                end
+                if masterOn ~= true and entry and entry.perWatchOff == true then
+                    push(T("macro.craft_tip_autogrow_watch_off", { name = name }), "meta")
+                else
+                    push(T("macro.craft_tip_autogrow_watch", { name = name }), "meta")
+                end
+            end
+            if #show > maxShow then
+                push(T("macro.craft_tip_autogrow_more", { count = tostring(#show - maxShow) }), "meta")
             end
         end
     end
@@ -431,6 +482,19 @@ local function Fingerprint()
             end
         end
     end
+    -- Cheap key: master AG + planGen (watch list rebuild bumps planGen).
+    local agKey = "ag1"
+    local Watch = StockPiler.Watch
+    if Watch and Watch.IsAutoGrowEnabled then
+        local PS = StockPiler.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        local planGen = type(plan) == "table" and (tonumber(plan.planGen) or 0) or 0
+        if Watch.IsAutoGrowEnabled() ~= true then
+            agKey = "ag0:" .. tostring(planGen)
+        else
+            agKey = "ag1:" .. tostring(planGen)
+        end
+    end
 
     local parts = {
         tostring(snap.mode or "idle"),
@@ -442,6 +506,7 @@ local function Fingerprint()
         NameKey(brewName),
         blocked,
         stayKey,
+        agKey,
     }
 
     local plots = CollectPlantedPlots()
@@ -474,10 +539,35 @@ local function Fingerprint()
     return table.concat(parts, ":")
 end
 
+local function CraftButtonTipBlocked(mouseoverWindow)
+    local CB = StockPiler.CraftButton
+    local craftWin = CB and CB.WINDOW_NAME or "StockPilerCraftButton"
+    if mouseoverWindow ~= craftWin then
+        return false
+    end
+    if CB and CB.IsTipSuppressed and CB.IsTipSuppressed() == true then
+        return true
+    end
+    if type(WindowGetMoving) == "function" and DoesWindowExist(craftWin)
+        and WindowGetMoving(craftWin) == true
+    then
+        return true
+    end
+    return false
+end
+
 function CraftTooltip.Show(mouseoverWindow, anchor)
     mouseoverWindow = mouseoverWindow
         or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
     if mouseoverWindow == nil or mouseoverWindow == "" then
+        return
+    end
+    -- Floating button drag: TipAnchor would re-layout every frame and flicker.
+    if CraftButtonTipBlocked(mouseoverWindow) then
+        CraftTooltip.ClearLive()
+        if Tooltips and type(Tooltips.ClearTooltip) == "function" then
+            Tooltips.ClearTooltip()
+        end
         return
     end
     CraftTooltip._liveWindow = mouseoverWindow
@@ -495,9 +585,50 @@ function CraftTooltip.Show(mouseoverWindow, anchor)
     CraftTooltip._tipAcc = 0
 
     local rows = BuildTipRows()
+    -- Floating craft button only: lock / drag / RMB. Keep these even if the tip is long.
+    local footerN = 0
+    if mouseoverWindow == craftWin then
+        local RT = StockPiler.RecipeTooltip
+        if RT and RT.AppendSeparator then
+            RT.AppendSeparator(rows)
+        else
+            rows[#rows + 1] = { text = T("recipe.sep"), kind = "separator" }
+        end
+        -- Lock tip first so players always see Shift+LMB.
+        rows[#rows + 1] = {
+            text = T("button.craft_tip_lock"),
+            kind = "meta",
+        }
+        footerN = footerN + 1
+        if not (CB and CB.IsLocked and CB.IsLocked() == true) then
+            rows[#rows + 1] = {
+                text = T("button.craft_tip_drag"),
+                kind = "meta",
+            }
+            footerN = footerN + 1
+        end
+        rows[#rows + 1] = {
+            text = T("button.craft_tip_rmb"),
+            kind = "meta",
+        }
+        footerN = footerN + 1
+    end
     local RT = StockPiler.RecipeTooltip
     if RT and RT.ShowColoredRows then
-        RT.ShowColoredRows(mouseoverWindow, rows, CraftTooltip._liveAnchor, #rows + 2)
+        local want = #rows
+        local engineMax = want
+        if RT.EnsureRows then
+            engineMax = tonumber(RT.EnsureRows(want)) or want
+        end
+        -- Drop body/plot rows before the footer so Shift+lock is never clipped.
+        while #rows > engineMax and #rows > footerN + 1 do
+            local cut = #rows - footerN - 1
+            if cut < 1 then
+                break
+            end
+            table.remove(rows, cut)
+        end
+        RT.ShowColoredRows(mouseoverWindow, rows, CraftTooltip._liveAnchor, engineMax)
     else
         -- Fallback: flatten to a text tip.
         local chunks = {}
@@ -563,13 +694,20 @@ local function PatchLiveTimes()
 end
 
 function CraftTooltip.OnTooltipUpdate(timePassed)
+    local win = CraftTooltip._liveWindow
+    if win ~= nil and win ~= "" and CraftButtonTipBlocked(win) then
+        CraftTooltip.ClearLive()
+        if Tooltips and type(Tooltips.ClearTooltip) == "function" then
+            Tooltips.ClearTooltip()
+        end
+        return
+    end
     local acc = (tonumber(CraftTooltip._tipAcc) or 0) + (tonumber(timePassed) or 0)
     if acc < 1 then
         CraftTooltip._tipAcc = acc
         return
     end
     CraftTooltip._tipAcc = 0
-    local win = CraftTooltip._liveWindow
     if win == nil or win == "" then
         return
     end
@@ -587,6 +725,13 @@ end
 function CraftTooltip.MaybeRefresh()
     local win = CraftTooltip._liveWindow
     if win == nil or win == "" then
+        return
+    end
+    if CraftButtonTipBlocked(win) then
+        CraftTooltip.ClearLive()
+        if Tooltips and type(Tooltips.ClearTooltip) == "function" then
+            Tooltips.ClearTooltip()
+        end
         return
     end
     -- Engine clears the tip when mouse leaves; without this gate, Footer Sync

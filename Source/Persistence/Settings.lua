@@ -90,8 +90,16 @@ StockPiler.DefaultSettings = {
     eventTrace = false,
     -- on | quiet | off. on keeps stall/ready lines; quiet is changes and harvest/brew.
     chatMode = "on",
-    -- Craft button display scale (0.25–2.0). Default 0.5. /stp button.
-    craftButtonScale = 0.5,
+    -- Craft button display scale (0.25–2.0). Default 1.0. /stp button / Watch chip.
+    craftButtonScale = 1.0,
+    -- Floating craft button: centered grow countdown. Default on.
+    craftButtonShowTimer = true,
+    -- Floating craft HUD visible (Watch tab: HUD Button). Default on.
+    craftButtonVisible = true,
+    -- Create/maintain StockPiler Craft macro (Watch: Craft Macro). Default on.
+    -- Player places it on a hotbar; disable clears bars + deletes the macro.
+    craftMacroEnabled = true,
+    -- Lock lives in LayoutEditor.Settings[window].locked (Shift+LMB on HUD / HUD Editor).
     language = 0,
     selectedTab = 1,
     potionNameFilter = "",
@@ -284,7 +292,7 @@ function P.EnsureSettings()
         s.craftBadgeScale = nil
         local scale = tonumber(s.craftButtonScale)
         if scale == nil then
-            scale = 0.5
+            scale = 1.0
         end
         if scale < 0.25 then
             scale = 0.25
@@ -292,6 +300,27 @@ function P.EnsureSettings()
             scale = 2
         end
         s.craftButtonScale = scale
+    end
+    -- Migrate brief craftMacroTimerCenter key (was wrongly applied to macros).
+    if s.craftButtonShowTimer == nil and s.craftMacroTimerCenter ~= nil then
+        s.craftButtonShowTimer = s.craftMacroTimerCenter == true
+    end
+    s.craftMacroTimerCenter = nil
+    if s.craftButtonShowTimer == nil then
+        s.craftButtonShowTimer = true
+    end
+    s.craftButtonShowTimer = s.craftButtonShowTimer == true
+    if s.craftButtonVisible == nil then
+        s.craftButtonVisible = true
+    end
+    s.craftButtonVisible = s.craftButtonVisible ~= false
+    if s.craftMacroEnabled == nil then
+        s.craftMacroEnabled = true
+    end
+    s.craftMacroEnabled = s.craftMacroEnabled ~= false
+    -- Legacy: craftButtonLockPosition → LayoutEditor.Settings (CraftButton.Initialize migrates).
+    if s.craftButtonLockPosition ~= true then
+        s.craftButtonLockPosition = nil
     end
     if StockPiler.Debug then
         StockPiler.Debug.Enabled = s.debugEnabled == true
@@ -373,6 +402,27 @@ function P.GetCharacterBucket(create)
         settings.characters[key] = row
     end
     return P.EnsureCharacterBucketShape(row), key
+end
+
+--- Reset UI / preference settings to defaults. Does not touch Account knowledge
+--- (items, recipes, potions, grows, refines, skillUpRates). Keeps other
+--- characters' buckets; current character preferences/watches reset.
+function P.ResetSettingsToDefaults()
+    local prev = StockPiler.Settings
+    local otherChars = {}
+    local key = P.GetCharacterKey()
+    if type(prev) == "table" and type(prev.characters) == "table" then
+        for k, v in pairs(prev.characters) do
+            if k ~= key and type(v) == "table" then
+                otherChars[k] = v
+            end
+        end
+    end
+    local fresh = P.CopyTable(StockPiler.DefaultSettings)
+    fresh.characters = otherChars
+    fresh.characters[key] = P.CopyTable(StockPiler.DefaultCharacterSettings)
+    StockPiler.Settings = fresh
+    return P.EnsureSettings()
 end
 
 function P.EnsureAccount()

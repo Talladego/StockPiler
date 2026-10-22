@@ -5,7 +5,12 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 ## 1.0.1
 
 - Refining a plant StockPiler has not seen before teaches its plant-to-seed link and adds that plant to Known plants, the same way a harvest does. Known conversions still record. An unrelated gain, a seed packet, a stack move, or more than one possible output is not saved, and an unknown result does not mark the plant convert-failed.
-- The `/stp harvest` command was removed, because harvesting needs the button.
+- The `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` commands were removed. Use the window tabs instead. Harvesting still needs the craft button.
+- `/stp reset` restores settings defaults for this character (toggles, watches, HUD prefs). Learned recipes and plants are kept.
+- Floating Craft HUD: idle drag, Shift+left-click lock (same as Layout Editor), optional grow countdown, Watch HUD Button / scale chip / Craft Macro checkbox. Default scale 1.0.
+- Craft macro and HUD show a red tint when StockPiler is waiting on you (vendor / buy). Grow countdown uses the stock cooldown wipe and centered timer text.
+- When nothing is ready, the craft tip explains AutoGrow off and lists short watches (including per-watch AutoGrow off).
+- Optimistic mode off also accounts for harvest critical failures (plant extra seeds) once a seed has enough harvest samples.
 
 ## 1.0.0
 

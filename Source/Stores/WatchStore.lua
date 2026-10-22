@@ -886,8 +886,9 @@ function Watch.IsCombatPauseEnabled()
     return Watch.IsAutoGrowPauseCombat()
 end
 
---- When true (default), craftable / AutoGrow mats assume each brew yields the watched potion.
---- When false, scale by learned outcome success rate (min 5 brew attempts).
+--- When true (default), craftable / AutoGrow assume each brew is the watched potion
+--- and each harvest yields a plant. When false, scale brew craftable by potion drop
+--- rate (min 5 brews) and plantings by harvest success (min 5 harvests).
 function Watch.IsOptimisticOutcomeEstimate()
     local row = CharacterRow(false)
     if type(row) ~= "table" then
@@ -1193,4 +1194,107 @@ function Watch.ShouldAutoGrowPlant(plantKey)
     end
     local watch = Watch.GetPlantWatch(plantKey)
     return type(watch) == "table" and watch.enabled == true and watch.autoGrow ~= false
+end
+
+--- Enabled watches still short of target (potion + plant). Used by Craft tip when
+--- master AutoGrow is off. Prefer PlanSnapshot deficit; fall back to bag counts.
+--- Each entry: { name = wstring, perWatchOff = bool, kind = "potion"|"plant" }.
+function Watch.CollectShortEnabledWatches()
+    local list = {}
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local rows = plan and plan.rows
+    if type(rows) == "table" and #rows > 0 then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table"
+                and row.skillUp ~= true
+                and (tonumber(row.potionDeficit) or 0) > 0
+            then
+                local kind = "potion"
+                if row.kind == "plant" or row.isPlantWatch == true then
+                    kind = "plant"
+                end
+                list[#list + 1] = {
+                    name = row.name,
+                    perWatchOff = row.autoGrow ~= true,
+                    kind = kind,
+                }
+            end
+        end
+        return list
+    end
+
+    local RS = StockPiler.RecipeSpec
+    local Catalog = StockPiler.Catalog
+    local Inv = StockPiler.Inventory
+    local watches = Watch.GetWatches()
+    if type(watches) == "table" then
+        for key, watch in pairs(watches) do
+            if type(watch) == "table" and watch.enabled == true then
+                local target = tonumber(watch.targetStock) or 40
+                local have = 0
+                if RS and RS.ResolveWatchPotion then
+                    local resolved = RS.ResolveWatchPotion(key)
+                    local potion = resolved and resolved.potion
+                    if type(potion) == "table" and Catalog and Catalog.PotionHaveCombined then
+                        have = tonumber(Catalog.PotionHaveCombined(potion)) or 0
+                    elseif resolved and resolved.outputUid and Inv and Inv.CountByUid then
+                        have = tonumber(Inv.CountByUid(resolved.outputUid)) or 0
+                    end
+                end
+                if have < target then
+                    local name = nil
+                    if RS and RS.ResolveWatchPotion then
+                        local resolved = RS.ResolveWatchPotion(key)
+                        local potion = resolved and resolved.potion
+                        if type(potion) == "table" then
+                            name = potion.name
+                        end
+                    end
+                    list[#list + 1] = {
+                        name = name,
+                        perWatchOff = watch.autoGrow ~= true,
+                        kind = "potion",
+                    }
+                end
+            end
+        end
+    end
+
+    local plants = Watch.GetPlantWatches and Watch.GetPlantWatches() or nil
+    if type(plants) == "table" then
+        for plantKey, watch in pairs(plants) do
+            if type(watch) == "table" and watch.enabled == true then
+                local target = tonumber(watch.targetStock) or 40
+                local plantUid = tonumber(plantKey) or 0
+                if plantUid <= 0 and type(plantKey) == "string" then
+                    plantUid = tonumber((tostring(plantKey)):match("(%d+)")) or 0
+                end
+                local have = 0
+                if plantUid > 0 then
+                    if Catalog and Catalog.PlantHave then
+                        have = tonumber(Catalog.PlantHave(plantUid)) or 0
+                    elseif Inv and Inv.CountByUid then
+                        have = tonumber(Inv.CountByUid(plantUid)) or 0
+                    end
+                end
+                if have < target then
+                    local name = nil
+                    if plantUid > 0 and Inv and Inv.GetSample then
+                        local sample = Inv.GetSample(plantUid)
+                        if type(sample) == "table" then
+                            name = sample.name
+                        end
+                    end
+                    list[#list + 1] = {
+                        name = name,
+                        perWatchOff = watch.autoGrow ~= true,
+                        kind = "plant",
+                    }
+                end
+            end
+        end
+    end
+    return list
 end

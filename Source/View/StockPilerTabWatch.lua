@@ -19,6 +19,8 @@ local SEED_BUFFER_ENABLE_WIN = "SPTabWatchSeedBufferEnable"
 local OPTIMISTIC_MODE_WIN = "SPTabWatchOptimisticMode"
 local SKILLUP_SKILLS_WIN = "SPTabWatchSkillUpSkills"
 local UPGRADE_SEEDS_WIN = "SPTabWatchUpgradeSeeds"
+local HUD_BUTTON_WIN = "SPTabWatchHudButton"
+local CRAFT_MACRO_WIN = "SPTabWatchCraftMacro"
 
 local COLOR_OK = { 80, 200, 80 }
 local COLOR_WARN = { 220, 180, 60 }
@@ -662,6 +664,9 @@ local function AfterWatchSettingsChanged()
     if StockPiler.Planner and StockPiler.Planner.ReconcileAutoGrowStatusesNow then
         StockPiler.Planner.ReconcileAutoGrowStatusesNow(StockPilerTabWatch.listData)
     end
+    if StockPiler.Grow and StockPiler.Grow.InvalidatePlantQueue then
+        StockPiler.Grow.InvalidatePlantQueue({ reason = "watch-settings" })
+    end
     if StockPiler.Ui and StockPiler.Ui.ClearWatchTipCaches then
         StockPiler.Ui.ClearWatchTipCaches()
     else
@@ -948,6 +953,107 @@ local function UpdateOptimisticModeCheckbox()
     ButtonSetCheckButtonFlag(OPTIMISTIC_MODE_WIN, true)
     ButtonSetPressedFlag(OPTIMISTIC_MODE_WIN, on)
     syncingUi = false
+end
+
+local HUD_SCALE_MIN = 0.5
+local HUD_SCALE_MAX = 2.0
+local HUD_SCALE_STEP = 0.25
+
+local function FormatHudScale(n)
+    n = tonumber(n) or HUD_SCALE_MIN
+    return string.format("%.2f", n)
+end
+
+local function SnapHudScale(n)
+    n = tonumber(n) or HUD_SCALE_MIN
+    n = math.floor((n / HUD_SCALE_STEP) + 0.5) * HUD_SCALE_STEP
+    if n < HUD_SCALE_MIN then
+        n = HUD_SCALE_MIN
+    elseif n > HUD_SCALE_MAX then
+        n = HUD_SCALE_MAX
+    end
+    return n
+end
+
+local function UpdateHudScaleChip()
+    local CB = StockPiler.CraftButton
+    local scale = CB and CB.GetScale and CB.GetScale() or HUD_SCALE_MIN
+    local visible = true
+    if CB and CB.IsVisible then
+        visible = CB.IsVisible() == true
+    end
+    local valueWin = "SPTabWatchHudScaleChipValue"
+    local chipWin = "SPTabWatchHudScaleChip"
+    if DoesWindowExist(valueWin) then
+        LabelSetText(valueWin, towstring(FormatHudScale(scale)))
+        if visible == true then
+            LabelSetTextColor(valueWin, 255, 255, 255)
+        else
+            LabelSetTextColor(valueWin, COLOR_GRAY[1], COLOR_GRAY[2], COLOR_GRAY[3])
+        end
+    end
+    if DoesWindowExist(chipWin) then
+        TintStepper(chipWin .. "Bg")
+        if type(WindowSetHandleInput) == "function" then
+            WindowSetHandleInput(chipWin, visible == true)
+        end
+    end
+end
+
+local function UpdateHudButtonCheckboxes()
+    local CB = StockPiler.CraftButton
+    local visible = true
+    if CB and CB.IsVisible then
+        visible = CB.IsVisible() == true
+    end
+    local Macro = StockPiler.Macro
+    local craftMacroOn = true
+    if Macro and Macro.IsCraftMacroEnabled then
+        craftMacroOn = Macro.IsCraftMacroEnabled() == true
+    end
+    if DoesWindowExist(HUD_BUTTON_WIN) then
+        syncingUi = true
+        ButtonSetCheckButtonFlag(HUD_BUTTON_WIN, true)
+        ButtonSetPressedFlag(HUD_BUTTON_WIN, visible == true)
+        ButtonSetDisabledFlag(HUD_BUTTON_WIN, false)
+        syncingUi = false
+    end
+    if DoesWindowExist(CRAFT_MACRO_WIN) then
+        syncingUi = true
+        ButtonSetCheckButtonFlag(CRAFT_MACRO_WIN, true)
+        ButtonSetPressedFlag(CRAFT_MACRO_WIN, craftMacroOn == true)
+        ButtonSetDisabledFlag(CRAFT_MACRO_WIN, false)
+        syncingUi = false
+    end
+    if DoesWindowExist("SPTabWatchCraftMacroLabel") then
+        LabelSetTextColor("SPTabWatchCraftMacroLabel", 255, 255, 255)
+    end
+    UpdateHudScaleChip()
+end
+
+local function AdjustHudScale(dir)
+    local CB = StockPiler.CraftButton
+    if not (CB and CB.IsVisible and CB.IsVisible() == true) then
+        UpdateHudScaleChip()
+        return
+    end
+    if not (CB.GetScale and CB.SetScale) then
+        return
+    end
+    local cur = SnapHudScale(CB.GetScale())
+    local nextVal = SnapHudScale(cur + (tonumber(dir) or 0) * HUD_SCALE_STEP)
+    if nextVal == cur then
+        UpdateHudScaleChip()
+        return
+    end
+    local ok = CB.SetScale(nextVal)
+    if ok then
+        NotifySettings(T("watch.setting_eq", {
+            label = T("watch.setting.hud_scale"),
+            value = FormatHudScale(nextVal),
+        }))
+    end
+    UpdateHudScaleChip()
 end
 
 local function SkillUpLevelKinds()
@@ -1265,9 +1371,16 @@ function StockPilerTabWatch.Initialize()
     if DoesWindowExist("SPTabWatchUpgradeSeedsLabel") then
         LabelSetText("SPTabWatchUpgradeSeedsLabel", T("watch.upgrade_seeds"))
     end
+    if DoesWindowExist("SPTabWatchHudButtonLabel") then
+        LabelSetText("SPTabWatchHudButtonLabel", T("watch.hud_button_label"))
+    end
+    if DoesWindowExist("SPTabWatchCraftMacroLabel") then
+        LabelSetText("SPTabWatchCraftMacroLabel", T("watch.craft_macro_label"))
+    end
     TintStepper("SPTabWatchSeedBufferChipBg")
     TintStepper("SPTabWatchReserveChipBg")
     TintStepper("SPTabWatchBudgetChipBg")
+    TintStepper("SPTabWatchHudScaleChipBg")
     UpdateSortHeaders()
     StockPilerTabWatch.RefreshSkillGates()
     if StockPilerTabWatch.PrimeRowChrome then
@@ -1320,12 +1433,19 @@ function StockPilerTabWatch.RefreshSkillGates()
     local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
     local UpgradeSeed = StockPiler.UpgradeSeed
     local upgradeOn = UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true
+    local CB = StockPiler.CraftButton
+    local hudVis = CB and CB.IsVisible and CB.IsVisible() == true
+    local hudTimer = CB and CB.IsShowTimer and CB.IsShowTimer() == true
+    local hudScale = CB and CB.GetScale and CB.GetScale() or 1
+    local Macro = StockPiler.Macro
+    local craftMacroOn = Macro and Macro.IsCraftMacroEnabled and Macro.IsCraftMacroEnabled() == true
     local gatesKey = table.concat({
         tostring(canGrow), tostring(canBuy), tostring(canBrew), tostring(autoGrow), tostring(additives),
         tostring(autoBuy), tostring(autoBrew), tostring(optimistic), tostring(seedBufOn), tostring(seedBuf),
         tostring(reserve), tostring(budget), tostring(spent),
         tostring(cultVis), tostring(apoVis), tostring(skillUpCult), tostring(skillUpApo),
         tostring(upgradeOn),
+        tostring(hudVis), tostring(craftMacroOn), tostring(hudTimer), tostring(hudScale),
     }, ":")
     if StockPilerTabWatch._skillGatesKey == gatesKey then
         return
@@ -1338,6 +1458,7 @@ function StockPilerTabWatch.RefreshSkillGates()
     UpdateAutoBuyCheckbox()
     UpdateAutoBrewCheckbox()
     UpdateOptimisticModeCheckbox()
+    UpdateHudButtonCheckboxes()
     UpdateSeedBufferEnableCheckbox()
     UpdateUpgradeSeedsCheckbox()
     UpdateSeedBufferLabel()
@@ -1348,6 +1469,14 @@ function StockPilerTabWatch.RefreshSkillGates()
             StockPiler.Ui.MarkWatchUiDirty()
         end
     end
+end
+
+--- Force HUD Button / Craft Macro / scale chip to match settings (e.g. /stp button reset).
+function StockPilerTabWatch.RefreshHudButtonUi()
+    if not DoesWindowExist(TAB_ROOT) then
+        return
+    end
+    UpdateHudButtonCheckboxes()
 end
 
 local function ApplyOptimisticWatchRowFilter(filterRows)
@@ -2230,6 +2359,40 @@ function StockPilerTabWatch.OnToggleAutoBrew()
     end
 end
 
+function StockPilerTabWatch.OnToggleHudButton()
+    if syncingUi then
+        return
+    end
+    if not SyncCheckFromActive(HUD_BUTTON_WIN) then
+        UpdateHudButtonCheckboxes()
+        return
+    end
+    local on = ButtonGetPressedFlag(HUD_BUTTON_WIN) == true
+    local CB = StockPiler.CraftButton
+    if CB and CB.SetVisible then
+        CB.SetVisible(on)
+    end
+    NotifySettings(T("watch.hud_button", { state = OnOff(on) }))
+    UpdateHudButtonCheckboxes()
+end
+
+function StockPilerTabWatch.OnToggleCraftMacro()
+    if syncingUi then
+        return
+    end
+    if not SyncCheckFromActive(CRAFT_MACRO_WIN) then
+        UpdateHudButtonCheckboxes()
+        return
+    end
+    local on = ButtonGetPressedFlag(CRAFT_MACRO_WIN) == true
+    local Macro = StockPiler.Macro
+    if Macro and Macro.SetCraftMacroEnabled then
+        Macro.SetCraftMacroEnabled(on)
+    end
+    NotifySettings(T("watch.craft_macro", { state = OnOff(on) }))
+    UpdateHudButtonCheckboxes()
+end
+
 function StockPilerTabWatch.OnToggleOptimisticMode()
     if syncingUi then
         return
@@ -2381,6 +2544,14 @@ end
 
 function StockPilerTabWatch.OnBudgetRButtonUp(flags)
     AdjustBudget(flags, -1)
+end
+
+function StockPilerTabWatch.OnHudScaleLButtonUp()
+    AdjustHudScale(1)
+end
+
+function StockPilerTabWatch.OnHudScaleRButtonUp()
+    AdjustHudScale(-1)
 end
 
 function StockPilerTabWatch.OnBudgetReset()
@@ -3214,6 +3385,24 @@ function StockPilerTabWatch.OnMouseOverAutoBrew()
         return
     end
     Tip(T("tip.watch.autobrew"))
+end
+
+function StockPilerTabWatch.OnMouseOverHudButton()
+    Tip(T("tip.watch.hud_button"))
+end
+
+function StockPilerTabWatch.OnMouseOverHudScale()
+    local CB = StockPiler.CraftButton
+    if not (CB and CB.IsVisible and CB.IsVisible() == true) then
+        Tip(T("tip.watch.hud_lock_need_hud"))
+        return
+    end
+    local scale = CB.GetScale and CB.GetScale() or HUD_SCALE_MIN
+    Tip(T("tip.watch.hud_scale", { scale = FormatHudScale(scale) }))
+end
+
+function StockPilerTabWatch.OnMouseOverCraftMacro()
+    Tip(T("tip.watch.craft_macro"))
 end
 
 function StockPilerTabWatch.OnMouseOverOptimisticMode()
