@@ -704,6 +704,11 @@ local function AfterWatchSettingsChanged()
     end
 end
 
+--- /stp reset and other non-UI callers: same plan/queue sync as Watch toggles.
+function StockPilerTabWatch.AfterWatchSettingsChanged()
+    AfterWatchSettingsChanged()
+end
+
 --- Reserve/Budget: no PlanRebuild; clear money-gate + wake AutoBuy if store open.
 local function AfterSoftMoneySetting()
     if StockPiler.Buy and StockPiler.Buy.OnMoneySettingsChanged then

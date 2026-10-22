@@ -100,13 +100,29 @@ local function ResetAllSettings()
     if CraftButton and CraftButton.ResetToDefaults then
         CraftButton.ResetToDefaults()
     end
-    if StockPiler.Ui then
-        if StockPiler.Ui.MarkWatchUiDirty then
+    -- Same sync as Watch toggles: bump gen, clear plant queue, rebuild plan.
+    if StockPilerTabWatch and StockPilerTabWatch.AfterWatchSettingsChanged then
+        pcall(StockPilerTabWatch.AfterWatchSettingsChanged)
+    else
+        if StockPiler.Watch and StockPiler.Watch.BumpGen then
+            pcall(StockPiler.Watch.BumpGen)
+        end
+        if StockPiler.PlanSnapshot and StockPiler.PlanSnapshot.Invalidate then
+            pcall(StockPiler.PlanSnapshot.Invalidate)
+        end
+        if StockPiler.Grow and StockPiler.Grow.InvalidatePlantQueue then
+            pcall(StockPiler.Grow.InvalidatePlantQueue, { reason = "settings-reset" })
+        end
+        local Sch = StockPiler.Scheduler
+        if Sch and Sch.EnqueuePlanRebuild then
+            pcall(Sch.EnqueuePlanRebuild, { urgent = true })
+        end
+        if StockPiler.Ui and StockPiler.Ui.MarkWatchUiDirty then
             pcall(StockPiler.Ui.MarkWatchUiDirty)
         end
-        if StockPiler.Ui.RequestFooterRefresh then
-            pcall(StockPiler.Ui.RequestFooterRefresh)
-        end
+    end
+    if StockPiler.Ui and StockPiler.Ui.RequestFooterRefresh then
+        pcall(StockPiler.Ui.RequestFooterRefresh)
     end
     if StockPilerTabWatch then
         StockPilerTabWatch._skillGatesKey = nil
