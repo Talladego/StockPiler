@@ -310,6 +310,16 @@ function AA.ParkApoRoot()
     if type(WindowUtils) == "table" and type(WindowUtils.RemoveFromOpenList) == "function" then
         TryQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
     end
+    -- First brew after login/reload: Show can paint one frame at the XML
+    -- default (center) before park anchors stick. Alpha 0 hides that flash;
+    -- later brews often skip stock ShowCurrentWindow because showing is already
+    -- true from a prior stealth open, so the flash looks "first only".
+    if type(WindowSetAlpha) == "function" then
+        TryQuiet("WindowSetAlpha", WindowSetAlpha, name, 0)
+    end
+    if type(WindowSetFontAlpha) == "function" then
+        TryQuiet("WindowSetFontAlpha", WindowSetFontAlpha, name, 0)
+    end
     AA._apoParked = true
     return true
 end
@@ -530,16 +540,33 @@ function AA.InstallStealthHooks()
                     AA._expectEchoUntil = 0
                     ClearEchoExpectation()
                 end
+                -- Re-park even when we swallow: a concurrent layout pass can
+                -- still re-anchor the root before our InitHeadless Park runs.
+                AA.ParkApoRoot()
                 return
             end
             -- After the show-suppress TTL, one late CRAFTING_SHOW_WINDOW echo
-            -- is still expected, but only inside the short post-suppress band
-            -- (or the learned adaptive wait once three echoes are timed).
-            -- Anything else on a parked window is the player.
+            -- is still expected, but only inside the accept band. Outside that
+            -- band a parked show is usually the player - except while AutoBrew
+            -- owns the headless session: engine echoes after open-timeout /
+            -- load / perform must not PlaceApoOnScreen or latch _playerWantsApo
+            -- (ParkApoRoot then no-ops for the rest of the brew).
             if isApo and AA._apoParked == true then
                 local echoNow = EchoClock()
                 if AcceptLateEcho(echoNow) then
                     AA.ParkApoRoot()
+                    return
+                end
+                local ownedStealth = AA._suppressCascadeClose == true
+                    and AA._playerWantsApo ~= true
+                if ownedStealth then
+                    if AA._echoWatch == true then
+                        NoteEchoMiss("owned-late-show", true)
+                    end
+                    AA.ParkApoRoot()
+                    if StockPiler.Debug and StockPiler.Debug.LogOp then
+                        StockPiler.Debug.LogOp("brew", "echo-repark owned")
+                    end
                     return
                 end
                 if AA._echoWatch == true then
@@ -564,6 +591,15 @@ function AA.InstallStealthHooks()
                 then
                     return
                 end
+            end
+            -- Owned headless brew but apo not marked parked (close/retry race):
+            -- never run stock ShowCurrentWindow; park if the root exists.
+            if isApo and AA._suppressCascadeClose == true and AA._playerWantsApo ~= true then
+                AA.ParkApoRoot()
+                if StockPiler.Debug and StockPiler.Debug.LogOp then
+                    StockPiler.Debug.LogOp("brew", "echo-repark owned-unparked")
+                end
+                return
             end
             return AA._origToggleShowing(tradeSkill)
         end
@@ -721,15 +757,19 @@ end
 
 function AA.InitHeadlessSession()
     local apo = AA.TradeSkill()
+    -- Park + alpha 0 before SetCurrentTradeSkill / SetStaticData: those can
+    -- kick CRAFTING_SHOW_WINDOW while the root still has login-default anchors.
+    AA.ParkApoRoot()
     if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
         TryQuiet("SetCurrentTradeSkill", CraftingSystem.SetCurrentTradeSkill, apo)
     end
     if CraftingSystem and type(CraftingSystem.SetStaticData) == "function" then
         TryQuiet("SetStaticData", CraftingSystem.SetStaticData)
     end
-    -- Park first so the required "real show" for SkillType never paints on-screen.
+    -- Re-park after static data (layout may have moved the root), then show.
     AA.ParkApoRoot()
     ShowApoRootVisible()
+    AA.ParkApoRoot()
     -- Prefer SendInitCrafting without ApothecaryWindow.Show: Show() enables soft
     -- locks that make AddCraftingItem no-op for mains/ingredients (container still
     -- works). Soft locks stay off for headless brew load.
@@ -913,6 +953,10 @@ function AA.CloseWindow(session)
     end
     RestoreCompanionWindows()
     AA.EndStealthUi()
+    -- Trailing CRAFTING_SHOW_WINDOW from the closed SendInit/SendClose can
+    -- still arrive after Unpark. Swallow briefly so stock ShowCurrentWindow
+    -- does not pop Apo after open-timeout or after-brew.
+    ArmEngineShowSuppress(1.5)
 end
 
 --- Same gate as a manual drop on ApothecaryWindow.
