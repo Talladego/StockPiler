@@ -1,12 +1,14 @@
 ----------------------------------------------------------------
--- StockPiler RecipeLink -- NB-style chat share / import for potions
--- Plain payload (paste-safe), preferred order:
---   POTION;uid=<n>;icon=<n>;n=<name>;slots=<encoded>;rk=<fingerprint>
--- slots before rk so chat truncation keeps materials. Slot rows are
---   role:uid:perCraft:power:stability:duration:tradeSkill:skillLevel:cult:slotType
--- joined with ^ .
+-- StockPiler RecipeLink -- chat share / import for known potions
+-- Plain payload (paste-safe). New shares omit the fingerprint (rk);
+-- import recomputes it from the slots. Order:
+--   POTION;uid=<n>;icon=<n>;n=<name>;slots=<encoded>
+-- Slot rows (legacy rows stop before effectId):
+--   role:uid:perCraft:power:stability:duration:tradeSkill:skillLevel:cult:slotType:effectId:bonuses
+-- joined with ^ . bonuses is ref=value pairs separated by commas.
 -- Hyperlink linkData: StockPiler: + plain payload
--- Click: import into Known Potions only when the recipe is not already known.
+-- Click: import into Known Potions. Existing recipes, potion names,
+-- and the active recipe are not modified.
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
@@ -16,11 +18,34 @@ local RL = StockPiler.RecipeLink
 RL.LINK_PREFIX = L"StockPiler:"
 RL.LINK_COLOR = { 80, 200, 255 }
 RL.LINK_MAX_DATA = 3500
+RL.CHAT_MAX_CHARS = 4096
+RL.CHAT_EDIT_BOX = "EA_TextEntryGroupEntryBoxTextInput"
+RL.MAX_SLOTS = 8
+RL.RK_MAX = 1024
 
 RL._lastShareKey = nil
 RL._hyperlinkHooked = false
 RL._prevOnHyperLinkLButtonUp = nil
 RL._contextFields = nil
+
+local ID_MAX = 9999999999
+local STAT_ABS = 100000
+local MAX_PER_CRAFT = 99
+local MAX_SKILL = 300
+local MAX_SMALL = 64
+local MAX_BONUS_REF = 30
+local MAX_BONUS_PAIRS = 8
+
+local ROLE_OK = {
+    container = true,
+    main = true,
+    stabilizer = true,
+    goldweed = true,
+    extender = true,
+    multiplier = true,
+    stimulant = true,
+    ingredient = true,
+}
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -56,7 +81,7 @@ end
 
 local function SanitizeName(name)
     name = ToNarrow(name)
-    name = string.gsub(name, "[;%[%]]", "")
+    name = string.gsub(name, '[<>"&;%[%]^=%c]', "")
     name = string.gsub(name, "%s+", " ")
     name = string.gsub(name, "^%s+", "")
     name = string.gsub(name, "%s+$", "")
@@ -64,6 +89,216 @@ local function SanitizeName(name)
         name = string.sub(name, 1, 48)
     end
     return name
+end
+
+--- Incoming names: reject markup and payload delimiters. Empty is allowed.
+local function ValidName(name)
+    name = ToNarrow(name)
+    if name == "" then
+        return ""
+    end
+    if string.len(name) > 48 then
+        return nil
+    end
+    if string.match(name, '[<>"&;%[%]^=%c]') ~= nil then
+        return nil
+    end
+    return name
+end
+
+--- Decimal integer only. Rejects hex, inf, nan, and exponent forms.
+local function StrictInt(raw, minV, maxV, allowNeg)
+    raw = ToNarrow(raw)
+    if raw == "" then
+        return nil
+    end
+    local neg = false
+    local digits = raw
+    if string.sub(raw, 1, 1) == "-" then
+        if allowNeg ~= true then
+            return nil
+        end
+        neg = true
+        digits = string.sub(raw, 2)
+    end
+    if digits == "" or string.match(digits, "^%d+$") == nil then
+        return nil
+    end
+    if string.len(digits) > 10 then
+        return nil
+    end
+    local n = tonumber(digits)
+    if n == nil or n ~= n or n == math.huge then
+        return nil
+    end
+    if neg then
+        n = -n
+    end
+    if n < minV or n > maxV then
+        return nil
+    end
+    return n
+end
+
+local function AsInt(n)
+    if type(n) == "string" then
+        local body = n
+        if string.sub(n, 1, 1) == "-" then
+            body = string.sub(n, 2)
+        end
+        if body == "" or string.match(n, "^%-?%d+$") == nil or string.len(body) > 10 then
+            return nil
+        end
+    elseif type(n) ~= "number" then
+        return nil
+    end
+    n = tonumber(n)
+    if n == nil or n ~= n or n == math.huge or n == -math.huge then
+        return nil
+    end
+    if n ~= math.floor(n) then
+        return nil
+    end
+    return n
+end
+
+local function ValidRk(rk)
+    if rk == nil then
+        return ""
+    end
+    rk = ToNarrow(rk)
+    if rk == "" then
+        return ""
+    end
+    if string.len(rk) > RL.RK_MAX then
+        return nil
+    end
+    if string.match(rk, "^[%w|:,=_.%-]+$") == nil then
+        return nil
+    end
+    return rk
+end
+
+local function SplitColon(piece)
+    local parts = {}
+    local startAt = 1
+    local n = string.len(piece)
+    for i = 1, n do
+        if string.sub(piece, i, i) == ":" then
+            parts[#parts + 1] = string.sub(piece, startAt, i - 1)
+            startAt = i + 1
+        end
+    end
+    parts[#parts + 1] = string.sub(piece, startAt)
+    return parts
+end
+
+local function BonusNumber(spec, ref)
+    if type(spec) ~= "table" or type(spec.bonuses) ~= "table" then
+        return nil
+    end
+    local v = spec.bonuses[ref]
+    if v == nil then
+        v = spec.bonuses[tostring(ref)]
+    end
+    if type(v) == "table" then
+        v = v[1]
+    end
+    return AsInt(v)
+end
+
+local function FieldInt(value, default, minV, maxV)
+    if value == nil then
+        return default
+    end
+    local n = AsInt(value)
+    if n == nil or n < minV or n > maxV then
+        return nil
+    end
+    return n
+end
+
+--- Prefer a bonus ref when it is present. A present but illegal value fails the share.
+local function StatForEncode(spec, ref, field)
+    if type(spec.bonuses) == "table" and (spec.bonuses[ref] ~= nil or spec.bonuses[tostring(ref)] ~= nil) then
+        return BonusNumber(spec, ref)
+    end
+    if field == nil then
+        return 0
+    end
+    return AsInt(field)
+end
+
+local function EncodeBonusTail(spec)
+    if type(spec) ~= "table" or type(spec.bonuses) ~= "table" then
+        return ""
+    end
+    local refs = {}
+    local seen = {}
+    for ref, val in pairs(spec.bonuses) do
+        local nref = AsInt(ref)
+        if nref == nil or nref < 1 or nref > MAX_BONUS_REF then
+            return nil
+        end
+        if nref ~= 1 and nref ~= 2 and nref ~= 3 and seen[nref] ~= true then
+            local nval = val
+            if type(nval) == "table" then
+                nval = nval[1]
+            end
+            nval = AsInt(nval)
+            if nval == nil or nval < -ID_MAX or nval > ID_MAX then
+                return nil
+            end
+            if nval ~= 0 then
+                seen[nref] = true
+                refs[#refs + 1] = nref
+            end
+        end
+    end
+    table.sort(refs)
+    if #refs > MAX_BONUS_PAIRS then
+        return nil
+    end
+    local parts = {}
+    for i = 1, #refs do
+        local nref = refs[i]
+        local nval = BonusNumber(spec, nref) or 0
+        parts[#parts + 1] = tostring(nref) .. "=" .. tostring(nval)
+    end
+    return table.concat(parts, ",")
+end
+
+local function ParseBonusTail(tail)
+    if tail == nil or tail == "" then
+        return {}
+    end
+    if string.len(tail) > 200 then
+        return nil
+    end
+    if string.sub(tail, 1, 1) == "," or string.sub(tail, -1) == "," or string.find(tail, ",,", 1, true) then
+        return nil
+    end
+    local bonuses = {}
+    local count = 0
+    for pair in string.gmatch(tail, "[^,]+") do
+        local rs, vs = string.match(pair, "^(%d+)=(%-?%d+)$")
+        if rs == nil then
+            return nil
+        end
+        local ref = StrictInt(rs, 1, MAX_BONUS_REF, false)
+        local val = StrictInt(vs, -ID_MAX, ID_MAX, true)
+        if ref == nil or val == nil or ref == 1 or ref == 2 or ref == 3 or bonuses[ref] ~= nil then
+            return nil
+        end
+        count = count + 1
+        if count > MAX_BONUS_PAIRS then
+            return nil
+        end
+        if val ~= 0 then
+            bonuses[ref] = val
+        end
+    end
+    return bonuses
 end
 
 function RL.DisplayName(fields)
@@ -97,68 +332,184 @@ function RL.WatchKeyFromFields(fields)
 end
 
 --- Encode slim recipe slots for the link payload.
+--- Returns nil when a slot is not safe to share.
 function RL.EncodeSlots(slots)
     if type(slots) ~= "table" or #slots < 1 then
         return ""
     end
+    if #slots > RL.MAX_SLOTS then
+        return nil
+    end
     local parts = {}
     for i = 1, #slots do
         local slot = slots[i]
-        if type(slot) == "table" then
-            local spec = type(slot.spec) == "table" and slot.spec or slot
-            local role = tostring(slot.role or spec.role or "main")
-            role = string.gsub(role, "[^%w_]", "")
-            if role == "" then
-                role = "main"
-            end
-            parts[#parts + 1] = table.concat({
-                role,
-                tostring(math.floor(tonumber(slot.uid) or tonumber(spec.uid) or 0)),
-                tostring(math.max(1, math.floor(tonumber(slot.perCraft) or 1))),
-                tostring(math.floor(tonumber(spec.power) or 0)),
-                tostring(math.floor(tonumber(spec.stability) or 0)),
-                tostring(math.floor(tonumber(spec.duration) or 0)),
-                tostring(math.floor(tonumber(spec.tradeSkill) or 0)),
-                tostring(math.floor(tonumber(spec.skillLevel) or 0)),
-                tostring(math.floor(tonumber(spec.cultivationType) or 0)),
-                tostring(math.floor(tonumber(spec.slotType) or 0)),
-            }, ":")
+        if type(slot) ~= "table" then
+            return nil
         end
+        local spec = type(slot.spec) == "table" and slot.spec or slot
+        local role = tostring(slot.role or spec.role or "")
+        if ROLE_OK[role] ~= true then
+            return nil
+        end
+        local uid = AsInt(slot.uid or spec.uid)
+        if uid == nil or uid < 1 or uid > ID_MAX then
+            return nil
+        end
+        local pcRaw = slot.perCraft
+        if pcRaw == nil then
+            pcRaw = 1
+        end
+        local pc = AsInt(pcRaw)
+        if pc == nil or pc < 1 or pc > MAX_PER_CRAFT then
+            return nil
+        end
+        local power = StatForEncode(spec, 2, spec.power)
+        local stab = StatForEncode(spec, 1, spec.stability)
+        local dur = StatForEncode(spec, 3, spec.duration)
+        if power == nil or stab == nil or dur == nil
+            or power < -STAT_ABS or power > STAT_ABS
+            or stab < -STAT_ABS or stab > STAT_ABS
+            or dur < -STAT_ABS or dur > STAT_ABS
+        then
+            return nil
+        end
+        local ts = FieldInt(spec.tradeSkill, 0, 0, MAX_SMALL)
+        local sl = FieldInt(spec.skillLevel, 0, 0, MAX_SKILL)
+        local cult = FieldInt(spec.cultivationType, 0, 0, MAX_SMALL)
+        local slotType = FieldInt(spec.slotType, 0, 0, MAX_SMALL)
+        if ts == nil or sl == nil or cult == nil or slotType == nil then
+            return nil
+        end
+        local effect = AsInt(spec.effectId)
+        if effect == nil then
+            effect = BonusNumber(spec, 6) or 0
+        end
+        if effect < 0 or effect > ID_MAX then
+            return nil
+        end
+        local tail = EncodeBonusTail(spec)
+        if tail == nil then
+            return nil
+        end
+        parts[#parts + 1] = table.concat({
+            role,
+            tostring(uid),
+            tostring(pc),
+            tostring(power),
+            tostring(stab),
+            tostring(dur),
+            tostring(ts),
+            tostring(sl),
+            tostring(cult),
+            tostring(slotType),
+            tostring(effect),
+            tail,
+        }, ":")
     end
     return table.concat(parts, "^")
 end
 
+local function DecodeOneSlot(piece)
+    local parts = SplitColon(piece)
+    local n = #parts
+    if n ~= 10 and n ~= 11 and n ~= 12 then
+        return nil
+    end
+    local role = parts[1]
+    if ROLE_OK[role] ~= true then
+        return nil
+    end
+    local uid = StrictInt(parts[2], 1, ID_MAX, false)
+    local pc = StrictInt(parts[3], 1, MAX_PER_CRAFT, false)
+    local power = StrictInt(parts[4], -STAT_ABS, STAT_ABS, true)
+    local stab = StrictInt(parts[5], -STAT_ABS, STAT_ABS, true)
+    local dur = StrictInt(parts[6], -STAT_ABS, STAT_ABS, true)
+    local ts = StrictInt(parts[7], 0, MAX_SMALL, false)
+    local sl = StrictInt(parts[8], 0, MAX_SKILL, false)
+    local cult = StrictInt(parts[9], 0, MAX_SMALL, false)
+    local slotType = StrictInt(parts[10], 0, MAX_SMALL, false)
+    if uid == nil or pc == nil or power == nil or stab == nil or dur == nil
+        or ts == nil or sl == nil or cult == nil or slotType == nil
+    then
+        return nil
+    end
+    local effect = 0
+    if n >= 11 then
+        effect = StrictInt(parts[11], 0, ID_MAX, false)
+        if effect == nil then
+            return nil
+        end
+    end
+    local extra = {}
+    if n >= 12 then
+        extra = ParseBonusTail(parts[12])
+        if extra == nil then
+            return nil
+        end
+    end
+    local bonuses = {}
+    if power ~= 0 then
+        bonuses[2] = power
+    end
+    if stab ~= 0 then
+        bonuses[1] = stab
+    end
+    if dur ~= 0 then
+        bonuses[3] = dur
+    end
+    for ref, val in pairs(extra) do
+        bonuses[ref] = val
+    end
+    local spec = {
+        uid = uid,
+        role = role,
+        power = power,
+        stability = stab,
+        duration = dur,
+        tradeSkill = ts,
+        skillLevel = sl,
+        cultivationType = cult,
+        slotType = slotType,
+    }
+    if effect > 0 then
+        spec.effectId = effect
+    end
+    if next(bonuses) ~= nil then
+        spec.bonuses = bonuses
+    end
+    return {
+        role = role,
+        uid = uid,
+        perCraft = pc,
+        spec = spec,
+    }
+end
+
 --- Decode slots= payload into slim slot tables.
+--- Any bad slot rejects the whole payload.
 function RL.DecodeSlots(encoded)
     encoded = ToNarrow(encoded)
     if encoded == "" then
         return nil
     end
+    if string.sub(encoded, 1, 1) == "^"
+        or string.sub(encoded, -1) == "^"
+        or string.find(encoded, "^^", 1, true) ~= nil
+    then
+        return nil
+    end
     local slots = {}
+    local count = 0
     for piece in string.gmatch(encoded, "[^%^]+") do
-        local role, uid, perCraft, power, stab, dur, ts, sl, cult, slotType =
-            string.match(piece, "^([^:]+):(%-?%d+):(%-?%d+):(%-?%d+):(%-?%d+):(%-?%d+):(%-?%d+):(%-?%d+):(%-?%d+):(%-?%d+)$")
-        if role and uid then
-            local u = tonumber(uid) or 0
-            local pc = math.max(1, tonumber(perCraft) or 1)
-            local entry = {
-                role = role,
-                uid = u > 0 and u or nil,
-                perCraft = pc,
-                spec = {
-                    uid = u > 0 and u or nil,
-                    role = role,
-                    power = tonumber(power) or 0,
-                    stability = tonumber(stab) or 0,
-                    duration = tonumber(dur) or 0,
-                    tradeSkill = tonumber(ts) or 0,
-                    skillLevel = tonumber(sl) or 0,
-                    cultivationType = tonumber(cult) or 0,
-                    slotType = tonumber(slotType) or 0,
-                },
-            }
-            slots[#slots + 1] = entry
+        count = count + 1
+        if count > RL.MAX_SLOTS then
+            return nil
         end
+        local entry = DecodeOneSlot(piece)
+        if entry == nil then
+            return nil
+        end
+        slots[#slots + 1] = entry
     end
     if #slots < 1 then
         return nil
@@ -178,7 +529,6 @@ local function RecipeSlotsByKey(rk)
             return recipe.slots
         end
     end
-    -- Direct Account table (avoids GetRecipe edge cases after partial forget).
     local recipes = StockPiler.Account and StockPiler.Account.recipes
     local row = type(recipes) == "table" and recipes[rk] or nil
     if type(row) == "table" and type(row.slots) == "table" and #row.slots > 0 then
@@ -201,34 +551,41 @@ local function AttachSlotsFromKnowledge(fields)
     return fields
 end
 
---- Serialize a potion share. fields: uid, rk, name, icon, slots?
---- Order: uid/icon/name/slots then optional rk. Chat truncates from the end, so
---- materials (slots) must come before the long fingerprint.
+--- Serialize a potion share. fields: uid, name, icon, slots?
+--- The fingerprint is not included; import recomputes it.
 function RL.SerializePlain(fields)
     if type(fields) ~= "table" then
         return nil
     end
-    local uid = tonumber(fields.uid) or 0
-    if uid <= 0 then
+    local uid = AsInt(fields.uid)
+    if uid == nil or uid < 1 or uid > ID_MAX then
         return nil
     end
     fields = AttachSlotsFromKnowledge(fields)
-    local rk = tostring(fields.rk or "")
-    local icon = math.floor(tonumber(fields.icon) or tonumber(fields.iconNum) or 0)
+    local icon = AsInt(fields.icon or fields.iconNum) or 0
+    if icon < 0 or icon > ID_MAX then
+        icon = 0
+    end
     local name = SanitizeName(fields.name)
     local slotsEnc = ""
     if type(fields.slots) == "table" then
         slotsEnc = RL.EncodeSlots(fields.slots)
-    elseif type(fields.slotsEncoded) == "string" then
+        if slotsEnc == nil then
+            return nil
+        end
+    elseif type(fields.slotsEncoded) == "string" and fields.slotsEncoded ~= "" then
+        if RL.DecodeSlots(fields.slotsEncoded) == nil then
+            return nil
+        end
         slotsEnc = fields.slotsEncoded
     end
 
-    local function build(includeName, includeRk)
+    local function build(includeName, includeIcon)
         local parts = {
             "POTION",
-            "uid=" .. tostring(math.floor(uid)),
+            "uid=" .. tostring(uid),
         }
-        if icon > 0 then
+        if includeIcon and icon > 0 then
             parts[#parts + 1] = "icon=" .. tostring(icon)
         end
         if includeName and name ~= "" then
@@ -237,15 +594,10 @@ function RL.SerializePlain(fields)
         if slotsEnc ~= "" then
             parts[#parts + 1] = "slots=" .. slotsEnc
         end
-        -- rk last (and optional): safe to drop when slots can rebuild identity.
-        if includeRk and rk ~= "" then
-            parts[#parts + 1] = "rk=" .. rk
-        end
         return table.concat(parts, ";")
     end
 
     local plain = build(true, true)
-    -- Prefer keeping slots over rk/name when over the chat budget.
     if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
         plain = build(true, false)
     end
@@ -256,6 +608,7 @@ function RL.SerializePlain(fields)
 end
 
 --- Parse plain POTION;… payload (string). Returns fields table or nil.
+--- Any invalid field rejects the whole link.
 function RL.ParsePlain(plain)
     plain = ToNarrow(plain)
     plain = string.gsub(plain, "^%s+", "")
@@ -283,7 +636,6 @@ function RL.ParsePlain(plain)
     end
 
     local fields = {}
-    -- Peel trailing slots= / rk= in either order (current: slots then rk; legacy: rk then slots).
     local function peelSuffix(tag)
         local needle = ";" .. tag .. "="
         local at = string.find(body, needle, 1, true)
@@ -300,7 +652,6 @@ function RL.ParsePlain(plain)
         end
         return nil
     end
-    -- Prefer peeling whichever suffix is present last in the string.
     local lastSlots = select(1, string.find(body, ";slots=", 1, true)) or (string.sub(body, 1, 6) == "slots=" and 1) or 0
     local lastRk = select(1, string.find(body, ";rk=", 1, true)) or (string.sub(body, 1, 3) == "rk=" and 1) or 0
     if lastSlots > 0 or lastRk > 0 then
@@ -318,9 +669,9 @@ function RL.ParsePlain(plain)
         if key and val then
             key = string.lower(key)
             if key == "uid" then
-                fields.uid = tonumber(val)
+                fields.uid = val
             elseif key == "icon" then
-                fields.icon = tonumber(val)
+                fields.icon = val
             elseif key == "n" or key == "name" then
                 fields.name = val
             elseif key == "rk" then
@@ -331,11 +682,43 @@ function RL.ParsePlain(plain)
         end
     end
 
-    if (tonumber(fields.uid) or 0) <= 0 then
+    local uid = StrictInt(fields.uid, 1, ID_MAX, false)
+    if uid == nil then
         return nil
     end
-    if fields.slotsEncoded and fields.slotsEncoded ~= "" then
+    fields.uid = uid
+    if fields.icon ~= nil and tostring(fields.icon) ~= "" then
+        local icon = StrictInt(fields.icon, 0, ID_MAX, false)
+        if icon == nil then
+            return nil
+        end
+        fields.icon = icon
+    else
+        fields.icon = nil
+    end
+    if fields.name ~= nil then
+        local name = ValidName(fields.name)
+        if name == nil then
+            return nil
+        end
+        fields.name = name
+    end
+    if fields.rk ~= nil then
+        local rk = ValidRk(fields.rk)
+        if rk == nil then
+            return nil
+        end
+        if rk == "" then
+            fields.rk = nil
+        else
+            fields.rk = rk
+        end
+    end
+    if fields.slotsEncoded ~= nil and fields.slotsEncoded ~= "" then
         fields.slots = RL.DecodeSlots(fields.slotsEncoded)
+        if fields.slots == nil then
+            return nil
+        end
     end
     return fields
 end
@@ -366,13 +749,33 @@ function RL.BuildLinkData(fields)
     return ToW("StockPiler:" .. plain)
 end
 
---- True when this potion+fingerprint is still on Known Potions.
---- Do not use Account.recipes alone: Forget unlinks the potion but may leave the
---- fingerprint row, which used to block re-import from a chat link.
+--- Fingerprint from slots. Link rk is not trusted.
+function RL.ResolvedRecipeKey(fields)
+    if type(fields) ~= "table" then
+        return ""
+    end
+    local slots = fields.slots
+    if (type(slots) ~= "table" or #slots < 1) and type(fields.slotsEncoded) == "string" then
+        slots = RL.DecodeSlots(fields.slotsEncoded)
+    end
+    if type(slots) ~= "table" or #slots < 1 then
+        return ""
+    end
+    local RS = StockPiler.RecipeSpec
+    if not (RS and RS.RecipeSpecKey) then
+        return ""
+    end
+    return tostring(RS.RecipeSpecKey(slots) or "")
+end
+
+--- True when this potion already lists the recomputed fingerprint.
 function RL.RecipeIsKnown(fields)
-    local rk = tostring(fields and fields.rk or "")
     local uid = tonumber(fields and fields.uid) or 0
-    if uid <= 0 or rk == "" then
+    if uid <= 0 then
+        return false
+    end
+    local rk = RL.ResolvedRecipeKey(fields)
+    if rk == "" then
         return false
     end
     local RS = StockPiler.RecipeSpec
@@ -451,34 +854,42 @@ function RL.FieldsFromRow(data)
     return AttachSlotsFromKnowledge(fields)
 end
 
+local function RaiseChatLimit()
+    if type(TextEditBoxSetMaxChars) == "function" then
+        TextEditBoxSetMaxChars(RL.CHAT_EDIT_BOX, RL.CHAT_MAX_CHARS)
+    end
+end
+
+local function ChatTextFits(text)
+    if string.len(ToNarrow(text)) > RL.CHAT_MAX_CHARS then
+        Print(T("link.too_long"))
+        return false
+    end
+    return true
+end
+
+local function PlainForShare(fields)
+    fields = AttachSlotsFromKnowledge(fields)
+    local plain = RL.SerializePlain(fields)
+    if plain == nil or string.find(plain, "slots=", 1, true) == nil then
+        Print(T("link.share_no_slots"))
+        return nil
+    end
+    if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
+        Print(T("link.too_long"))
+        return nil
+    end
+    return plain
+end
+
 function RL.ShareFields(fields)
     fields = type(fields) == "table" and fields or nil
     if fields == nil then
         Print(T("link.empty"))
         return false
     end
-    fields = AttachSlotsFromKnowledge(fields)
-    local slotsEnc = ""
-    if type(fields.slots) == "table" then
-        slotsEnc = RL.EncodeSlots(fields.slots)
-    end
-    if slotsEnc == "" then
-        Print(T("link.share_no_slots"))
-        return false
-    end
-    local linkData = RL.BuildLinkData(fields)
-    if linkData == nil then
-        Print(T("link.empty"))
-        return false
-    end
-    local narrow = ToNarrow(linkData)
-    if string.len(narrow) > RL.LINK_MAX_DATA then
-        Print(T("link.too_long"))
-        return false
-    end
-    -- Refuse truncated shares that lost materials (should not happen after reorder).
-    if string.find(narrow, "slots=", 1, true) == nil then
-        Print(T("link.share_no_slots"))
+    local plain = PlainForShare(fields)
+    if plain == nil then
         return false
     end
     if type(CreateHyperLink) ~= "function" or type(EA_ChatWindow) ~= "table"
@@ -487,13 +898,45 @@ function RL.ShareFields(fields)
         Print(T("link.no_chat"))
         return false
     end
+    RaiseChatLimit()
     local linkText = T("link.chat_label_named", { name = RL.DisplayName(fields) })
+    local linkData = ToW("StockPiler:" .. plain)
     local doneLink = CreateHyperLink(linkData, linkText, RL.LINK_COLOR, {})
+    if doneLink == nil or not ChatTextFits(doneLink) then
+        if doneLink == nil then
+            Print(T("link.no_chat"))
+        end
+        return false
+    end
     EA_ChatWindow.InsertText(doneLink)
     local key = RL.WatchKeyFromFields(fields)
     if key then
         RL._lastShareKey = key
     end
+    return true
+end
+
+function RL.CopyFields(fields)
+    fields = type(fields) == "table" and fields or nil
+    if fields == nil then
+        Print(T("link.empty"))
+        return false
+    end
+    local plain = PlainForShare(fields)
+    if plain == nil then
+        return false
+    end
+    if type(EA_ChatWindow) ~= "table" or type(EA_ChatWindow.InsertText) ~= "function" then
+        Print(T("link.no_chat"))
+        return false
+    end
+    RaiseChatLimit()
+    local line = ToW("/stp apply " .. plain)
+    if not ChatTextFits(line) then
+        return false
+    end
+    EA_ChatWindow.InsertText(line)
+    Print(T("link.copied"))
     return true
 end
 
@@ -575,40 +1018,59 @@ function RL.ImportKnownPotion(fields)
     if fields == nil then
         return "failed"
     end
-    local uid = tonumber(fields.uid) or 0
-    if uid <= 0 then
+    local uid = StrictInt(fields.uid, 1, ID_MAX, false)
+    if uid == nil then
         return "failed"
     end
-    if RL.RecipeIsKnown(fields) then
-        return "known"
+    if fields.name ~= nil and tostring(fields.name) ~= "" then
+        local name = ValidName(fields.name)
+        if name == nil then
+            return "failed"
+        end
+        fields.name = name
+    end
+    if fields.icon ~= nil and tostring(fields.icon) ~= "" then
+        local icon = StrictInt(fields.icon, 0, ID_MAX, false)
+        if icon == nil then
+            return "failed"
+        end
+        fields.icon = icon
+    end
+    if fields.rk ~= nil and tostring(fields.rk) ~= "" then
+        if ValidRk(fields.rk) == nil then
+            return "failed"
+        end
     end
 
     local slots = fields.slots
-    if type(slots) ~= "table" or #slots < 1 then
-        if fields.slotsEncoded then
-            slots = RL.DecodeSlots(fields.slotsEncoded)
-        end
-    end
-    -- Legacy / truncated links: reuse local fingerprint slots if Forget left them.
-    if (type(slots) ~= "table" or #slots < 1) and tostring(fields.rk or "") ~= "" then
-        slots = RecipeSlotsByKey(fields.rk)
-        if type(slots) == "table" then
-            fields.slots = slots
+    if (type(slots) ~= "table" or #slots < 1) and type(fields.slotsEncoded) == "string" and fields.slotsEncoded ~= "" then
+        slots = RL.DecodeSlots(fields.slotsEncoded)
+        if slots == nil then
+            return "failed"
         end
     end
     if type(slots) ~= "table" or #slots < 1 then
         return "noslots"
     end
-
-    local rk = tostring(fields.rk or "")
-    local RS = StockPiler.RecipeSpec
-    -- Prefer fingerprint from payload; else rebuild from slots when RecipeSpec can.
-    if rk == "" and RS and RS.RecipeSpecKey then
-        rk = tostring(RS.RecipeSpecKey(slots) or "")
-        fields.rk = rk
+    local enc = RL.EncodeSlots(slots)
+    if enc == nil or enc == "" then
+        return "failed"
     end
+    slots = RL.DecodeSlots(enc)
+    if type(slots) ~= "table" then
+        return "failed"
+    end
+
+    local RS = StockPiler.RecipeSpec
+    if not (RS and RS.RegisterKnownPotion and RS.RecipeSpecKey) then
+        return "failed"
+    end
+    local rk = tostring(RS.RecipeSpecKey(slots) or "")
     if rk == "" then
         return "failed"
+    end
+    if RL.RecipeIsKnown({ uid = uid, slots = slots }) then
+        return "known"
     end
 
     local Know = StockPiler.Knowledge
@@ -617,9 +1079,8 @@ function RL.ImportKnownPotion(fields)
         return "failed"
     end
 
-    local recipe = recipes[rk]
-    if type(recipe) ~= "table" then
-        recipe = {
+    if type(recipes[rk]) ~= "table" then
+        recipes[rk] = {
             recipeSpecKey = rk,
             slots = slots,
             outcomes = {},
@@ -632,46 +1093,30 @@ function RL.ImportKnownPotion(fields)
             yieldProductSum = 0,
             yieldSamples = 0,
             crafts = 0,
-            quality = "good",
-            activeOutcomeUid = uid,
             outputUid = uid,
+            activeOutcomeUid = uid,
             sharedImport = true,
+            unverified = true,
         }
-        recipes[rk] = recipe
-    else
-        -- Re-import after Forget: refresh slots from the link when present.
-        if type(slots) == "table" and #slots > 0 then
-            recipe.slots = slots
+        if RS and RS.SlimRecipeForStorage then
+            pcall(RS.SlimRecipeForStorage, recipes[rk])
         end
     end
-    if type(recipe.outcomes) ~= "table" then
-        recipe.outcomes = {}
-    end
-    local ocKey = tostring(uid)
-    if type(recipe.outcomes[ocKey]) ~= "table" then
-        recipe.outcomes[ocKey] = { uid = uid, samples = 1, qtySum = 1, quality = "good" }
-    end
-    recipe.activeOutcomeUid = tonumber(recipe.activeOutcomeUid) or uid
-    recipe.outputUid = tonumber(recipe.outputUid) or uid
 
-    local out = {
-        uniqueID = uid,
-        name = fields.name and ToW(SanitizeName(fields.name)) or nil,
-        iconNum = tonumber(fields.icon) or 0,
-    }
-    if RS and RS.RegisterKnownPotion then
-        RS.RegisterKnownPotion(uid, out, rk, "good", nil)
-    else
-        return "failed"
+    local out = { uniqueID = uid }
+    if fields.name ~= nil and ToNarrow(fields.name) ~= "" then
+        out.name = ToW(fields.name)
     end
-    if RS and RS.SlimRecipeForStorage and type(recipes[rk]) == "table" then
-        pcall(RS.SlimRecipeForStorage, recipes[rk])
+    local icon = tonumber(fields.icon) or 0
+    if icon > 0 then
+        out.iconNum = icon
     end
+    RS.RegisterKnownPotion(uid, out, rk, "good", { linkImport = true })
     AfterPotionImport()
     return "imported"
 end
 
---- Click /stp apply: import to Known Potions only (no watch create).
+--- Import a chat link or pasted recipe into Known Potions (no watch).
 function RL.OpenLinkedRecipe(fields)
     fields = type(fields) == "table" and fields or nil
     if fields == nil then
@@ -680,12 +1125,13 @@ function RL.OpenLinkedRecipe(fields)
     end
     local name = RL.DisplayName(fields)
     local result = RL.ImportKnownPotion(fields)
-    ShowPotionsTab()
     if result == "known" then
+        ShowPotionsTab()
         Print(T("link.already_known", { name = name }))
         return true
     end
     if result == "imported" then
+        ShowPotionsTab()
         Print(T("link.imported", { name = name }))
         return true
     end
@@ -703,10 +1149,6 @@ function RL.ShowContextMenuForRow(data)
     if fields == nil then
         return false
     end
-    local key = RL.WatchKeyFromFields(fields)
-    if key then
-        RL._lastShareKey = key
-    end
     RL._contextFields = fields
     if type(EA_Window_ContextMenu) ~= "table"
         or type(EA_Window_ContextMenu.CreateContextMenu) ~= "function"
@@ -718,6 +1160,12 @@ function RL.ShowContextMenuForRow(data)
     EA_Window_ContextMenu.AddMenuItem(
         T("link.menu_link"),
         RL.OnContextLinkInChat,
+        false,
+        true
+    )
+    EA_Window_ContextMenu.AddMenuItem(
+        T("link.menu_copy"),
+        RL.OnContextCopyString,
         false,
         true
     )
@@ -733,6 +1181,16 @@ function RL.OnContextLinkInChat()
         return
     end
     RL.ShareFields(fields)
+end
+
+function RL.OnContextCopyString()
+    local fields = RL._contextFields
+    RL._contextFields = nil
+    if type(fields) ~= "table" then
+        Print(T("link.empty"))
+        return
+    end
+    RL.CopyFields(fields)
 end
 
 local function OnHyperLinkLButtonUp(linkData, flags, x, y)
@@ -762,7 +1220,10 @@ function RL.UninstallHyperlinkHook()
     if not RL._hyperlinkHooked then
         return
     end
-    if type(EA_ChatWindow) == "table" and RL._prevOnHyperLinkLButtonUp ~= nil then
+    if type(EA_ChatWindow) == "table"
+        and EA_ChatWindow.OnHyperLinkLButtonUp == OnHyperLinkLButtonUp
+        and RL._prevOnHyperLinkLButtonUp ~= nil
+    then
         EA_ChatWindow.OnHyperLinkLButtonUp = RL._prevOnHyperLinkLButtonUp
     end
     RL._prevOnHyperLinkLButtonUp = nil

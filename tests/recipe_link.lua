@@ -88,6 +88,41 @@ StockPiler.Knowledge = {
     Touch = function() end,
 }
 
+local state = { storeCalls = 0 }
+
+StockPiler.Items = {
+    rows = {},
+    StoreItem = function(data, kind)
+        state.storeCalls = state.storeCalls + 1
+        local uid = data and (data.uniqueID or data.uniqueId)
+        StockPiler.Items.rows[tostring(uid)] = {
+            name = data and data.name,
+            iconNum = data and data.iconNum,
+            kind = kind,
+        }
+    end,
+}
+
+local function recipeKey(slots)
+    if type(slots) ~= "table" or #slots < 1 then
+        return ""
+    end
+    local parts = {}
+    for i = 1, #slots do
+        local s = slots[i]
+        if type(s) ~= "table" then
+            return ""
+        end
+        local spec = type(s.spec) == "table" and s.spec or {}
+        local fx = tonumber(spec.effectId) or 0
+        parts[#parts + 1] = tostring(s.role)
+            .. "x" .. tostring(s.perCraft or 1)
+            .. ":u" .. tostring(s.uid)
+            .. ":fx" .. tostring(fx)
+    end
+    return table.concat(parts, "|")
+end
+
 StockPiler.RecipeSpec = {
     PotionRecipeKey = function(uid, rk)
         return "uid:" .. tostring(uid) .. "|rk:" .. tostring(rk)
@@ -113,22 +148,76 @@ StockPiler.RecipeSpec = {
     GetPotion = function(key)
         return potions[tostring(key or "")]
     end,
-    RegisterKnownPotion = function(uid, out, rk, quality)
+    RegisterKnownPotion = function(uid, out, rk, quality, opts)
+        opts = type(opts) == "table" and opts or {}
         local pk = "uid:" .. tostring(uid)
-        potions[pk] = {
-            potionKey = pk,
-            outputUid = uid,
-            name = out and out.name,
-            iconNum = out and out.iconNum,
-            recipeKeys = { rk },
-            activeRecipeKey = rk,
+        local existing = potions[pk]
+        local isNew = type(existing) ~= "table"
+        if isNew then
+            existing = {
+                potionKey = pk,
+                outputUid = uid,
+                recipeKeys = {},
+                name = nil,
+                iconNum = 0,
+            }
+        end
+        if opts.linkImport == true then
+            if isNew then
+                existing.name = out and out.name or existing.name
+                if out and tonumber(out.iconNum) and tonumber(out.iconNum) > 0 then
+                    existing.iconNum = tonumber(out.iconNum)
+                end
+            end
+            local keys = {}
+            if type(existing.recipeKeys) == "table" then
+                for i = 1, #existing.recipeKeys do
+                    keys[#keys + 1] = existing.recipeKeys[i]
+                end
+            end
+            if tostring(existing.activeRecipeKey or "") ~= "" then
+                local seenActive = false
+                for i = 1, #keys do
+                    if keys[i] == existing.activeRecipeKey then
+                        seenActive = true
+                        break
+                    end
+                end
+                if not seenActive then
+                    keys[#keys + 1] = existing.activeRecipeKey
+                end
+            end
+            local seen = false
+            for i = 1, #keys do
+                if keys[i] == rk then
+                    seen = true
+                    break
+                end
+            end
+            if not seen then
+                keys[#keys + 1] = rk
+            end
+            existing.recipeKeys = keys
+            if tostring(existing.activeRecipeKey or "") == "" then
+                existing.activeRecipeKey = rk
+            end
+        else
+            StockPiler.Items.StoreItem(out or { uniqueID = uid }, "potion")
+            existing.name = out and out.name
+            existing.iconNum = out and out.iconNum
+            existing.recipeKeys = { rk }
+            existing.activeRecipeKey = rk
+        end
+        potions[pk] = existing
+        registered[#registered + 1] = {
+            uid = uid,
+            rk = rk,
+            quality = quality,
+            linkImport = opts.linkImport == true,
         }
-        registered[#registered + 1] = { uid = uid, rk = rk, quality = quality }
-        return potions[pk], true, true, false
+        return existing, isNew, true, false
     end,
-    RecipeSpecKey = function()
-        return ""
-    end,
+    RecipeSpecKey = recipeKey,
 }
 
 load_module("Source/View/RecipeLink.lua")
@@ -193,22 +282,48 @@ local function testRoundTrip()
     local plain = RL.SerializePlain(fields)
     check(type(plain) == "string", "serialize returns string")
     check(string.find(plain, "slots=", 1, true) ~= nil, "has slots")
-    check(string.find(plain, "rk=mainx1:abc|containerx1:def", 1, true) ~= nil, "rk kept")
-    -- slots must appear before rk so chat truncation keeps materials.
-    local slotsAt = string.find(plain, "slots=", 1, true) or 0
-    local rkAt = string.find(plain, ";rk=", 1, true) or 0
-    check(slotsAt > 0 and rkAt > slotsAt, "slots before rk")
+    check(string.find(plain, "rk=", 1, true) == nil, "new share omits rk")
     local parsed = RL.ParsePlain(plain)
     check(type(parsed) == "table", "parse returns table")
     eq(tonumber(parsed.uid), 3012345, "uid round-trip")
-    eq(tostring(parsed.rk), "mainx1:abc|containerx1:def", "rk round-trip")
+    eq(parsed.rk, nil, "parsed share has no rk")
     eq(tostring(parsed.name), "Bitter Example", "name round-trip")
     eq(tonumber(parsed.icon), 123, "icon round-trip")
     check(type(parsed.slots) == "table" and #parsed.slots == 2, "slots round-trip")
+    eq(tonumber(parsed.slots[1].spec.effectId), nil, "absent effect stays absent")
+end
+
+local function testEffectBonusRoundTrip()
+    local slots = {
+        {
+            role = "main",
+            uid = 1001,
+            perCraft = 1,
+            spec = {
+                uid = 1001,
+                role = "main",
+                power = 10,
+                stability = 5,
+                duration = 0,
+                tradeSkill = 4,
+                skillLevel = 50,
+                cultivationType = 0,
+                slotType = 1,
+                effectId = 4,
+                bonuses = { [4] = 2, [6] = 4, [12] = 15 },
+            },
+        },
+    }
+    local enc = RL.EncodeSlots(slots)
+    check(string.find(enc, ":4:4=2,6=4,12=15", 1, true) ~= nil, "effect and bonuses encoded")
+    local decoded = RL.DecodeSlots(enc)
+    eq(tonumber(decoded[1].spec.effectId), 4, "effect round-trip")
+    eq(tonumber(decoded[1].spec.bonuses[4]), 2, "multiplier bonus")
+    eq(tonumber(decoded[1].spec.bonuses[12]), 15, "crit bonus")
+    eq(tonumber(decoded[1].spec.bonuses[6]), 4, "effect bonus")
 end
 
 local function testTruncatedKeepsSlots()
-    -- Simulate chat cutting the trailing fingerprint.
     local fields = {
         uid = 9,
         rk = "mainx1:verylongfingerprint",
@@ -216,8 +331,10 @@ local function testTruncatedKeepsSlots()
         slots = sampleSlots,
     }
     local plain = RL.SerializePlain(fields)
-    local cut = string.match(plain, "^(.-);rk=")
-    check(cut ~= nil, "can strip rk")
+    check(string.find(plain, ";rk=", 1, true) == nil, "share has no rk to cut")
+    local legacy = plain .. ";rk=mainx1:verylongfingerprint"
+    local cut = string.match(legacy, "^(.-);rk=")
+    check(cut ~= nil, "can strip a legacy rk")
     local parsed = RL.ParsePlain(cut)
     check(type(parsed.slots) == "table" and #parsed.slots == 2, "truncated link keeps slots")
     eq(tonumber(parsed.uid), 9, "truncated uid")
@@ -241,51 +358,63 @@ local function testLinkLabelFields()
     eq(tostring(RL.DisplayName(fields)), "Heal Potion", "display name")
 end
 
-local function testImportKnownSkips()
+local function resetKnowledge()
     recipes = {}
     potions = {}
+    registered = {}
+    state.storeCalls = 0
+    StockPiler.Items.rows = {}
     StockPiler.Knowledge.Recipes = function()
         return recipes
     end
-    local rk = "mainx1:known"
-    recipes[rk] = { recipeSpecKey = rk, slots = sampleSlots }
+end
+
+local function testImportKnownSkips()
+    resetKnowledge()
+    local rk = recipeKey(sampleSlots)
+    recipes[rk] = { recipeSpecKey = rk, slots = sampleSlots, sentinel = "row" }
     -- Fingerprint alone must NOT count as known (Forget leaves recipes rows).
     local orphan = RL.ImportKnownPotion({
         uid = 55,
-        rk = rk,
+        rk = "mainx1:lie",
         name = "Orphan",
         slots = sampleSlots,
     })
     eq(orphan, "imported", "orphan fingerprint re-links potion")
+    eq(recipes[rk].sentinel, "row", "existing recipe not replaced")
     potions["uid:55"] = {
         potionKey = "uid:55",
         outputUid = 55,
         recipeKeys = { rk },
         activeRecipeKey = rk,
+        name = "English",
+        iconNum = 10,
     }
+    registered = {}
     local result = RL.ImportKnownPotion({
         uid = 55,
         rk = rk,
         name = "Known",
+        icon = 99,
         slots = sampleSlots,
     })
     eq(result, "known", "skip when potion still linked")
+    eq(#registered, 0, "known import does not register again")
+    eq(potions["uid:55"].name, "English", "known import keeps name")
+    eq(potions["uid:55"].iconNum, 10, "known import keeps icon")
 end
 
 local function testImportAfterForget()
-    recipes = {}
-    potions = {}
-    StockPiler.Knowledge.Recipes = function()
-        return recipes
-    end
-    local rk = "mainx1:forgot"
+    resetKnowledge()
+    local rk = recipeKey(sampleSlots)
+    local keptSlots = sampleSlots
     recipes[rk] = {
         recipeSpecKey = rk,
-        slots = sampleSlots,
-        outcomes = {},
+        slots = keptSlots,
+        outcomes = { ["66"] = { uid = 66, samples = 3, qtySum = 8, quality = "good" } },
+        sentinel = "forgot",
     }
-    -- Simulate Forget: potion gone, fingerprint may remain.
-    eq(RL.RecipeIsKnown({ uid = 66, rk = rk }), false, "forgotten potion not known")
+    eq(RL.RecipeIsKnown({ uid = 66, slots = sampleSlots }), false, "forgotten potion not known")
     local result = RL.ImportKnownPotion({
         uid = 66,
         rk = rk,
@@ -294,27 +423,35 @@ local function testImportAfterForget()
     })
     eq(result, "imported", "reimport after forget")
     check(type(potions["uid:66"]) == "table", "potion restored")
+    eq(recipes[rk].sentinel, "forgot", "forget row kept")
+    eq(recipes[rk].slots, keptSlots, "forget slots not replaced")
+    eq(recipes[rk].outcomes["66"].samples, 3, "forget outcomes not replaced")
+    eq(potions["uid:66"].name, "Readd", "new potion gets link name")
 end
 
 local function testImportAdds()
-    recipes = {}
-    potions = {}
-    registered = {}
-    StockPiler.Knowledge.Recipes = function()
-        return recipes
-    end
-    local rk = "mainx1:newfp"
+    resetKnowledge()
+    local rk = recipeKey(sampleSlots)
     local result = RL.ImportKnownPotion({
         uid = 77,
-        rk = rk,
+        rk = "mainx1:newfp",
         name = "Fresh",
         icon = 9,
         slots = sampleSlots,
     })
     eq(result, "imported", "import unknown")
-    check(type(recipes[rk]) == "table", "recipe stored")
+    check(type(recipes[rk]) == "table", "recipe stored under recomputed key")
+    eq(recipes["mainx1:newfp"], nil, "mismatched link rk is not a recipe key")
     check(type(potions["uid:77"]) == "table", "potion registered")
     eq(#registered, 1, "RegisterKnownPotion called")
+    eq(registered[1].linkImport, true, "import passes linkImport")
+    eq(recipes[rk].outcomes["77"], nil, "no synthetic outcome")
+    eq(recipes[rk].sharedImport, true, "import marked shared")
+    eq(recipes[rk].unverified, true, "import marked unverified")
+    eq(state.storeCalls, 0, "import does not store item")
+    eq(potions["uid:77"].name, "Fresh", "new potion name")
+    eq(potions["uid:77"].iconNum, 9, "new potion icon")
+    eq(potions["uid:77"].activeRecipeKey, rk, "new potion active is recomputed key")
 end
 
 local function testImportNoSlots()
@@ -339,8 +476,263 @@ local function testPlantRejected()
     eq(RL.FieldsFromRow({ kind = "plant", uniqueID = 1 }), nil, "plant row rejected")
 end
 
+local function altSlots()
+    return {
+        {
+            role = "main",
+            uid = 7777,
+            perCraft = 1,
+            spec = {
+                uid = 7777,
+                role = "main",
+                power = 3,
+                stability = -2,
+                duration = 1,
+                tradeSkill = 4,
+                skillLevel = 20,
+                cultivationType = 0,
+                slotType = 1,
+                effectId = 9,
+            },
+        },
+    }
+end
+
+local function testH2LeavesExistingUntouched()
+    resetKnowledge()
+    local oldKey = recipeKey(sampleSlots)
+    local keptSlots = sampleSlots
+    local keptOutcomes = { ["55"] = { uid = 55, samples = 4, qtySum = 9, quality = "good" } }
+    recipes[oldKey] = {
+        recipeSpecKey = oldKey,
+        slots = keptSlots,
+        outcomes = keptOutcomes,
+        sentinel = "orig",
+        sharedImport = nil,
+    }
+    potions["uid:55"] = {
+        potionKey = "uid:55",
+        outputUid = 55,
+        name = "English",
+        iconNum = 10,
+        recipeKeys = { oldKey },
+        activeRecipeKey = oldKey,
+    }
+    StockPiler.Items.rows["55"] = { name = "English", iconNum = 10 }
+    local fresh = altSlots()
+    local newKey = recipeKey(fresh)
+    check(newKey ~= oldKey, "alt recipe key differs")
+    local result = RL.ImportKnownPotion({
+        uid = 55,
+        rk = oldKey,
+        name = "Potion francaise",
+        icon = 99,
+        slots = fresh,
+    })
+    eq(result, "imported", "h2 different recipe imports as alternative")
+    eq(recipes[oldKey], recipes[oldKey], "h2 old recipe still present")
+    eq(recipes[oldKey].sentinel, "orig", "h2 old recipe identity")
+    eq(recipes[oldKey].slots, keptSlots, "h2 old slots untouched")
+    eq(recipes[oldKey].outcomes, keptOutcomes, "h2 old outcomes untouched")
+    eq(recipes[oldKey].outcomes["55"].samples, 4, "h2 no rewritten sample count")
+    eq(potions["uid:55"].name, "English", "h2 potion name untouched")
+    eq(potions["uid:55"].iconNum, 10, "h2 potion icon untouched")
+    eq(potions["uid:55"].activeRecipeKey, oldKey, "h2 active recipe untouched")
+    eq(StockPiler.Items.rows["55"].name, "English", "h2 item cache untouched")
+    eq(state.storeCalls, 0, "h2 store item not called")
+    check(type(recipes[newKey]) == "table", "h2 new fingerprint stored")
+    eq(recipes[newKey].outcomes["55"], nil, "h2 new recipe has no fake outcome")
+    eq(recipes[newKey].sharedImport, true, "h2 new recipe unverified marker")
+    local foundNew = false
+    local foundOld = false
+    for i = 1, #potions["uid:55"].recipeKeys do
+        if potions["uid:55"].recipeKeys[i] == newKey then
+            foundNew = true
+        end
+        if potions["uid:55"].recipeKeys[i] == oldKey then
+            foundOld = true
+        end
+    end
+    check(foundOld, "h2 keeps previous key")
+    check(foundNew, "h2 adds alternative key")
+    eq(registered[#registered].linkImport, true, "h2 linkImport set")
+    eq(registered[#registered].rk, newKey, "h2 registers recomputed key")
+end
+
+local function testH2KnownRecipeNotRewritten()
+    resetKnowledge()
+    local rk = recipeKey(sampleSlots)
+    local outcomes = { ["55"] = { uid = 55, samples = 2, quality = "good" } }
+    recipes[rk] = {
+        recipeSpecKey = rk,
+        slots = sampleSlots,
+        outcomes = outcomes,
+        sentinel = "same",
+    }
+    potions["uid:55"] = {
+        potionKey = "uid:55",
+        name = "English",
+        iconNum = 10,
+        recipeKeys = { rk },
+        activeRecipeKey = rk,
+    }
+    local result = RL.ImportKnownPotion({
+        uid = 55,
+        rk = "not-the-real-key",
+        name = "Other",
+        icon = 1,
+        slots = sampleSlots,
+    })
+    eq(result, "known", "h2 matching slots are already known")
+    eq(recipes[rk].sentinel, "same", "h2 known recipe not rewritten")
+    eq(recipes[rk].outcomes, outcomes, "h2 known outcomes untouched")
+    eq(recipes["not-the-real-key"], nil, "h2 ignored link rk stored nowhere")
+    eq(#registered, 0, "h2 known path does not register")
+    eq(state.storeCalls, 0, "h2 known path does not store")
+end
+
+local function countTables()
+    local nr, np = 0, 0
+    for _ in pairs(recipes) do
+        nr = nr + 1
+    end
+    for _ in pairs(potions) do
+        np = np + 1
+    end
+    return nr, np
+end
+
+local function testH3RejectsBadPayloads()
+    resetKnowledge()
+    local good = "main:1001:1:10:5:0:4:50:0:1"
+    local nine = {}
+    for i = 1, 9 do
+        nine[i] = "main:" .. tostring(1000 + i) .. ":1:1:1:0:4:1:0:1"
+    end
+    local huge = string.rep("9", 400)
+    local bad = {
+        "POTION;uid=inf;slots=" .. good,
+        "POTION;uid=nan;slots=" .. good,
+        "POTION;uid=0x10;slots=" .. good,
+        "POTION;uid=1e999;slots=" .. good,
+        "POTION;uid=12345678901;slots=" .. good,
+        "POTION;uid=5;slots=main:1:" .. huge .. ":0:0:0:4:1:0:1",
+        "POTION;uid=5;slots=" .. table.concat(nine, "^"),
+        "POTION;uid=5;slots=nope:1001:1:0:0:0:4:1:0:1",
+        "POTION;uid=5;slots=main:0x10:1:0:0:0:4:1:0:1",
+        "POTION;uid=5;slots=main:1001:1:nan:0:0:4:1:0:1",
+        "POTION;uid=5;slots=main:1001:1:1e99:0:0:4:1:0:1",
+        'POTION;uid=5;n=Evil"><LINK data=x;slots=' .. good,
+        "POTION;uid=5;rk=bad rk;slots=" .. good,
+        "POTION;uid=5;rk=" .. string.rep("a", 1100) .. ";slots=" .. good,
+    }
+    for i = 1, #bad do
+        eq(RL.ParsePlain(bad[i]), nil, "h3 reject payload " .. tostring(i))
+        eq(RL.ParseLinkData("StockPiler:" .. bad[i]), nil, "h3 reject link " .. tostring(i))
+    end
+    local direct = {
+        { uid = "inf", slots = sampleSlots },
+        { uid = "0x10", slots = sampleSlots },
+        { uid = "1e999", slots = sampleSlots },
+        { uid = 0 / 0, slots = sampleSlots },
+        {
+            uid = 5,
+            slots = {
+                {
+                    role = "main",
+                    uid = "0x10",
+                    perCraft = 1,
+                    spec = { power = 1, stability = 0, duration = 0, tradeSkill = 4, skillLevel = 1, cultivationType = 0, slotType = 1 },
+                },
+            },
+        },
+        {
+            uid = 5,
+            name = 'Evil"><LINK',
+            slots = sampleSlots,
+        },
+    }
+    for i = 1, #direct do
+        eq(RL.ImportKnownPotion(direct[i]), "failed", "h3 import reject " .. tostring(i))
+    end
+    local nr, np = countTables()
+    eq(nr, 0, "h3 recipes unchanged")
+    eq(np, 0, "h3 potions unchanged")
+    eq(#registered, 0, "h3 nothing registered")
+    eq(state.storeCalls, 0, "h3 nothing stored")
+    local ok = RL.ParsePlain("POTION;uid=5;n=Fine;slots=" .. good)
+    check(type(ok) == "table" and tonumber(ok.uid) == 5, "h3 still accepts a clean link")
+    check(type(RL.DecodeSlots(good)) == "table", "h3 legacy ten-field slot still decodes")
+end
+
+local function testKnownWithoutRk()
+    resetKnowledge()
+    local rk = recipeKey(sampleSlots)
+    potions["uid:55"] = {
+        recipeKeys = { rk },
+        activeRecipeKey = rk,
+    }
+    eq(RL.RecipeIsKnown({ uid = 55, slots = sampleSlots }), true, "l1 recomputed key counts as known")
+    eq(RL.RecipeIsKnown({ uid = 55, rk = "", slots = sampleSlots }), true, "l1 empty rk still resolves")
+end
+
+local function testMenuDoesNotArmLink()
+    resetKnowledge()
+    RL._lastShareKey = "old"
+    EA_Window_ContextMenu = {
+        CreateContextMenu = function() end,
+        AddMenuItem = function() end,
+        Finalize = function() end,
+    }
+    local opened = false
+    RL.ShowContextMenuForRow({
+        uniqueID = 1001,
+        recipeSpecKey = recipeKey(sampleSlots),
+        name = "Heal",
+        iconNum = 1,
+    })
+    eq(RL._lastShareKey, "old", "l3 menu open does not set last share")
+    eq(opened, false, "l3 menu does not share")
+end
+
+local function testOpenOnlyAfterSuccess()
+    resetKnowledge()
+    local opened = 0
+    StockPiler.Ui = {
+        ShowWindow = function()
+            opened = opened + 1
+        end,
+    }
+    RL.OpenLinkedRecipe(nil)
+    eq(opened, 0, "l6 nil payload does not open")
+    RL.OpenLinkedRecipe({ uid = 5, name = "X" })
+    eq(opened, 0, "l6 noslots does not open")
+    RL.OpenLinkedRecipe({ uid = "inf", slots = sampleSlots })
+    eq(opened, 0, "l6 bad payload does not open")
+    local rk = recipeKey(sampleSlots)
+    RL.OpenLinkedRecipe({ uid = 55, name = "New", slots = sampleSlots })
+    eq(opened, 1, "l6 import opens")
+    RL.OpenLinkedRecipe({ uid = 55, slots = sampleSlots })
+    eq(opened, 2, "l6 known opens")
+    eq(potions["uid:55"].activeRecipeKey, rk, "l6 import used recomputed key")
+end
+
+local function testHookLeavesLaterAddon()
+    local prev = function() end
+    local later = function() end
+    EA_ChatWindow = { OnHyperLinkLButtonUp = prev, InsertText = function() end }
+    RL._hyperlinkHooked = false
+    RL._prevOnHyperLinkLButtonUp = nil
+    RL.InstallHyperlinkHook()
+    check(EA_ChatWindow.OnHyperLinkLButtonUp ~= prev, "hook installed")
+    EA_ChatWindow.OnHyperLinkLButtonUp = later
+    RL.UninstallHyperlinkHook()
+    eq(EA_ChatWindow.OnHyperLinkLButtonUp, later, "l5 shutdown leaves a later hook")
+end
+
 testSlotRoundTrip()
 testRoundTrip()
+testEffectBonusRoundTrip()
 testTruncatedKeepsSlots()
 testLegacyRkThenSlots()
 testLinkLabelFields()
@@ -350,6 +742,13 @@ testImportAdds()
 testImportNoSlots()
 testRejects()
 testPlantRejected()
+testH2LeavesExistingUntouched()
+testH2KnownRecipeNotRewritten()
+testH3RejectsBadPayloads()
+testKnownWithoutRk()
+testMenuDoesNotArmLink()
+testOpenOnlyAfterSuccess()
+testHookLeavesLaterAddon()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

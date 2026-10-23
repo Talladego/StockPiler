@@ -2700,15 +2700,26 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
             existing.skillUpOrigin = true
         end
     end
-    existing.name = (out and out.name) or existing.name
-    existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
-    existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
+    -- Chat-link imports must not rename a potion, switch its active recipe,
+    -- drop a weaker key, or write the shared item cache.
+    local linkImport = opts.linkImport == true
+    if linkImport then
+        if isNew then
+            existing.name = (out and out.name) or existing.name
+            existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
+            existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
+        end
+    else
+        existing.name = (out and out.name) or existing.name
+        existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
+        existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
+    end
     if existing.linimentClass ~= true then
         if RS.IsLinimentClass({ name = existing.name, uid = outputUid }) then
             existing.linimentClass = true
         end
     end
-    if StockPiler.Items and StockPiler.Items.StoreItem then
+    if not linkImport and StockPiler.Items and StockPiler.Items.StoreItem then
         StockPiler.Items.StoreItem(
             (out and type(out.itemData) == "table") and out.itemData or out or { uniqueID = outputUid },
             "potion"
@@ -2717,6 +2728,29 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
     recipeSpecKey = tostring(recipeSpecKey or "")
     local recipeKeyAdded = false
     local replacedWeaker = false
+    if linkImport and quality ~= "failed" and recipeSpecKey ~= "" then
+        local keys = CollectPotionRecipeKeyList(existing)
+        local seen = false
+        for i = 1, #keys do
+            if keys[i] == recipeSpecKey then
+                seen = true
+                break
+            end
+        end
+        if not seen then
+            keys[#keys + 1] = recipeSpecKey
+            existing.recipeKeys = keys
+            recipeKeyAdded = true
+        end
+        local active = tostring(existing.activeRecipeKey or existing.activeRecipeSpecKey or "")
+        if active == "" then
+            existing.activeRecipeKey = recipeSpecKey
+            existing.activeRecipeSpecKey = recipeSpecKey
+            existing.recipeSpecKey = recipeSpecKey
+        end
+        potions[potionKey] = existing
+        return existing, isNew, recipeKeyAdded, false
+    end
     if quality ~= "failed" and recipeSpecKey ~= "" then
         local keys = CollectPotionRecipeKeyList(existing)
         -- Incomplete board snapshots (missing mid/trailing slots) are subsets of the
@@ -2767,6 +2801,17 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
     return existing, isNew, recipeKeyAdded, replacedWeaker == true
 end
 
+--- An unverified chat import must not win a subset scrub over a recipe the player brewed.
+local function RecipeCanDominate(recipe)
+    if type(recipe) ~= "table" then
+        return false
+    end
+    if recipe.sharedImport == true or recipe.unverified == true then
+        return false
+    end
+    return true
+end
+
 --- Drop dangling / dominated alternate fingerprints on potions.
 --- Removes keys missing from recipes, and role-subset keys of a richer sibling.
 --- Never drop fingerprints still referenced by any character's watch.
@@ -2797,6 +2842,7 @@ function RS.ScrubSubsetPotionRecipeKeys()
                             local b = tostring(keys[j] or "")
                             if a ~= b
                                 and type(recipes[b]) == "table"
+                                and RecipeCanDominate(recipes[b])
                                 and IsWeakerFingerprint(a, b)
                             then
                                 drop = true
@@ -2855,6 +2901,7 @@ function RS.ScrubOrphanSubsetRecipes()
                 local b = allKeys[j]
                 if a ~= b
                     and type(recipes[b]) == "table"
+                    and RecipeCanDominate(recipes[b])
                     and IsWeakerFingerprint(a, b)
                     and RecipeOutcomesOverlap(recipes[a], recipes[b])
                 then
@@ -3123,6 +3170,9 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     else
         recipe.brewSuccesses = (tonumber(recipe.brewSuccesses) or 0) + 1
         recipe.crafts = (tonumber(recipe.crafts) or 0) + 1
+        -- A real craft replaces the unverified chat-import marker.
+        recipe.sharedImport = nil
+        recipe.unverified = nil
         local primaryQty = 0
         local skillUpOpts = opts.skillUpOrigin == true and { skillUpOrigin = true } or nil
         local learnName = nil

@@ -183,6 +183,8 @@
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPilerViewList.OnRowChildMouseOver" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowChildMouseOverEnd" />
                         <EventHandler event="OnRButtonUp" function="StockPilerTabPotions.OnRowRightClick" />
                     </EventHandlers>
                 </Label>
