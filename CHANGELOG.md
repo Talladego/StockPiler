@@ -17,6 +17,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Optimistic mode off also accounts for harvest critical failures (plant extra seeds) once a seed has enough harvest samples.
 - Optional WarBoard chip (when WarBoard is installed): left-click opens or closes StockPiler; hover shows the Craft tip plus a click hint.
 - Unplaced Craft chat line says "Craft macro" instead of "Craft".
+- AutoBrew keeps the Apothecary window hidden while it brews, including on the first brew after login and right after a brew ends. Pressing the Apothecary ability during a brew is ignored until the brew finishes.
 
 ## 1.0.0
 
