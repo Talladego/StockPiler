@@ -15,6 +15,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Craft macro and HUD show a red tint when StockPiler is waiting on you (vendor / buy). Grow countdown uses the stock cooldown wipe and centered timer text.
 - When nothing is ready, the craft tip explains AutoGrow off and lists short watches (including per-watch AutoGrow off).
 - Optimistic mode off also accounts for harvest critical failures (plant extra seeds) once a seed has enough harvest samples.
+- Optional WarBoard chip (when WarBoard is installed): left-click opens or closes StockPiler; hover shows the Craft tip plus a click hint.
+- Unplaced Craft chat line says "Craft macro" instead of "Craft".
 
 ## 1.0.0
 

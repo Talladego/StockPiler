@@ -679,6 +679,10 @@ function StockPiler.Initialize()
     if StockPiler.CraftButton and StockPiler.CraftButton.Initialize then
         StockPiler.CraftButton.Initialize()
     end
+    -- Optional WarBoard board chip (no-op if WarBoard is not installed).
+    if StockPiler.WarBoardBridge and StockPiler.WarBoardBridge.Initialize then
+        pcall(StockPiler.WarBoardBridge.Initialize)
+    end
     -- Pre-create DefaultTooltip extra rows so craft/macro tips are not clipped
     -- on first hover (LabelGetTextDimensions is 0 on brand-new rows).
     if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.WarmRows then

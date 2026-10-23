@@ -79,6 +79,8 @@ StockPiler.Locale.Packs[LANG] = {
     ["ui.plant_watches_cleared"] = L"Cleared {count} plant watch(es) for this character.",
     ["ui.no_plant_watches"] = L"No plant watches to clear.",
     ["ui.window_missing"] = L"StockPiler window is not available.",
+    ["warboard.tip_title"] = L"StockPiler",
+    ["warboard.tip_click"] = L"Left-click: open or close the window.",
     ["button.layout_name"] = L"StockPiler Craft",
     ["button.layout_desc"] = L"Harvest/brew button. Left-click crafts when ready; drag when idle; Shift+left-click locks; right-click opens StockPiler.",
     ["button.craft_tip_rmb"] = L"Right-click opens the StockPiler window.",
@@ -375,7 +377,7 @@ StockPiler.Locale.Packs[LANG] = {
     -- Macro (Craft-only; Harvest/Brew strings kept for orphan refresh paths)
     ["macro.craft_created"] = L"StockPiler Craft button created (slot {slot}). Drag it to your action bar.",
     ["macro.craft_full"] = L"StockPiler could not create the Craft button. No empty macro slot.",
-    ["macro.craft_unplaced"] = L"<icon02486> Craft is not on any action bar. Drag it to a hotbar slot to use it.",
+    ["macro.craft_unplaced"] = L"<icon02486> Craft macro is not on any action bar. Drag it to a hotbar slot to use it.",
     ["macro.craft_only_tip"] = L"Drag the Craft button to your action bar. It harvests and brews. You can remove separate Harvest and Brew buttons.",
     ["macro.craft_tip_idle"] = L"<icon02486> Nothing ready.",
     ["macro.craft_tip_autogrow_off"] = L"AutoGrow is disabled.",

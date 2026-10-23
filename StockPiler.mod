@@ -17,6 +17,7 @@
             <Dependency name="EA_CraftingSystem" />
             <Dependency name="LibSlash" optional="true" />
             <Dependency name="LibPerf" optional="true" />
+            <Dependency name="WarBoard" optional="true" />
         </Dependencies>
 
         <Files>
@@ -73,6 +74,8 @@
             <File name="Source/View/ViewList.lua" />
             <File name="Source/View/RecipeTooltip.lua" />
             <File name="Source/View/Ui.lua" />
+            <File name="Source/View/WarBoardBridge.xml" />
+            <File name="Source/View/WarBoardBridge.lua" />
             <File name="Source/View/StockPilerTemplates.xml" />
             <File name="Source/View/StockPilerTabPotions.xml" />
             <File name="Source/View/StockPilerTabPlants.xml" />

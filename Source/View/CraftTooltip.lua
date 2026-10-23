@@ -613,6 +613,21 @@ function CraftTooltip.Show(mouseoverWindow, anchor)
         }
         footerN = footerN + 1
     end
+    -- WarBoard chip: same craft status tip, plus left-click opens the window.
+    local wbWin = StockPiler.WarBoardBridge and StockPiler.WarBoardBridge.WINDOW_NAME
+    if wbWin ~= nil and mouseoverWindow == wbWin then
+        local RT = StockPiler.RecipeTooltip
+        if RT and RT.AppendSeparator then
+            RT.AppendSeparator(rows)
+        else
+            rows[#rows + 1] = { text = T("recipe.sep"), kind = "separator" }
+        end
+        rows[#rows + 1] = {
+            text = T("warboard.tip_click"),
+            kind = "meta",
+        }
+        footerN = footerN + 1
+    end
     local RT = StockPiler.RecipeTooltip
     if RT and RT.ShowColoredRows then
         local want = #rows
