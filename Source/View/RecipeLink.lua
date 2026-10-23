@@ -8,6 +8,8 @@
 -- joined with ~ . bonuses is ref=value pairs separated by commas,
 -- including a present zero (1=0). Refs the fingerprint ignores are omitted.
 -- Older links may join slots with ^; those still import when the carets survived.
+-- A link is a recipe only when it has a main slot and a container slot.
+-- Other roles may repeat. The apothecary already loads more than one of those.
 -- Hyperlink linkData: StockPiler: + plain payload
 -- Click: import into Known Potions. Existing recipes, potion names,
 -- and the active recipe are not modified.
@@ -84,6 +86,12 @@ end
 
 local function SanitizeName(name)
     name = ToNarrow(name)
+    -- WAR appends a grammar suffix (^n and similar). Drop the whole suffix the
+    -- same way character keys do, or only the caret is removed and the letters stay.
+    if string.len(name) >= 2 and string.sub(name, -2, -2) == "^" then
+        name = string.sub(name, 1, -3)
+    end
+    name = string.gsub(name, "%^.*$", "")
     name = string.gsub(name, '[<>"&;%[%]^=%c]', "")
     name = string.gsub(name, "%s+", " ")
     name = string.gsub(name, "^%s+", "")
@@ -540,6 +548,27 @@ function RL.DecodeSlots(encoded)
     return slots
 end
 
+--- True when the slots are a brew: the container slot and the main slot.
+--- Extra roles may repeat. Those share the ingredient slots, and saved recipes
+--- already keep more than one of them. This does not add a uniqueness rule.
+local function SlotsHaveMainAndContainer(slots)
+    if type(slots) ~= "table" then
+        return false
+    end
+    local mains = 0
+    local containers = 0
+    for i = 1, #slots do
+        local slot = slots[i]
+        local role = type(slot) == "table" and tostring(slot.role or "") or ""
+        if role == "main" then
+            mains = mains + 1
+        elseif role == "container" then
+            containers = containers + 1
+        end
+    end
+    return mains >= 1 and containers >= 1
+end
+
 local function RecipeSlotsByKey(rk)
     rk = tostring(rk or "")
     if rk == "" then
@@ -744,7 +773,7 @@ function RL.ParsePlain(plain)
     end
     if fields.slotsEncoded ~= nil and fields.slotsEncoded ~= "" then
         fields.slots = RL.DecodeSlots(fields.slotsEncoded)
-        if fields.slots == nil then
+        if fields.slots == nil or SlotsHaveMainAndContainer(fields.slots) ~= true then
             return nil
         end
     end
@@ -1093,7 +1122,7 @@ function RL.ImportKnownPotion(fields)
         return "failed"
     end
     slots = RL.DecodeSlots(enc)
-    if type(slots) ~= "table" then
+    if type(slots) ~= "table" or SlotsHaveMainAndContainer(slots) ~= true then
         return "failed"
     end
 

@@ -358,6 +358,22 @@ local function testLinkLabelFields()
     eq(tostring(RL.DisplayName(fields)), "Heal Potion", "display name")
 end
 
+local function testGrammarSuffixStrippedFromName()
+    local fields = {
+        uid = 1,
+        name = "Elixir of X^n",
+        icon = 4,
+        slots = sampleSlots,
+    }
+    eq(tostring(RL.DisplayName(fields)), "Elixir of X", "grammar suffix leaves the label")
+    local plain = RL.SerializePlain(fields)
+    check(type(plain) == "string", "suffix name still serializes")
+    check(string.find(plain, "Elixir of Xn", 1, true) == nil, "suffix letters are not kept")
+    check(string.find(plain, "n=Elixir of X", 1, true) ~= nil, "name keeps the words before the suffix")
+    local parsed = RL.ParsePlain(plain)
+    eq(tostring(parsed.name), "Elixir of X", "imported name has no suffix letters")
+end
+
 local function resetKnowledge()
     recipes = {}
     potions = {}
@@ -493,6 +509,22 @@ local function altSlots()
                 cultivationType = 0,
                 slotType = 1,
                 effectId = 9,
+            },
+        },
+        {
+            role = "container",
+            uid = 8888,
+            perCraft = 1,
+            spec = {
+                uid = 8888,
+                role = "container",
+                power = 0,
+                stability = 8,
+                duration = 0,
+                tradeSkill = 4,
+                skillLevel = 1,
+                cultivationType = 0,
+                slotType = 2,
             },
         },
     }
@@ -660,8 +692,10 @@ local function testH3RejectsBadPayloads()
     eq(np, 0, "h3 potions unchanged")
     eq(#registered, 0, "h3 nothing registered")
     eq(state.storeCalls, 0, "h3 nothing stored")
-    local ok = RL.ParsePlain("POTION;uid=5;n=Fine;slots=" .. good)
+    local container = "container:2002:1:0:20:0:4:1:0:2"
+    local ok = RL.ParsePlain("POTION;uid=5;n=Fine;slots=" .. good .. "^" .. container)
     check(type(ok) == "table" and tonumber(ok.uid) == 5, "h3 still accepts a clean link")
+    check(type(ok.slots) == "table" and #ok.slots == 2, "h3 clean link has main and container")
     check(type(RL.DecodeSlots(good)) == "table", "h3 legacy ten-field slot still decodes")
 end
 
@@ -809,6 +843,76 @@ local function testChatKeepsMultiSlotLink()
     eq(tonumber(parsed.slots[1].uid), 1001, "stripped first uid")
     eq(parsed.slots[2].role, "container", "stripped second role")
     eq(tonumber(parsed.slots[2].uid), 2002, "stripped second uid")
+
+    -- The tilde link above has no caret, so the strip is only a guard.
+    -- A legacy caret link is damaged by the same strip, and by a cut at the first caret.
+    local mainSlot = "main:1001:1:10:5:0:4:50:0:1:0:"
+    local containerSlot = "container:2002:1:0:20:0:4:1:0:2:0:"
+    local stabSlot = "stabilizer:3003:1:0:4:0:4:10:0:1:0:"
+    local legacySlots = mainSlot .. "^" .. containerSlot .. "^" .. stabSlot
+    local legacy = "StockPiler:POTION;uid=3012345;n=Legacy;slots=" .. legacySlots
+    local wordStripped = string.gsub(legacy, "%^%a+", "")
+    check(wordStripped ~= legacy, "legacy caret link actually loses caret words")
+    eq(RL.ParseLinkData(wordStripped), nil, "caret-word stripped legacy link rejected")
+    local cutAt = string.find(legacySlots, "^", 1, true)
+    local cutSlots = string.sub(legacySlots, 1, cutAt - 1)
+    local cut = "StockPiler:POTION;uid=3012345;n=Legacy;slots=" .. cutSlots
+    eq(RL.ParseLinkData(cut), nil, "legacy link cut at first caret rejected")
+    eq(RL.ImportKnownPotion({ uid = 3012345, slotsEncoded = cutSlots }), "failed", "cut link does not import")
+end
+
+local function testNeedsMainAndContainer()
+    resetKnowledge()
+    local mainOnly = "main:1001:1:10:5:0:4:50:0:1:0:"
+    local containerOnly = "container:2002:1:0:20:0:4:1:0:2:0:"
+    eq(RL.ParsePlain("POTION;uid=5;slots=" .. mainOnly), nil, "main-only link rejected")
+    eq(RL.ParsePlain("POTION;uid=5;slots=" .. containerOnly), nil, "container-only link rejected")
+    eq(RL.ParseLinkData("StockPiler:POTION;uid=5;slots=" .. mainOnly), nil, "main-only hyperlink rejected")
+    eq(RL.ImportKnownPotion({ uid = 5, slots = { sampleSlots[1] } }), "failed", "main-only import rejected")
+    eq(RL.ImportKnownPotion({ uid = 5, slots = { sampleSlots[2] } }), "failed", "container-only import rejected")
+    eq(RL.ImportKnownPotion({ uid = 5, slotsEncoded = mainOnly }), "failed", "main-only encoded import rejected")
+    local nr, np = countTables()
+    eq(nr, 0, "incomplete link stores no recipe")
+    eq(np, 0, "incomplete link stores no potion")
+    -- Two different stabilizers share the ingredient slots. Saved recipes already do this.
+    local slots = {
+        sampleSlots[1],
+        sampleSlots[2],
+        {
+            role = "stabilizer",
+            uid = 3003,
+            perCraft = 1,
+            spec = {
+                uid = 3003,
+                role = "stabilizer",
+                power = 0,
+                stability = 4,
+                duration = 0,
+                tradeSkill = 4,
+                skillLevel = 10,
+                cultivationType = 0,
+                slotType = 1,
+            },
+        },
+        {
+            role = "stabilizer",
+            uid = 3004,
+            perCraft = 1,
+            spec = {
+                uid = 3004,
+                role = "stabilizer",
+                power = 0,
+                stability = 6,
+                duration = 0,
+                tradeSkill = 4,
+                skillLevel = 12,
+                cultivationType = 0,
+                slotType = 1,
+            },
+        },
+    }
+    eq(RL.ImportKnownPotion({ uid = 8, name = "TwinStab", slots = slots }), "imported", "repeated stabilizer roles still import")
+    eq(#recipes[recipeKey(slots)].slots, 4, "both stabilizers kept")
 end
 
 local function testLegacyCaretAndBadSeparators()
@@ -845,6 +949,7 @@ testEffectBonusRoundTrip()
 testTruncatedKeepsSlots()
 testLegacyRkThenSlots()
 testLinkLabelFields()
+testGrammarSuffixStrippedFromName()
 testImportKnownSkips()
 testImportAfterForget()
 testImportAdds()
@@ -861,6 +966,7 @@ testHookLeavesLaterAddon()
 testZeroBonusKept()
 testChatCountsExistingText()
 testChatKeepsMultiSlotLink()
+testNeedsMainAndContainer()
 testLegacyCaretAndBadSeparators()
 
 if failures > 0 then
