@@ -943,6 +943,99 @@ local function testLegacyCaretAndBadSeparators()
     eq(RL.DecodeSlots(mainSlot .. "^~" .. containerSlot), nil, "mixed ^~ rejected")
 end
 
+local function testShareRequiresMainAndContainer()
+    resetKnowledge()
+    local printed = {}
+    StockPiler.Debug = {
+        Reply = function(msg)
+            printed[#printed + 1] = tostring(msg)
+        end,
+    }
+    local inserted = nil
+    TextEditBoxSetMaxChars = function() end
+    TextEditBoxGetText = function()
+        return ""
+    end
+    CreateHyperLink = function(data, text)
+        return "<LINK data=\"" .. tostring(data) .. "\" text=\"" .. tostring(text) .. "\">"
+    end
+    EA_ChatWindow = {
+        InsertText = function(text)
+            inserted = tostring(text)
+        end,
+    }
+    local function lastPrint()
+        return printed[#printed]
+    end
+    local mainOnly = { sampleSlots[1] }
+    local fields = {
+        uid = 55,
+        name = "MainOnly",
+        icon = 1,
+        slots = mainOnly,
+    }
+    RL._lastShareKey = "keep"
+    eq(RL.ShareFields(fields), false, "link in chat refuses a main-only recipe")
+    eq(inserted, nil, "link in chat inserts nothing")
+    eq(RL._lastShareKey, "keep", "refused link does not arm /stp link")
+    eq(lastPrint(), "link.share_need_both", "link in chat explains the missing container")
+
+    printed = {}
+    eq(RL.CopyFields(fields), false, "copy string refuses a main-only recipe")
+    eq(inserted, nil, "copy string inserts nothing")
+    eq(lastPrint(), "link.share_need_both", "copy string explains the missing container")
+
+    local containerOnly = {
+        uid = 55,
+        name = "Vial",
+        icon = 1,
+        slots = { sampleSlots[2] },
+    }
+    printed = {}
+    eq(RL.ShareFields(containerOnly), false, "link in chat refuses a container-only recipe")
+    eq(lastPrint(), "link.share_need_both", "container-only uses the same message")
+
+    local rk = recipeKey(mainOnly)
+    recipes[rk] = { recipeSpecKey = rk, slots = mainOnly }
+    potions["uid:55"] = {
+        name = "MainOnly",
+        iconNum = 1,
+        recipeKeys = { rk },
+        activeRecipeKey = rk,
+    }
+    printed = {}
+    inserted = nil
+    eq(RL.ShareWatchKey("uid:55|rk:" .. rk), false, "/stp link refuses a saved main-only recipe")
+    eq(inserted, nil, "/stp link inserts nothing")
+    eq(lastPrint(), "link.share_need_both", "/stp link explains the missing container")
+
+    RL._contextFields = fields
+    printed = {}
+    RL.OnContextLinkInChat()
+    eq(inserted, nil, "menu Link in chat inserts nothing")
+    eq(lastPrint(), "link.share_need_both", "menu Link in chat explains the missing container")
+    RL._contextFields = fields
+    printed = {}
+    RL.OnContextCopyString()
+    eq(inserted, nil, "menu Copy string inserts nothing")
+    eq(lastPrint(), "link.share_need_both", "menu Copy string explains the missing container")
+
+    local fullKey = recipeKey(sampleSlots)
+    recipes[fullKey] = { recipeSpecKey = fullKey, slots = sampleSlots }
+    printed = {}
+    inserted = nil
+    eq(RL.ShareWatchKey("uid:55|rk:" .. fullKey), true, "/stp link still shares a full recipe")
+    check(type(inserted) == "string" and string.find(inserted, "~", 1, true) ~= nil, "full recipe link was inserted")
+    eq(#printed, 0, "full recipe prints no refusal")
+    eq(RL.CopyFields({
+        uid = 55,
+        name = "Full",
+        icon = 1,
+        slots = sampleSlots,
+    }), true, "copy string still shares a full recipe")
+    StockPiler.Debug = nil
+end
+
 testSlotRoundTrip()
 testRoundTrip()
 testEffectBonusRoundTrip()
@@ -967,6 +1060,7 @@ testZeroBonusKept()
 testChatCountsExistingText()
 testChatKeepsMultiSlotLink()
 testNeedsMainAndContainer()
+testShareRequiresMainAndContainer()
 testLegacyCaretAndBadSeparators()
 
 if failures > 0 then

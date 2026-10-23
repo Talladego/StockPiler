@@ -46,6 +46,7 @@ StockPiler.Locale.Packs[LANG] = {
     ["link.imported"] = L"Added {name} to Known Potions.",
     ["link.need_slots"] = L"Cannot add {name}: this link has no recipe materials. Right-click the potion and Link in chat again, then click the new link.",
     ["link.share_no_slots"] = L"Cannot link: this potion has no stored recipe materials.",
+    ["link.share_need_both"] = L"Cannot link: this recipe needs a main ingredient and a container.",
     ["link.import_failed"] = L"Could not import {name} into Known Potions.",
     ["boot.button"] = L"Craft button scale {scale}",
     ["boot.button_usage"] = L"Usage: /stp button 0.50-2.00 (up to 10 clamps, above 10 up to 200 is a percent), /stp button timer on|off, or /stp button reset",

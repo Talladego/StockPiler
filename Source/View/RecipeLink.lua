@@ -9,6 +9,7 @@
 -- including a present zero (1=0). Refs the fingerprint ignores are omitted.
 -- Older links may join slots with ^; those still import when the carets survived.
 -- A link is a recipe only when it has a main slot and a container slot.
+-- Sharing refuses a saved recipe that lacks either one.
 -- Other roles may repeat. The apothecary already loads more than one of those.
 -- Hyperlink linkData: StockPiler: + plain payload
 -- Click: import into Known Potions. Existing recipes, potion names,
@@ -933,8 +934,31 @@ local function ChatTextFits(text)
     return true
 end
 
+local function ResolvedShareSlots(fields)
+    if type(fields) ~= "table" then
+        return nil
+    end
+    if type(fields.slots) == "table" and #fields.slots > 0 then
+        return fields.slots
+    end
+    if type(fields.slotsEncoded) == "string" and fields.slotsEncoded ~= "" then
+        return RL.DecodeSlots(fields.slotsEncoded)
+    end
+    return nil
+end
+
 local function PlainForShare(fields)
     fields = AttachSlotsFromKnowledge(fields)
+    local slots = ResolvedShareSlots(fields)
+    if type(slots) ~= "table" or #slots < 1 then
+        Print(T("link.share_no_slots"))
+        return nil
+    end
+    -- Same gate as import. A learned main with no container must not become a link.
+    if SlotsHaveMainAndContainer(slots) ~= true then
+        Print(T("link.share_need_both"))
+        return nil
+    end
     local plain = RL.SerializePlain(fields)
     if plain == nil or string.find(plain, "slots=", 1, true) == nil then
         Print(T("link.share_no_slots"))
