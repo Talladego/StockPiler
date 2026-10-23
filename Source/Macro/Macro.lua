@@ -2052,7 +2052,17 @@ function Macro.ClearCraftUnplacedWarning()
     Macro.CraftMacroWarningState.unplaced = false
 end
 
+local function ActionButtonCount()
+    local n = 0
+    ForEachActionButton(function()
+        n = n + 1
+    end)
+    return n
+end
+
 --- At most once per login /reload. Hotbar paint flicker must not re-arm chat.
+--- Login often fires this before action buttons exist. Leaving the flag clear
+--- lets a later hotbar update or LOADING_END warn for real.
 function Macro.WarnIfCraftUnplaced()
     if Macro._craftUnplacedWarnedSession == true then
         return
@@ -2060,7 +2070,14 @@ function Macro.WarnIfCraftUnplaced()
     if Macro.IsCraftMacroEnabled() ~= true then
         return
     end
-    if not ActionBars or not ActionBars.m_Bars then
+    local Bridge = StockPiler.EngineEventBridge
+    if Bridge and Bridge._loadingEndSeen == false then
+        return
+    end
+    if not ActionBars or type(ActionBars.m_Bars) ~= "table" then
+        return
+    end
+    if ActionButtonCount() <= 0 then
         return
     end
     local craftId = Macro.GetCraftMacroId()

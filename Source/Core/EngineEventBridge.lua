@@ -490,6 +490,10 @@ function Bridge.OnLoadingEnd()
     if E and E.SESSION_LOADED then
         BusFire(E.SESSION_LOADED, { reason = "loading-end" })
     end
+    -- Hotbars may be empty until this event. Warn only once buttons exist.
+    if StockPiler.Macro and StockPiler.Macro.WarnIfCraftUnplaced then
+        pcall(StockPiler.Macro.WarnIfCraftUnplaced)
+    end
 end
 
 function Bridge.OnCombatFlagUpdated()

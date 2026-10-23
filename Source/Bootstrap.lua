@@ -75,7 +75,6 @@ local function PrintHelp()
     Print(T("boot.help.open"))
     Print(T("boot.help.chat"))
     Print(T("boot.help.button"))
-    Print(T("boot.help.reset"))
 end
 
 --- Settings only (prefs / watches / toggles). Leaves learned Account data alone.
@@ -150,8 +149,10 @@ local function SetCraftButtonScale(raw)
         return
     end
     raw = string.gsub(tostring(raw), "%%", "")
-    local ok, scale = CraftButton.SetScale(raw)
-    if ok then
+    local ok, scale, clamped = CraftButton.SetScale(raw)
+    if ok and clamped then
+        Print(T("boot.button_clamped", { scale = scaleToken(scale) }))
+    elseif ok then
         Print(T("boot.button", { scale = scaleToken(scale) }))
     else
         Print(T("boot.button_usage"))

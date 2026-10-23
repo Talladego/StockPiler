@@ -621,26 +621,72 @@ local function CooldownTimerFrame(button)
     return button and button.m_Windows and button.m_Windows[COOLDOWN_TIMER]
 end
 
+-- One row per cooldown-timer window. Created the first time that window paints,
+-- then reused so the per-frame hook does not allocate.
+local cdPaint = {}
+
+local function WholeSecond(remain)
+    local n = math.floor((tonumber(remain) or 0) + 0.5)
+    if n < 0 then
+        n = 0
+    end
+    if n > DISPLAY_CAP then
+        n = DISPLAY_CAP
+    end
+    return n
+end
+
+local function CooldownPaintState(timer)
+    local name = timer.GetName and timer:GetName() or nil
+    if name == nil or name == "" then
+        return nil
+    end
+    local state = cdPaint[name]
+    if state == nil then
+        state = { sec = false, colored = false }
+        cdPaint[name] = state
+    end
+    return state
+end
+
 local function PaintCooldownTimer(button, remain)
     local timer = CooldownTimerFrame(button)
     if type(timer) ~= "table" then
         return
     end
+    local state = CooldownPaintState(timer)
     remain = tonumber(remain)
     if remain == nil or remain <= 0 then
-        if timer.SetText then
-            timer:SetText(L"")
+        if state == nil or state.sec ~= false then
+            if timer.SetText then
+                timer:SetText(L"")
+            end
+            if state then
+                state.sec = false
+                state.colored = false
+            end
         end
         if timer.Show then
             timer:Show(false)
         end
         return
     end
-    if timer.SetTextColor then
-        timer:SetTextColor(CD_TIMER_COLOR.r, CD_TIMER_COLOR.g, CD_TIMER_COLOR.b)
+    if state == nil or state.colored ~= true then
+        if timer.SetTextColor then
+            timer:SetTextColor(CD_TIMER_COLOR.r, CD_TIMER_COLOR.g, CD_TIMER_COLOR.b)
+        end
+        if state then
+            state.colored = true
+        end
     end
-    if timer.SetText then
-        timer:SetText(Timer.Format(remain))
+    local sec = WholeSecond(remain)
+    if state == nil or state.sec ~= sec then
+        if timer.SetText then
+            timer:SetText(Timer.Format(remain))
+        end
+        if state then
+            state.sec = sec
+        end
     end
     if timer.Show then
         timer:Show(true)
@@ -737,20 +783,26 @@ local function installCooldownHook()
     end
     Timer._orgUpdateCooldownAnimation = ActionButton.UpdateCooldownAnimation
     ActionButton.UpdateCooldownAnimation = function(self, timeElapsed, updateCooldown)
-        local Macro = StockPiler.Macro
-        if Timer._cdArmed == true
-            and Macro
-            and Macro.IsCraftMacroButton
-            and Macro.IsCraftMacroButton(self) == true
-        then
-            local remain = Timer.ShortestSeconds()
-            if remain ~= nil and remain > 0 then
-                local cd = CooldownFrame(self)
-                if type(cd) == "table" and cd.Show then
-                    cd:Show(true)
+        -- Match the cached craft macro id. Refresh / UpdateCraftMacro re-scan
+        -- it about once a second. Do not call GetMacrosData from this hook.
+        if Timer._cdArmed == true and self then
+            local actions = GameData and GameData.PlayerActions
+            local doMacro = actions and actions.DO_MACRO
+            local macro = StockPiler.Macro
+            local craftId = macro and tonumber(macro.CraftMacroId) or 0
+            if doMacro ~= nil and craftId > 0
+                and self.m_ActionType == doMacro
+                and tonumber(self.m_ActionId) == craftId
+            then
+                local remain = tonumber(Timer._cdRemain)
+                if remain ~= nil and remain > 0 then
+                    local cd = CooldownFrame(self)
+                    if type(cd) == "table" and cd.Show then
+                        cd:Show(true)
+                    end
+                    PaintCooldownTimer(self, remain)
+                    return
                 end
-                PaintCooldownTimer(self, remain)
-                return
             end
         end
         return Timer._orgUpdateCooldownAnimation(self, timeElapsed, updateCooldown)

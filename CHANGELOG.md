@@ -5,19 +5,16 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 ## 1.0.1
 
 - Refining a plant StockPiler has not seen before teaches its plant-to-seed link and adds that plant to Known plants, the same way a harvest does. Known conversions still record. An unrelated gain, a seed packet, a stack move, or more than one possible output is not saved, and an unknown result does not mark the plant convert-failed.
-- The `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` commands were removed. Use the window tabs instead. Harvesting still needs the craft button.
-- `/stp reset` restores settings defaults for this character (toggles, watches, HUD prefs). Learned recipes and plants are kept.
-- Floating Craft HUD: idle drag, Shift+left-click lock (same as Layout Editor), optional grow countdown, Watch HUD Button / scale chip / Craft Macro checkbox. Default scale 1.0.
-- Craft HUD stays fully on-screen while dragging; grow cooldown tint matches stock action bars (`20,20,50` @ 0.75).
-- Craft/macro tips paint all rows on first hover (extra DefaultTooltip rows are pre-warmed).
-- Hotbar Craft presses briefly squash the HUD icon via EventBus; unplaced-Craft chat warns once until the macro is on a bar.
-- Harvest critical-fail chat prints on that harvest (no longer delayed until the next click).
-- Craft macro and HUD show a red tint when StockPiler is waiting on you (vendor / buy). Grow countdown uses the stock cooldown wipe and centered timer text.
-- When nothing is ready, the craft tip explains AutoGrow off and lists short watches (including per-watch AutoGrow off).
-- Optimistic mode off also accounts for harvest critical failures (plant extra seeds) once a seed has enough harvest samples.
+- `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` were removed. Use the window tabs. Harvesting still needs the craft button.
+- A Craft button appears on screen by default. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. It starts unlocked. Shift+left-click locks it. `/stp button` sets the size (0.50–2.00) and the centered grow countdown.
+- Turning the Craft Macro checkbox off removes the macro from your bars and deletes it. Turning it back on creates the macro again but does not put it back on a bar.
+- The Craft button and hotbar macro show a red tint when StockPiler is waiting on you, and a grow countdown while plots are still growing. The tip explains what is missing when nothing is ready. A hotbar Craft press briefly squashes the on-screen button.
+- Optimistic mode off also accounts for harvest critical failures once a seed has enough samples. A harvest critical failure is reported on that harvest.
 - Optional WarBoard chip (when WarBoard is installed): left-click opens or closes StockPiler; hover shows the Craft tip plus a click hint.
-- Unplaced Craft chat line says "Craft macro" instead of "Craft".
+- Unplaced Craft chat says "Craft macro" and warns once per UI load, after your hotbars have loaded.
 - AutoBrew keeps the Apothecary window hidden while it brews, including on the first brew after login and right after a brew ends. Pressing the Apothecary ability during a brew is ignored until the brew finishes.
+- Bug fixes.
+- Performance improvements.
 
 ## 1.0.0
 

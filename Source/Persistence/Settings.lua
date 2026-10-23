@@ -90,7 +90,7 @@ StockPiler.DefaultSettings = {
     eventTrace = false,
     -- on | quiet | off. on keeps stall/ready lines; quiet is changes and harvest/brew.
     chatMode = "on",
-    -- Craft button display scale (0.25–2.0). Default 1.0. /stp button / Watch chip.
+    -- Craft button display scale (0.50–2.0). Default 1.0. /stp button / Watch chip.
     craftButtonScale = 1.0,
     -- Floating craft button: centered grow countdown. Default on.
     craftButtonShowTimer = true,
@@ -294,8 +294,8 @@ function P.EnsureSettings()
         if scale == nil then
             scale = 1.0
         end
-        if scale < 0.25 then
-            scale = 0.25
+        if scale < 0.5 then
+            scale = 0.5
         elseif scale > 2 then
             scale = 2
         end
@@ -318,10 +318,9 @@ function P.EnsureSettings()
         s.craftMacroEnabled = true
     end
     s.craftMacroEnabled = s.craftMacroEnabled ~= false
-    -- Legacy: craftButtonLockPosition → LayoutEditor.Settings (CraftButton.Initialize migrates).
-    if s.craftButtonLockPosition ~= true then
-        s.craftButtonLockPosition = nil
-    end
+    -- Legacy lock flag. Do not copy it into Layout Editor: upgrades stay unlocked
+    -- until the player locks the button (Shift+click or the editor).
+    s.craftButtonLockPosition = nil
     if StockPiler.Debug then
         StockPiler.Debug.Enabled = s.debugEnabled == true
         StockPiler.Debug.EventTrace = s.eventTrace == true
@@ -404,24 +403,72 @@ function P.GetCharacterBucket(create)
     return P.EnsureCharacterBucketShape(row), key
 end
 
---- Reset UI / preference settings to defaults. Does not touch Account knowledge
---- (items, recipes, potions, grows, refines, skillUpRates). Keeps other
---- characters' buckets; current character preferences/watches reset.
+-- Window controls only. Slash-only prefs (debug, chat, event trace, language)
+-- and schema versions stay. Watches include each row's checked/enabled state.
+local UI_GLOBAL_KEYS = {
+    "craftButtonScale",
+    "craftButtonShowTimer",
+    "craftButtonVisible",
+    "craftMacroEnabled",
+    "selectedTab",
+    "potionNameFilter",
+    "potionEffectFilter",
+    "potionSortColumn",
+    "potionSortAscending",
+    "watchSortColumn",
+    "watchSortAscending",
+    "plantSortColumn",
+    "plantSortAscending",
+    "plantNameFilter",
+    "plantEffectFilter",
+    "plantLevelFilter",
+}
+
+-- Watch-tab toggles and the two watch lists. Not stats, spend history, or
+-- hidden planner flags (see the comment on ResetSettingsToDefaults).
+local UI_CHARACTER_KEYS = {
+    "watches",
+    "plantWatches",
+    "autoGrowEnabled",
+    "autoGrowAdditives",
+    "autoBuyEnabled",
+    "autoBrewEnabled",
+    "autoBuyReserveGold",
+    "autoBuyBudgetGold",
+    "growSeedBufferMin",
+    "growSeedBufferEnabled",
+    "watchOptimisticOutcomeEstimate",
+    "skillUpCultEnabled",
+    "skillUpApoEnabled",
+    "upgradeSeedsEnabled",
+}
+
+--- Reset settings the window shows, plus watches (checked state included).
+--- Does not replace the settings table.
+--- Preserves Account (items, grows, refines, recipes, potions, skillUpRates
+--- and migrate latches), other characters, and on this character:
+--- lastCultSkill, lastApoSkill, autoBuySpentBrass, watchPriorityTiersMigrated,
+--- autoGrowPauseCombat, brewPreferNonGrowableFirst, brewMacroEnabled,
+--- brewRespectGrowReserve.
+--- Also preserves debugEnabled, eventTrace, chatMode, and language.
 function P.ResetSettingsToDefaults()
-    local prev = StockPiler.Settings
-    local otherChars = {}
-    local key = P.GetCharacterKey()
-    if type(prev) == "table" and type(prev.characters) == "table" then
-        for k, v in pairs(prev.characters) do
-            if k ~= key and type(v) == "table" then
-                otherChars[k] = v
-            end
+    local s = P.EnsureSettings()
+    local defaults = StockPiler.DefaultSettings
+    for i = 1, #UI_GLOBAL_KEYS do
+        local key = UI_GLOBAL_KEYS[i]
+        s[key] = P.CopyTable(defaults[key])
+    end
+    s.craftButtonLockPosition = nil
+    s.craftBadgeScale = nil
+    s.craftMacroTimerCenter = nil
+    local char = P.GetCharacterBucket(true)
+    local cdef = StockPiler.DefaultCharacterSettings
+    if type(char) == "table" and type(cdef) == "table" then
+        for i = 1, #UI_CHARACTER_KEYS do
+            local key = UI_CHARACTER_KEYS[i]
+            char[key] = P.CopyTable(cdef[key])
         end
     end
-    local fresh = P.CopyTable(StockPiler.DefaultSettings)
-    fresh.characters = otherChars
-    fresh.characters[key] = P.CopyTable(StockPiler.DefaultCharacterSettings)
-    StockPiler.Settings = fresh
     return P.EnsureSettings()
 end
 

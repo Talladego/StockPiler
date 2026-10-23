@@ -24,7 +24,7 @@ LibSlash is optional. Without it, the window still loads, but the slash commands
 - **AutoBuy.** While a vendor is open, buys the seeds, plants, and vials you are short. Reserve is gold left untouched. Budget is the most it may spend until you press Reset.
 - **AutoBrew.** Brews a watch that is ready until it reaches its target. It waits while you are planting, refining, or harvesting.
 - **Level up skills.** While Cultivation or Apothecary is under 200, practice rows appear on Watch after your real watches are stocked. Practice brews are not added to your known potions.
-- **Craft button.** One action-bar button. It brews when a potion is ready, harvests when a plot is ready, and stays dark when there is nothing to do.
+- **Craft button.** Shown on screen by default. It brews when a potion is ready, harvests when a plot is ready, and stays dark when there is nothing to do. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. The Craft Macro checkbox on Watch adds a hotbar macro you place yourself. Turning that checkbox off removes the macro from your bars. Turning it back on does not put it back.
 
 Automation starts off. Turn on only the parts you want.
 
@@ -35,7 +35,10 @@ Automation starts off. Turn on only the parts you want.
 | `/stp` | Open or close the window |
 | `/stockpiler` | Same as `/stp` |
 | `/stp help` | Show the command list |
-| `/stp reset` | Restore settings to defaults (keeps learned recipes/plants) |
+| `/stp button` | Show the Craft button scale |
+| `/stp button <scale>` | Set the Craft button scale (0.50–2.00, or 50–200) |
+| `/stp button timer [on\|off]` | Centered grow countdown on the Craft button |
+| `/stp button reset` | Restore the Craft button (shown, unlocked, scale 1.00, timer on, centered) |
 | `/stp chat on` | All StockPiler chat messages |
 | `/stp chat quiet` | Changes, harvests, and brews only |
 | `/stp chat off` | No StockPiler chat |
