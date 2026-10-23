@@ -2047,18 +2047,16 @@ function Macro.HarvestClick()
     end
 end
 
---- Clear the unplaced-Craft warn latch (Craft was seen on a hotbar).
+--- Placement helpers may still call this; the chat warn is once per UI load.
 function Macro.ClearCraftUnplacedWarning()
     Macro.CraftMacroWarningState.unplaced = false
-    local s = StockPiler.Settings
-    if type(s) == "table" then
-        s._craftUnplacedWarned = nil
-    end
 end
 
---- Once until Craft is painted on a hotbar. Do not clear the latch on a
---- transient GetMacroSlots hit — that re-armed the warn every hotbar churn.
+--- At most once per login /reload. Hotbar paint flicker must not re-arm chat.
 function Macro.WarnIfCraftUnplaced()
+    if Macro._craftUnplacedWarnedSession == true then
+        return
+    end
     if Macro.IsCraftMacroEnabled() ~= true then
         return
     end
@@ -2073,17 +2071,8 @@ function Macro.WarnIfCraftUnplaced()
     if #slots > 0 then
         return
     end
-    local s = StockPiler.Settings
-    if Macro.CraftMacroWarningState.unplaced == true
-        or (type(s) == "table" and s._craftUnplacedWarned == true)
-    then
-        Macro.CraftMacroWarningState.unplaced = true
-        return
-    end
+    Macro._craftUnplacedWarnedSession = true
     Macro.CraftMacroWarningState.unplaced = true
-    if type(s) == "table" then
-        s._craftUnplacedWarned = true
-    end
     local msg = T("macro.craft_unplaced")
     if StockPiler.Debug and StockPiler.Debug.Print then
         StockPiler.Debug.Print(msg, "force")
