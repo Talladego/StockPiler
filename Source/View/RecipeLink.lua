@@ -5,7 +5,8 @@
 --   POTION;uid=<n>;icon=<n>;n=<name>;slots=<encoded>
 -- Slot rows (legacy rows stop before effectId):
 --   role:uid:perCraft:power:stability:duration:tradeSkill:skillLevel:cult:slotType:effectId:bonuses
--- joined with ^ . bonuses is ref=value pairs separated by commas.
+-- joined with ^ . bonuses is ref=value pairs separated by commas,
+-- including a present zero (1=0). Refs the fingerprint ignores are omitted.
 -- Hyperlink linkData: StockPiler: + plain payload
 -- Click: import into Known Potions. Existing recipes, potion names,
 -- and the active recipe are not modified.
@@ -34,7 +35,8 @@ local MAX_PER_CRAFT = 99
 local MAX_SKILL = 300
 local MAX_SMALL = 64
 local MAX_BONUS_REF = 30
-local MAX_BONUS_PAIRS = 8
+local MAX_BONUS_PAIRS = 16
+local MAX_BONUS_TAIL = 480
 
 local ROLE_OK = {
     container = true,
@@ -229,6 +231,15 @@ local function StatForEncode(spec, ref, field)
     return AsInt(field)
 end
 
+--- True when MS.Key omits this crafting-bonus ref (family, type, destroy-on-fail).
+local function FingerprintIgnoresRef(ref)
+    local ME = StockPiler.MaterialExceptions
+    if ME and ME.ShouldIgnoreBonusRef then
+        return ME.ShouldIgnoreBonusRef(ref) == true
+    end
+    return false
+end
+
 local function EncodeBonusTail(spec)
     if type(spec) ~= "table" or type(spec.bonuses) ~= "table" then
         return ""
@@ -240,7 +251,9 @@ local function EncodeBonusTail(spec)
         if nref == nil or nref < 1 or nref > MAX_BONUS_REF then
             return nil
         end
-        if nref ~= 1 and nref ~= 2 and nref ~= 3 and seen[nref] ~= true then
+        if FingerprintIgnoresRef(nref) then
+            -- Shorten the link. The recomputed fingerprint does not use this ref.
+        elseif seen[nref] ~= true then
             local nval = val
             if type(nval) == "table" then
                 nval = nval[1]
@@ -249,10 +262,9 @@ local function EncodeBonusTail(spec)
             if nval == nil or nval < -ID_MAX or nval > ID_MAX then
                 return nil
             end
-            if nval ~= 0 then
-                seen[nref] = true
-                refs[#refs + 1] = nref
-            end
+            -- A present zero (stability 0 on a stimulant) is part of the fingerprint.
+            seen[nref] = true
+            refs[#refs + 1] = nref
         end
     end
     table.sort(refs)
@@ -272,7 +284,7 @@ local function ParseBonusTail(tail)
     if tail == nil or tail == "" then
         return {}
     end
-    if string.len(tail) > 200 then
+    if string.len(tail) > MAX_BONUS_TAIL then
         return nil
     end
     if string.sub(tail, 1, 1) == "," or string.sub(tail, -1) == "," or string.find(tail, ",,", 1, true) then
@@ -287,16 +299,14 @@ local function ParseBonusTail(tail)
         end
         local ref = StrictInt(rs, 1, MAX_BONUS_REF, false)
         local val = StrictInt(vs, -ID_MAX, ID_MAX, true)
-        if ref == nil or val == nil or ref == 1 or ref == 2 or ref == 3 or bonuses[ref] ~= nil then
+        if ref == nil or val == nil or bonuses[ref] ~= nil then
             return nil
         end
         count = count + 1
         if count > MAX_BONUS_PAIRS then
             return nil
         end
-        if val ~= 0 then
-            bonuses[ref] = val
-        end
+        bonuses[ref] = val
     end
     return bonuses
 end
@@ -448,17 +458,19 @@ local function DecodeOneSlot(piece)
         end
     end
     local bonuses = {}
-    if power ~= 0 then
-        bonuses[2] = power
-    end
-    if stab ~= 0 then
-        bonuses[1] = stab
-    end
-    if dur ~= 0 then
-        bonuses[3] = dur
-    end
     for ref, val in pairs(extra) do
         bonuses[ref] = val
+    end
+    -- Legacy rows have no bonus tail. A non-zero column is a present stat.
+    -- Zero stays absent unless the tail carried it (1=0).
+    if bonuses[2] == nil and power ~= 0 then
+        bonuses[2] = power
+    end
+    if bonuses[1] == nil and stab ~= 0 then
+        bonuses[1] = stab
+    end
+    if bonuses[3] == nil and dur ~= 0 then
+        bonuses[3] = dur
     end
     local spec = {
         uid = uid,
@@ -860,8 +872,16 @@ local function RaiseChatLimit()
     end
 end
 
+local function ExistingChatText()
+    if type(TextEditBoxGetText) ~= "function" then
+        return ""
+    end
+    return ToNarrow(TextEditBoxGetText(RL.CHAT_EDIT_BOX))
+end
+
 local function ChatTextFits(text)
-    if string.len(ToNarrow(text)) > RL.CHAT_MAX_CHARS then
+    local combined = string.len(ExistingChatText()) + string.len(ToNarrow(text))
+    if combined > RL.CHAT_MAX_CHARS then
         Print(T("link.too_long"))
         return false
     end

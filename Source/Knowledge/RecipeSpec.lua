@@ -3323,6 +3323,17 @@ function RS.FoldAlternateRecipeKeys()
     return folded
 end
 
+--- A merged recipe the player has already brewed is no longer an unverified import.
+local function ClearImportMarkersIfBrewed(recipe)
+    if type(recipe) ~= "table" then
+        return
+    end
+    if (tonumber(recipe.brewSuccesses) or 0) > 0 then
+        recipe.sharedImport = nil
+        recipe.unverified = nil
+    end
+end
+
 --- One-time: rebuild recipe keys from MS.Key fingerprints; merge uid-bound duplicates;
 --- relink potions + character watches. Retired: MigrateFingerprints no longer calls this.
 function RS.MigrateRecipeFingerprintsV2()
@@ -3387,6 +3398,7 @@ function RS.MigrateRecipeFingerprintsV2()
                     dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
                         / (tonumber(dest.yieldSamples) or 1)
                 end
+                ClearImportMarkersIfBrewed(dest)
             end
         end
     end
@@ -3512,6 +3524,7 @@ local function MergeRecipeStats(dest, recipe)
         dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
             / (tonumber(dest.yieldSamples) or 1)
     end
+    ClearImportMarkersIfBrewed(dest)
 end
 
 --- Session-only. Account._repairQuarantine is not on the shutdown allow-list,

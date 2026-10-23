@@ -730,6 +730,66 @@ local function testHookLeavesLaterAddon()
     eq(EA_ChatWindow.OnHyperLinkLButtonUp, later, "l5 shutdown leaves a later hook")
 end
 
+local function testZeroBonusKept()
+    local slots = {
+        {
+            role = "stimulant",
+            uid = 5,
+            perCraft = 1,
+            spec = {
+                uid = 5,
+                role = "stimulant",
+                power = 0,
+                stability = 0,
+                duration = 0,
+                tradeSkill = 4,
+                skillLevel = 10,
+                cultivationType = 0,
+                slotType = 1,
+                bonuses = { [1] = 0, [4] = 2 },
+            },
+        },
+    }
+    local enc = RL.EncodeSlots(slots)
+    check(string.find(enc, "1=0", 1, true) ~= nil, "present zero bonus is encoded")
+    local decoded = RL.DecodeSlots(enc)
+    eq(decoded[1].spec.bonuses[1], 0, "decoder keeps stability 0")
+    eq(decoded[1].spec.bonuses[4], 2, "decoder keeps other bonus")
+end
+
+local function testChatCountsExistingText()
+    local inserted = nil
+    TextEditBoxSetMaxChars = function(_, n)
+        eq(n, 4096, "chat max raised before insert")
+    end
+    TextEditBoxGetText = function(name)
+        eq(name, "EA_TextEntryGroupEntryBoxTextInput", "existing text read from chat box")
+        return string.rep("x", 4000)
+    end
+    CreateHyperLink = function(data, text)
+        return "<LINK data=\"" .. tostring(data) .. "\" text=\"" .. tostring(text) .. "\">"
+    end
+    EA_ChatWindow = {
+        InsertText = function(text)
+            inserted = text
+        end,
+    }
+    local fields = {
+        uid = 1001,
+        rk = "mainx1:abc",
+        name = "Heal",
+        icon = 1,
+        slots = sampleSlots,
+    }
+    eq(RL.ShareFields(fields), false, "full box plus link does not fit")
+    eq(inserted, nil, "over-cap link is not inserted")
+    TextEditBoxGetText = function()
+        return ""
+    end
+    eq(RL.ShareFields(fields), true, "empty box accepts the link")
+    check(inserted ~= nil, "link inserted when the box has room")
+end
+
 testSlotRoundTrip()
 testRoundTrip()
 testEffectBonusRoundTrip()
@@ -749,6 +809,8 @@ testKnownWithoutRk()
 testMenuDoesNotArmLink()
 testOpenOnlyAfterSuccess()
 testHookLeavesLaterAddon()
+testZeroBonusKept()
+testChatCountsExistingText()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
