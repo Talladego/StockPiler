@@ -75,6 +75,7 @@ local function PrintHelp()
     Print(T("boot.help.open"))
     Print(T("boot.help.chat"))
     Print(T("boot.help.button"))
+    Print(T("boot.help.link"))
 end
 
 --- Settings only (prefs / watches / toggles). Leaves learned Account data alone.
@@ -630,6 +631,37 @@ function StockPiler.OnSlash(input)
         end
         return
     end
+    if lower == "link" then
+        local RL = StockPiler.RecipeLink
+        if not RL then
+            Print(T("link.empty"))
+            return
+        end
+        local key = RL._lastShareKey
+        if key and RL.ShareWatchKey then
+            RL.ShareWatchKey(key)
+        else
+            Print(T("boot.link_usage"))
+        end
+        return
+    end
+    do
+        local applyArg = string.match(text, "^[Aa][Pp][Pp][Ll][Yy]%s+(.+)$")
+        if applyArg then
+            local RL = StockPiler.RecipeLink
+            if not (RL and RL.ParsePlain and RL.OpenLinkedRecipe) then
+                Print(T("link.bad_payload"))
+                return
+            end
+            local fields = RL.ParsePlain(applyArg)
+            if fields then
+                RL.OpenLinkedRecipe(fields)
+            else
+                Print(T("link.bad_payload"))
+            end
+            return
+        end
+    end
     Print(T("boot.unknown_cmd"))
 end
 
@@ -759,6 +791,10 @@ function StockPiler.Initialize()
     if StockPiler.Debug and StockPiler.Debug.InstallChatLinkHook then
         StockPiler.Debug.InstallChatLinkHook()
     end
+    -- Chain after Debug so StockPiler: recipe links are handled first.
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.Initialize then
+        StockPiler.RecipeLink.Initialize()
+    end
     if LibSlash and LibSlash.RegisterWSlashCmd then
         LibSlash.RegisterWSlashCmd("stp", StockPiler.OnSlash)
         LibSlash.RegisterWSlashCmd("stockpiler", StockPiler.OnSlash)
@@ -788,6 +824,9 @@ function StockPiler.Initialize()
 end
 
 function StockPiler.Shutdown()
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.Shutdown then
+        StockPiler.RecipeLink.Shutdown()
+    end
     if StockPiler.Debug and StockPiler.Debug.UninstallChatLinkHook then
         StockPiler.Debug.UninstallChatLinkHook()
     end

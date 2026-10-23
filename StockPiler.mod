@@ -73,6 +73,7 @@
             <File name="Source/View/Catalog.lua" />
             <File name="Source/View/ViewList.lua" />
             <File name="Source/View/RecipeTooltip.lua" />
+            <File name="Source/View/RecipeLink.lua" />
             <File name="Source/View/Ui.lua" />
             <File name="Source/View/WarBoardBridge.xml" />
             <File name="Source/View/WarBoardBridge.lua" />

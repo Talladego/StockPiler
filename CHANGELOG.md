@@ -4,6 +4,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.0.1
 
+- Recipe linking (NerfedButtons-style): right-click a potion on Potions or Watch and choose Link in chat to insert `[StockPiler Recipe: <name>]`. Clicking a link adds that recipe to Known Potions only when you do not already know it (no watch is created). `/stp link` reuses the last shared recipe; `/stp apply POTION;...` imports a pasted plain string the same way. Does not auto-send chat.
 - Refining a plant StockPiler has not seen before teaches its plant-to-seed link and adds that plant to Known plants, the same way a harvest does. Known conversions still record. An unrelated gain, a seed packet, a stack move, or more than one possible output is not saved, and an unknown result does not mark the plant convert-failed.
 - `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` were removed. Use the window tabs. Harvesting still needs the craft button.
 - A Craft button appears on screen by default. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. It starts unlocked. Shift+left-click locks it. `/stp button` sets the size (0.50–2.00; numbers up to 10 clamp; above 10 up to 200 is a percent) and the centered grow countdown.

@@ -2663,6 +2663,17 @@ function StockPilerTabWatch.OnLoadRowRightClick()
     end
 end
 
+--- Right-click name / icon: Link in chat (does not steal Target/Prio/Brew right-clicks).
+function StockPilerTabWatch.OnRowNameRightClick()
+    local data = RowDataFromActiveChild()
+    if not data or IsPlantWatchRow(data) or IsEphemeralWatchRow(data) then
+        return
+    end
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.ShowContextMenuForRow then
+        StockPiler.RecipeLink.ShowContextMenuForRow(data)
+    end
+end
+
 local function Tip(text)
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, text)
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
