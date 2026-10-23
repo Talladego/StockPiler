@@ -2071,7 +2071,9 @@ function Macro.WarnIfCraftUnplaced()
         return
     end
     local Bridge = StockPiler.EngineEventBridge
-    if Bridge and Bridge._loadingEndSeen == false then
+    -- Nil and false both mean loading has not finished. /reload sets the flag
+    -- from MaybeCatchUpLoadingEnd when LOADING_END already fired.
+    if Bridge and Bridge._loadingEndSeen ~= true then
         return
     end
     if not ActionBars or type(ActionBars.m_Bars) ~= "table" then

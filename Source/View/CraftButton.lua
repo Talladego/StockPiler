@@ -324,10 +324,78 @@ local function NudgeAnchors(dx, dy)
     return true
 end
 
---- Keep the whole button on-screen. Visual size is dimensions * WindowGetScale
---- (the root scale) after screen position is converted with InterfaceCore.GetScale.
---- In-bounds does not touch anchors, so a Layout Editor point is left alone.
---- Returns true when the position changed.
+--- Screen position divided by InterfaceCore.GetScale() is a layout unit.
+--- WindowGetScale is absolute (it already includes that UI scale), so the
+--- on-screen size in the same units is dimensions * WindowGetScale / uiScale.
+--- Same split as LayoutFrame:Attach (width * scale / uiScale).
+local function LayoutRect()
+    local uiScale = UiScale()
+    local winScale = WindowScaleOf(WIN)
+    local sx, sy = WindowGetScreenPosition(WIN)
+    sx = (tonumber(sx) or 0) / uiScale
+    sy = (tonumber(sy) or 0) / uiScale
+    local dw, dh = WindowGetDimensions(WIN)
+    local w = (tonumber(dw) or 0) * winScale / uiScale
+    local h = (tonumber(dh) or 0) * winScale / uiScale
+    local sw, sh = WindowGetDimensions("Root")
+    sw = tonumber(sw) or 0
+    sh = tonumber(sh) or 0
+    return sx, sy, w, h, sw, sh
+end
+
+--- Stock Layout Editor has no UpdateWindowSize. While it is open, the outline
+--- is the LayoutFrame from GetFrameForSourceWindow plus the active control
+--- frame (layout size + 2*OFFSET, same as CopySize_LayoutToControls).
+local function SyncLayoutEditorChrome()
+    if not LayoutEditor or LayoutEditor.isActive ~= true then
+        return
+    end
+    if type(LayoutEditor.windowsList) ~= "table" or LayoutEditor.windowsList[WIN] == nil then
+        return
+    end
+    if type(LayoutEditor.framesList) ~= "table" then
+        return
+    end
+    if type(LayoutEditor.GetFrameForSourceWindow) ~= "function" then
+        return
+    end
+    local frame = LayoutEditor.GetFrameForSourceWindow(WIN)
+    if type(frame) ~= "table" or type(frame.SetDimensions) ~= "function" then
+        return
+    end
+    local _, _, w, h = LayoutRect()
+    if w <= 0 or h <= 0 then
+        return
+    end
+    frame:SetDimensions(w, h)
+    if type(frame.UpdateScreenRect) == "function" then
+        frame:UpdateScreenRect()
+    end
+    local controls = LayoutEditor.controlFramesList
+    if type(controls) ~= "table" then
+        return
+    end
+    local offset = 25
+    if LayoutControlFrame and tonumber(LayoutControlFrame.OFFSET) then
+        offset = LayoutControlFrame.OFFSET
+    end
+    for _, control in pairs(controls) do
+        if type(control) == "table"
+            and type(control.GetActiveFrame) == "function"
+            and control:GetActiveFrame() == frame
+        then
+            if LayoutEditorUtils and type(LayoutEditorUtils.CopySize) == "function" then
+                LayoutEditorUtils.CopySize(frame, control, 2 * offset, 2 * offset, false)
+            elseif type(control.SetDimensions) == "function" then
+                control:SetDimensions(w + 2 * offset, h + 2 * offset)
+            end
+            break
+        end
+    end
+end
+
+--- Keep the whole button on-screen. In-bounds does not touch anchors, so a
+--- Layout Editor point is left alone. Returns true when the position changed.
 function Button.ClampToScreen()
     -- While the editor is up the button is anchored to the editor frame.
     -- Rewriting that anchor detaches it. EDITING_END clamps after detach.
@@ -344,52 +412,63 @@ function Button.ClampToScreen()
     then
         return false
     end
-    local uiScale = UiScale()
-    local winScale = WindowScaleOf(WIN)
-    local sx, sy = WindowGetScreenPosition(WIN)
-    sx = (tonumber(sx) or 0) / uiScale
-    sy = (tonumber(sy) or 0) / uiScale
-    local dw, dh = WindowGetDimensions(WIN)
-    local w = (tonumber(dw) or 0) * winScale
-    local h = (tonumber(dh) or 0) * winScale
-    local sw, sh = WindowGetDimensions("Root")
-    sw = tonumber(sw) or 0
-    sh = tonumber(sh) or 0
-    if sw <= 0 or sh <= 0 or w <= 0 or h <= 0 then
-        return false
+    local moved = false
+    local prevErr = nil
+    -- One nudge can undershoot when the parent scale and the interface scale
+    -- differ. Re-read after the anchors process and repeat until the error
+    -- is under half a layout unit. Stop if a pass does not get closer.
+    for _ = 1, 8 do
+        local sx, sy, w, h, sw, sh = LayoutRect()
+        if sw <= 0 or sh <= 0 or w <= 0 or h <= 0 then
+            break
+        end
+        local cx = sx
+        local cy = sy
+        if cx < 0 then
+            cx = 0
+        end
+        if cy < 0 then
+            cy = 0
+        end
+        if cx + w > sw then
+            cx = math.max(0, sw - w)
+        end
+        if cy + h > sh then
+            cy = math.max(0, sh - h)
+        end
+        local dx = cx - sx
+        local dy = cy - sy
+        local err = math.abs(dx) + math.abs(dy)
+        if err < 0.5 then
+            break
+        end
+        if prevErr ~= nil and err >= prevErr - 0.01 then
+            break
+        end
+        prevErr = err
+        local per = OffsetPerLayoutUnit()
+        local nudged = NudgeAnchors(dx * per, dy * per)
+        if not nudged then
+            WindowClearAnchors(WIN)
+            WindowAddAnchor(WIN, "topleft", "Root", "topleft", cx, cy)
+        end
+        moved = true
+        if type(WindowForceProcessAnchors) == "function" then
+            WindowForceProcessAnchors(WIN)
+        end
+        if not nudged then
+            break
+        end
+        if type(WindowForceProcessAnchors) ~= "function" then
+            -- Without a fresh screen position the next pass would stack the
+            -- same delta. One nudge is the best we can do.
+            break
+        end
     end
-    local cx = sx
-    local cy = sy
-    if cx < 0 then
-        cx = 0
+    if moved then
+        SyncLayoutEditorChrome()
     end
-    if cy < 0 then
-        cy = 0
-    end
-    if cx + w > sw then
-        cx = math.max(0, sw - w)
-    end
-    if cy + h > sh then
-        cy = math.max(0, sh - h)
-    end
-    local dx = cx - sx
-    local dy = cy - sy
-    if math.abs(dx) < 0.5 and math.abs(dy) < 0.5 then
-        return false
-    end
-    -- Never multiply the nudge above 1 layout unit per unit of error.
-    -- A larger ratio overshoots and can bounce on the edge. A smaller ratio
-    -- (parent scale above the interface scale) still settles on the next frame.
-    local per = OffsetPerLayoutUnit()
-    if per > 1 then
-        per = 1
-    end
-    if NudgeAnchors(dx * per, dy * per) then
-        return true
-    end
-    WindowClearAnchors(WIN)
-    WindowAddAnchor(WIN, "topleft", "Root", "topleft", cx, cy)
-    return true
+    return moved
 end
 
 --- While idle-dragging, pin the button fully inside Root every frame.
@@ -540,22 +619,32 @@ function Button.ResetToDefaults()
     return true
 end
 
---- Pin a visual child to the button root. No screen anchors, no own scale,
---- so a screen-edge clamp cannot leave a piece behind.
+--- WindowSetScale is absolute and already includes UI scale. A child does not
+--- inherit its parent, so each visual piece must use the root's scale or the
+--- art stays at 1 while the hit box grows.
+local function MatchRootScale(childName)
+    if type(WindowSetScale) ~= "function" then
+        return
+    end
+    if type(DoesWindowExist) == "function" and not DoesWindowExist(childName) then
+        return
+    end
+    WindowSetScale(childName, WindowScaleOf(WIN))
+end
+
+--- Pin a visual child to the button root and give it the root's absolute scale.
 local function AnchorChildCenter(childName)
     if type(DoesWindowExist) ~= "function" or not DoesWindowExist(childName) then
         return
     end
-    if type(WindowSetScale) == "function" then
-        WindowSetScale(childName, 1)
-    end
+    MatchRootScale(childName)
     if type(WindowClearAnchors) == "function" and type(WindowAddAnchor) == "function" then
         WindowClearAnchors(childName)
         WindowAddAnchor(childName, "center", WIN, "center", 0, 0)
     end
 end
 
---- Countdown stays inside the root and scales with WindowSetScale(WIN).
+--- Countdown stays inside the root. Scale matches the root; it is not 1.
 local function LayoutGrowTimer()
     if type(DoesWindowExist) ~= "function" or not DoesWindowExist(GROW_TIMER) then
         return
@@ -565,6 +654,8 @@ local function LayoutGrowTimer()
     end
     AnchorChildCenter(GROW_TIMER)
 end
+
+local _growTimerScale = nil
 
 local function UpdateGrowTimerLabel(remain)
     if type(DoesWindowExist) ~= "function" or not DoesWindowExist(GROW_TIMER) then
@@ -580,7 +671,12 @@ local function UpdateGrowTimerLabel(remain)
         end
         return
     end
-    LayoutGrowTimer()
+    -- Re-anchor only when the absolute scale changes, not every countdown tick.
+    local absScale = WindowScaleOf(WIN)
+    if _growTimerScale ~= absScale then
+        LayoutGrowTimer()
+        _growTimerScale = absScale
+    end
     local text = L""
     local Timer = StockPiler.CraftHarvestTimer
     if Timer and Timer.Format then
@@ -636,9 +732,7 @@ local function LayoutCooldown(iconSize)
     if type(WindowSetDimensions) == "function" then
         WindowSetDimensions(CD_WIN, iconSize, iconSize)
     end
-    if type(WindowSetScale) == "function" then
-        WindowSetScale(CD_WIN, 1)
-    end
+    MatchRootScale(CD_WIN)
     if type(WindowClearAnchors) == "function" and type(WindowAddAnchor) == "function" then
         WindowClearAnchors(CD_WIN)
         WindowAddAnchor(CD_WIN, "center", WIN, "center", 0, 0)
@@ -671,7 +765,8 @@ local function ApplyIconMotion()
     if not DoesWindowExist(ICON_WIN) then
         return
     end
-    -- Sizes are in the root's unscaled space. WindowSetScale(WIN) grows them.
+    -- Sizes are in the root's unscaled space. MatchRootScale grows the art
+    -- with the hit box (child scale does not multiply the parent).
     local motion = MotionSpec(1)
     local spec = motion.idle
     if IsPressVisual() then
@@ -679,9 +774,7 @@ local function ApplyIconMotion()
     elseif _hovering then
         spec = motion.hover
     end
-    if type(WindowSetScale) == "function" then
-        WindowSetScale(ICON_WIN, 1)
-    end
+    MatchRootScale(ICON_WIN)
     if type(WindowSetDimensions) == "function" then
         WindowSetDimensions(ICON_WIN, spec.size, spec.size)
     end
@@ -750,9 +843,8 @@ function Button.ApplyScale()
         return
     end
     local scale = Button.GetScale()
-    -- One scale on the root. Children stay base-sized and anchored to WIN,
-    -- so Layout Editor resize (WindowSetScale) and /stp button stay in sync
-    -- and pieces cannot separate at the screen edge.
+    -- WindowSetScale is absolute and already includes InterfaceCore.GetScale.
+    -- craftButtonScale is the 0.50-2.00 multiplier on top of that.
     if type(WindowSetDimensions) == "function" then
         WindowSetDimensions(WIN, BASE_FRAME, BASE_FRAME)
         if DoesWindowExist(FRAME_WIN) then
@@ -760,7 +852,7 @@ function Button.ApplyScale()
         end
     end
     if type(WindowSetScale) == "function" then
-        WindowSetScale(WIN, scale)
+        WindowSetScale(WIN, scale * UiScale())
     end
     if DoesWindowExist(FRAME_WIN) and type(DynamicImageSetTextureScale) == "function" then
         DynamicImageSetTextureScale(FRAME_WIN, BASE_FRAME / FRAME_SLICE)
@@ -768,8 +860,13 @@ function Button.ApplyScale()
     AnchorChildCenter(FRAME_WIN)
     ApplyIconMotion()
     LayoutGrowTimer()
+    _growTimerScale = WindowScaleOf(WIN)
+    if DoesWindowExist(CD_TIMER) then
+        MatchRootScale(CD_TIMER)
+    end
     -- Larger scale can push a near-edge button partly off-screen.
     Button.ClampToScreen()
+    SyncLayoutEditorChrome()
 end
 
 --- Growing harvest pie + lit icon. Brew / ready / idle leave the pie off.
@@ -834,18 +931,24 @@ function Button.TickGrowVisuals(opts)
     SetIdleMovable(canUse)
 end
 
---- Persist and apply scale (0.50–2.0). Values > 2 are treated as percent (e.g. 50 → 0.5).
---- Third return is true when the value was outside 0.50–2.0 and got clamped.
+--- Persist and apply scale.
+--- 0.50-2.00 is used as-is. Above 0 and below 0.50, or above 2.00 through 10,
+--- clamps to 0.50/2.00. Above 10 through 200 is a percent (then clamped).
+--- Anything else is rejected and does not change the saved scale.
+--- Third return is true when the accepted value was clamped into range.
 function Button.SetScale(raw)
     local n = tonumber(raw)
-    if n == nil then
+    if n == nil or n <= 0 or n > 200 then
         return false, Button.GetScale(), false
     end
-    if n > MAX_SCALE then
+    local clamped = false
+    if n > 10 then
         n = n / 100
     end
-    local clamped = n < MIN_SCALE or n > MAX_SCALE
-    n = ClampScale(n)
+    if n < MIN_SCALE or n > MAX_SCALE then
+        clamped = true
+        n = ClampScale(n)
+    end
     local s = StockPiler.Persistence and StockPiler.Persistence.EnsureSettings and StockPiler.Persistence.EnsureSettings()
     if type(s) == "table" then
         s.craftButtonScale = n
@@ -855,24 +958,29 @@ function Button.SetScale(raw)
     return true, n, clamped
 end
 
---- Layout Editor aspect-locked resize writes WindowSetScale. Fold that into
---- craftButtonScale and snap back into 0.50–2.0. Do not reanchor here: during
---- the edit the button is still attached to the editor frame.
-function Button.OnLayoutResizeEnd()
-    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(WIN) then
-        return
-    end
+--- Layout Editor corner resize writes an absolute WindowSetScale (UI scale
+--- included). Edge handles write dimensions. Fold both into craftButtonScale
+--- and put the square button back. Do not reanchor: the button is still
+--- attached to the editor frame.
+local function ReadEditorCraftScale()
     local dw = BASE_FRAME
     if type(WindowGetDimensions) == "function" then
         dw = tonumber(WindowGetDimensions(WIN)) or BASE_FRAME
     end
-    local raw = (dw * WindowScaleOf(WIN)) / BASE_FRAME
-    local n = ClampScale(raw)
+    local ui = UiScale()
+    return ClampScale((dw * WindowScaleOf(WIN)) / BASE_FRAME / ui)
+end
+
+function Button.OnLayoutResizeEnd()
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(WIN) then
+        return
+    end
+    local n = ReadEditorCraftScale()
     if type(WindowSetDimensions) == "function" then
         WindowSetDimensions(WIN, BASE_FRAME, BASE_FRAME)
     end
     if type(WindowSetScale) == "function" then
-        WindowSetScale(WIN, n)
+        WindowSetScale(WIN, n * UiScale())
     end
     local s = SettingsRow()
     if type(s) == "table" then
@@ -882,19 +990,20 @@ function Button.OnLayoutResizeEnd()
     AnchorChildCenter(FRAME_WIN)
     ApplyIconMotion()
     LayoutGrowTimer()
+    _growTimerScale = WindowScaleOf(WIN)
+    if DoesWindowExist(CD_TIMER) then
+        MatchRootScale(CD_TIMER)
+    end
+    SyncLayoutEditorChrome()
 end
 
 --- Editor closed and Detach has anchored the button to Root again.
---- Read the scale it left (save or cancel) and clamp the Root anchor.
+--- Divide the absolute scale back out so UI scale is not saved.
 function Button.OnLayoutEditingEnd()
     if type(DoesWindowExist) ~= "function" or not DoesWindowExist(WIN) then
         return
     end
-    local dw = BASE_FRAME
-    if type(WindowGetDimensions) == "function" then
-        dw = tonumber(WindowGetDimensions(WIN)) or BASE_FRAME
-    end
-    local n = ClampScale((dw * WindowScaleOf(WIN)) / BASE_FRAME)
+    local n = ReadEditorCraftScale()
     local s = SettingsRow()
     if type(s) == "table" then
         s.craftButtonScale = n

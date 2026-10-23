@@ -13,6 +13,10 @@ local Bridge = StockPiler.EngineEventBridge
 Bridge._registered = false
 Bridge._host = "StockPilerWindow"
 Bridge._handlers = Bridge._handlers or {}
+-- Nil used to look like "loading already finished" to the craft-unplaced warn.
+-- /reload still reaches OnLoadingEnd through MaybeCatchUpLoadingEnd when the
+-- LOADING_END event fired before this bridge registered.
+Bridge._loadingEndSeen = false
 
 StockPiler.FrameCounter = tonumber(StockPiler.FrameCounter) or 0
 
