@@ -148,8 +148,10 @@ local function SetCraftButtonScale(raw)
         Print(T("boot.button_usage"))
         return
     end
-    raw = string.gsub(tostring(raw), "%%", "")
-    local ok, scale, clamped = CraftButton.SetScale(raw)
+    local text = tostring(raw)
+    local asPercent = string.find(text, "%", 1, true) ~= nil
+    text = string.gsub(text, "%%", "")
+    local ok, scale, clamped = CraftButton.SetScale(text, asPercent)
     if ok and clamped then
         Print(T("boot.button_clamped", { scale = scaleToken(scale) }))
     elseif ok then

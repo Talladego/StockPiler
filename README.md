@@ -36,7 +36,7 @@ Automation starts off. Turn on only the parts you want.
 | `/stockpiler` | Same as `/stp` |
 | `/stp help` | Show the command list |
 | `/stp button` | Show the Craft button scale |
-| `/stp button <scale>` | Set the Craft button scale (0.50–2.00; up to 10 clamps; 11–200 is a percent) |
+| `/stp button <scale>` | Set the Craft button scale (0.50–2.00; up to 10 clamps; above 10 up to 200 is a percent) |
 | `/stp button timer [on\|off]` | Centered grow countdown on the Craft button |
 | `/stp button reset` | Restore the Craft button (shown, unlocked, scale 1.00, timer on, centered) |
 | `/stp chat on` | All StockPiler chat messages |

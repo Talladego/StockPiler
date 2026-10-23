@@ -71,7 +71,8 @@ end
 
 local function ClampScale(n)
     n = tonumber(n)
-    if n == nil then
+    -- NaN fails every ordered compare and must not be stored.
+    if n == nil or n ~= n then
         return DEFAULT_SCALE
     end
     if n < MIN_SCALE then
@@ -933,16 +934,17 @@ end
 
 --- Persist and apply scale.
 --- 0.50-2.00 is used as-is. Above 0 and below 0.50, or above 2.00 through 10,
---- clamps to 0.50/2.00. Above 10 through 200 is a percent (then clamped).
---- Anything else is rejected and does not change the saved scale.
+--- clamps to 0.50/2.00. Above 10 up to 200 is a percent (then clamped).
+--- asPercent (a % in /stp button) always divides by 100 first.
+--- NaN and anything else is rejected and does not change the saved scale.
 --- Third return is true when the accepted value was clamped into range.
-function Button.SetScale(raw)
+function Button.SetScale(raw, asPercent)
     local n = tonumber(raw)
-    if n == nil or n <= 0 or n > 200 then
+    if n == nil or n ~= n or n <= 0 or n > 200 then
         return false, Button.GetScale(), false
     end
     local clamped = false
-    if n > 10 then
+    if asPercent == true or n > 10 then
         n = n / 100
     end
     if n < MIN_SCALE or n > MAX_SCALE then
