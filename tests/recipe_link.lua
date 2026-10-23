@@ -790,6 +790,55 @@ local function testChatCountsExistingText()
     check(inserted ~= nil, "link inserted when the box has room")
 end
 
+local function testChatKeepsMultiSlotLink()
+    local fields = {
+        uid = 3012345,
+        name = "Multi",
+        icon = 3,
+        slots = sampleSlots,
+    }
+    local link = tostring(RL.BuildLinkData(fields))
+    check(string.find(link, "~", 1, true) ~= nil, "new link joins slots with tilde")
+    check(string.find(link, "^", 1, true) == nil, "new link has no caret")
+    -- WAR chat strips caret-prefixed words on send and on click.
+    local stripped = string.gsub(link, "%^%a+", "")
+    local parsed = RL.ParseLinkData(stripped)
+    check(type(parsed) == "table" and type(parsed.slots) == "table", "stripped link parses")
+    eq(#parsed.slots, 2, "stripped link keeps every slot")
+    eq(parsed.slots[1].role, "main", "stripped first role")
+    eq(tonumber(parsed.slots[1].uid), 1001, "stripped first uid")
+    eq(parsed.slots[2].role, "container", "stripped second role")
+    eq(tonumber(parsed.slots[2].uid), 2002, "stripped second uid")
+end
+
+local function testLegacyCaretAndBadSeparators()
+    local mainSlot = "main:1001:1:10:5:0:4:50:0:1:0:"
+    local containerSlot = "container:2002:1:0:20:0:4:1:0:2:0:"
+    local stabSlot = "stabilizer:3003:1:0:4:0:4:10:0:1:0:"
+    local legacy = mainSlot .. "^" .. containerSlot .. "^" .. stabSlot
+    local modern = string.gsub(legacy, "%^", "~")
+    check(string.find(modern, "~", 1, true) ~= nil, "tilde fixture uses tilde")
+    local fromCaret = RL.DecodeSlots(legacy)
+    local fromTilde = RL.DecodeSlots(modern)
+    eq(#fromCaret, 3, "legacy caret link decodes")
+    eq(#fromTilde, 3, "tilde link decodes")
+    eq(fromCaret[1].role, fromTilde[1].role, "caret and tilde share role 1")
+    eq(fromCaret[2].uid, fromTilde[2].uid, "caret and tilde share uid 2")
+    eq(fromCaret[3].role, "stabilizer", "legacy third role")
+    local plain = RL.SerializePlain({ uid = 7, slotsEncoded = legacy })
+    check(type(plain) == "string", "legacy slots re-encode")
+    check(string.find(plain, "~", 1, true) ~= nil, "re-emitted join is tilde")
+    check(string.find(plain, "^", 1, true) == nil, "re-emitted payload has no caret")
+    eq(RL.DecodeSlots("^" .. mainSlot), nil, "leading caret rejected")
+    eq(RL.DecodeSlots(mainSlot .. "^"), nil, "trailing caret rejected")
+    eq(RL.DecodeSlots(mainSlot .. "^^" .. containerSlot), nil, "doubled caret rejected")
+    eq(RL.DecodeSlots("~" .. mainSlot), nil, "leading tilde rejected")
+    eq(RL.DecodeSlots(mainSlot .. "~"), nil, "trailing tilde rejected")
+    eq(RL.DecodeSlots(mainSlot .. "~~" .. containerSlot), nil, "doubled tilde rejected")
+    eq(RL.DecodeSlots(mainSlot .. "~^" .. containerSlot), nil, "mixed ~^ rejected")
+    eq(RL.DecodeSlots(mainSlot .. "^~" .. containerSlot), nil, "mixed ^~ rejected")
+end
+
 testSlotRoundTrip()
 testRoundTrip()
 testEffectBonusRoundTrip()
@@ -811,6 +860,8 @@ testOpenOnlyAfterSuccess()
 testHookLeavesLaterAddon()
 testZeroBonusKept()
 testChatCountsExistingText()
+testChatKeepsMultiSlotLink()
+testLegacyCaretAndBadSeparators()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

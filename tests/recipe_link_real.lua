@@ -310,12 +310,25 @@ local function testMigrateMergeClearsMarker()
     eq(row.unverified, nil, "migrate merge clears unverified")
 end
 
+local function testSeparatorDoesNotChangeFingerprint()
+    local slots = makeSlots(5, 6000)
+    local enc = RL.EncodeSlots(slots)
+    check(string.find(enc, "~", 1, true) ~= nil, "share joins with tilde")
+    check(string.find(enc, "^", 1, true) == nil, "share omits caret")
+    local legacy = string.gsub(enc, "~", "^")
+    local fromTilde = RS.RecipeSpecKey(RL.DecodeSlots(enc))
+    local fromCaret = RS.RecipeSpecKey(RL.DecodeSlots(legacy))
+    eq(fromTilde, fromCaret, "tilde and legacy caret recompute the same fingerprint")
+    eq(fromTilde, RS.RecipeSpecKey(slots), "separator does not change the fingerprint")
+end
+
 roundTrip(5, 1000)
 roundTrip(8, 8000)
 testImportLeavesExistingAlone()
 testMergeClearsMarkerWhenBrewed()
 testMergeKeepsMarkerWithoutBrews()
 testMigrateMergeClearsMarker()
+testSeparatorDoesNotChangeFingerprint()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

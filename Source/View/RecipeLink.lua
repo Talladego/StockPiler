@@ -5,8 +5,9 @@
 --   POTION;uid=<n>;icon=<n>;n=<name>;slots=<encoded>
 -- Slot rows (legacy rows stop before effectId):
 --   role:uid:perCraft:power:stability:duration:tradeSkill:skillLevel:cult:slotType:effectId:bonuses
--- joined with ^ . bonuses is ref=value pairs separated by commas,
+-- joined with ~ . bonuses is ref=value pairs separated by commas,
 -- including a present zero (1=0). Refs the fingerprint ignores are omitted.
+-- Older links may join slots with ^; those still import when the carets survived.
 -- Hyperlink linkData: StockPiler: + plain payload
 -- Click: import into Known Potions. Existing recipes, potion names,
 -- and the active recipe are not modified.
@@ -416,7 +417,8 @@ function RL.EncodeSlots(slots)
             tail,
         }, ":")
     end
-    return table.concat(parts, "^")
+    -- "~" is safe in chat. "^" starts a grammar suffix and the client strips it.
+    return table.concat(parts, "~")
 end
 
 local function DecodeOneSlot(piece)
@@ -504,15 +506,24 @@ function RL.DecodeSlots(encoded)
     if encoded == "" then
         return nil
     end
-    if string.sub(encoded, 1, 1) == "^"
-        or string.sub(encoded, -1) == "^"
-        or string.find(encoded, "^^", 1, true) ~= nil
-    then
+    -- New shares use "~". Intact legacy links still use "^". Neither character
+    -- appears inside a slot: fields are a role word, integers, or ref=value pairs.
+    local function isSep(index)
+        local ch = string.sub(encoded, index, index)
+        return ch == "~" or ch == "^"
+    end
+    local n = string.len(encoded)
+    if isSep(1) or isSep(n) then
         return nil
+    end
+    for i = 1, n - 1 do
+        if isSep(i) and isSep(i + 1) then
+            return nil
+        end
     end
     local slots = {}
     local count = 0
-    for piece in string.gmatch(encoded, "[^%^]+") do
+    for piece in string.gmatch(encoded, "[^~%^]+") do
         count = count + 1
         if count > RL.MAX_SLOTS then
             return nil
@@ -586,10 +597,15 @@ function RL.SerializePlain(fields)
             return nil
         end
     elseif type(fields.slotsEncoded) == "string" and fields.slotsEncoded ~= "" then
-        if RL.DecodeSlots(fields.slotsEncoded) == nil then
+        local decoded = RL.DecodeSlots(fields.slotsEncoded)
+        if decoded == nil then
             return nil
         end
-        slotsEnc = fields.slotsEncoded
+        -- Re-emit so a legacy "^" payload is not copied into a new share.
+        slotsEnc = RL.EncodeSlots(decoded)
+        if slotsEnc == nil or slotsEnc == "" then
+            return nil
+        end
     end
 
     local function build(includeName, includeIcon)
