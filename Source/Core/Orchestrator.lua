@@ -85,6 +85,12 @@ function Orch.HasAutoGrowWork(opts)
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive() then
         return true
     end
+    -- Apo resin refine survives a cleared _refineDirty and full plots. The
+    -- quiet-idle skip must not drop the tick before the vendor-open tip.
+    local SkillUp = StockPiler.SkillUp
+    if SkillUp and SkillUp.HasApoResinRefinePlant and SkillUp.HasApoResinRefinePlant() == true then
+        return true
+    end
     if opts.respectFillBlock == true and Orch.IsFillBlocked() then
         local RP = StockPiler.RefinePipeline
         if RP and RP.HasOutstanding and RP.HasOutstanding() then
@@ -315,6 +321,11 @@ function Orch._TickBody()
     -- latch fillBlocked and never retry planting while seeds sat in bag).
     if Orch.IsFillBlocked() then
         local Refine = StockPiler.Refine
+        if Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() ~= true then
+            if Refine.MaybeNotifyBlocked then
+                Refine.MaybeNotifyBlocked()
+            end
+        end
         local Grow = StockPiler.Grow
         local Sch = StockPiler.Scheduler
         local bufferRefine = HasPendingBufferRefine()
@@ -573,7 +584,11 @@ function Orch._TickBody()
 
     -- 3) Refine
     local Refine = StockPiler.Refine
-    local refineDue = Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
+    local allowRefine = Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
+    if Refine and allowRefine ~= true and Refine.MaybeNotifyBlocked then
+        Refine.MaybeNotifyBlocked()
+    end
+    local refineDue = allowRefine == true
         and Refine.RefineCheckDue and Refine.RefineCheckDue() == true
     if refineDue and Refine.TryTick then
         local ok = Refine.TryTick(opId)

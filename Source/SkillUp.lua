@@ -3955,6 +3955,46 @@ local function PickApoLeftoverResinPlant(apoTier)
     return best
 end
 
+--- True when Apo brew is blocked on resin/stability and a plant can be refined for it.
+--- Plots-full idle used to clear _refineDirty and then forget this work.
+function SkillUp.HasApoResinRefinePlant()
+    if SkillUp.ShouldApoBrew() ~= true then
+        return false
+    end
+    local recipe, why = SkillUp.BuildApoBrewRecipe()
+    if type(recipe) == "table" then
+        return false
+    end
+    if why ~= "need_resin" and why ~= "unstable" then
+        return false
+    end
+    local apoTier = SkillUp.ApoTargetTier()
+    if type(PickApoLeftoverResinPlant(apoTier)) == "table" then
+        return true
+    end
+    local mains = SkillUp.ListApoBagMaterials and SkillUp.ListApoBagMaterials("main") or {}
+    local SM = StockPiler.SeedMap
+    local Inv = StockPiler.Inventory
+    for i = 1, #mains do
+        local main = mains[i]
+        if type(main) == "table" and type(main.spec) == "table"
+            and SM and SM.IsGrowableSpec and SM.IsGrowableSpec(main.spec) == true
+        then
+            local plantUid = tonumber(main.uid) or 0
+            local seedUid = tonumber(main.seedUid) or 0
+            if plantUid > 0 then
+                local bagCount = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid))
+                    or tonumber(main.bagCount) or tonumber(main.count) or 0
+                local uses = ApoResinRefineUses(plantUid, seedUid, main.spec, bagCount, true)
+                if (tonumber(uses) or 0) >= 1 then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 --- When Apo SkillUp needs resin: prefer leftover lower-tier mains, then
 --- surplus of the exact-floor brew main (keep >=1 for brew).
 function SkillUp.AppendApoResinRefineIntents(intents, appendFn)

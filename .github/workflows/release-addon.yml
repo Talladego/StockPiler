@@ -77,7 +77,8 @@ jobs:
             sed -E 's/L"([^"]*)"/"\1"/g' "$f" > "$tmp/$rel"
             luac5.1 -p "$tmp/$rel"
           done
-          # tests/*.lua includes tests/locale_tokens.lua ({token} gsub regression).
+          # tests/*.lua includes tests/locale_tokens.lua ({token} gsub regression),
+          # tests/skillup_apo_ready.lua, and tests/refine_vendor_block.lua.
           for t in tests/*.lua; do
             lua5.1 "$t"
           done

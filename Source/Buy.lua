@@ -1161,9 +1161,7 @@ local function BeginVisitIfNeeded()
         if StockPiler.Refine and StockPiler.Refine.MarkRefineDue then
             StockPiler.Refine.MarkRefineDue("store-close")
         end
-        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
-            StockPiler.Scheduler.WakeAutoGrow()
-        end
+        Buy.OnVendorClosed()
     end
     Buy._storeWasOpen = open == true
     return open == true
@@ -1300,6 +1298,17 @@ function Buy.OnMoneySettingsChanged()
         if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
             StockPiler.Scheduler.WakeAutoBuy()
         end
+    end
+end
+
+--- Merchant window closed. Drop the one-shot refine stall tip and resume
+--- planting/refine that was held while SendUseItem would have ended the visit.
+function Buy.OnVendorClosed()
+    if StockPiler.Refine and StockPiler.Refine.ClearBlockedNotify then
+        StockPiler.Refine.ClearBlockedNotify()
+    end
+    if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
+        StockPiler.Scheduler.WakeAutoGrow()
     end
 end
 

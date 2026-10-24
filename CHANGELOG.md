@@ -4,6 +4,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.3
 
+- Bug fixes.
 - Performance improvements.
 
 ## 1.1.2

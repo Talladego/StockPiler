@@ -31,6 +31,7 @@ Refine._bagIndexGen = -1
 Refine._reconcileSnapGen = -1
 Refine._onUpdateFrame = -1
 Refine._liveSeedBaseline = Refine._liveSeedBaseline or {}
+Refine._blockedVendorNotified = false
 
 ----------------------------------------------------------------
 -- Helpers
@@ -973,14 +974,18 @@ end
 
 --- Plant-first: block refine if empty plot + plantable unless buffer-pending or fillBlocked.
 --- No refine during brew session.
-function Refine.ShouldAllowRefineNow()
+function Refine.ShouldAllowRefineNow(opts)
+    opts = type(opts) == "table" and opts or {}
+    local ignoreVendor = opts.ignoreVendor == true
     if Refine.IsEnabled() ~= true then
         return false, "disabled"
     end
     -- SendUseItem ends the merchant interaction (store listens to INTERACT_DONE).
     -- Keep the vendor open for AutoBuy while the player shops; refine after close.
+    -- ignoreVendor only asks whether refine work is waiting, so a closed-merchant
+    -- tip is not raised when the bags have nothing to convert.
     local VA = StockPiler.VendorAdapter
-    if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
+    if ignoreVendor ~= true and VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
         return false, "vendor-open"
     end
     local Orch = StockPiler.Orchestrator
@@ -1021,7 +1026,10 @@ function Refine.ShouldAllowRefineNow()
             if not allowDirty
                 and not (Grow.IsFillBlocked and Grow.IsFillBlocked() == true)
             then
-                return false, "plant-probe-pending"
+                -- Intent checks must not wait on a plant probe that has not run.
+                if ignoreVendor ~= true then
+                    return false, "plant-probe-pending"
+                end
             end
         end
         if plantable then
@@ -1066,19 +1074,54 @@ function Refine.ShouldAllowRefineNow()
         if SkillUpIdle.HasRefinablePlants and SkillUpIdle.HasRefinablePlants() == true then
             return true, "skill-up-buffer"
         end
+        if SkillUpIdle.HasApoResinRefinePlant and SkillUpIdle.HasApoResinRefinePlant() == true then
+            return true, "skill-up-resin"
+        end
     end
     return false, "idle-grow"
+end
+
+function Refine.ClearBlockedNotify()
+    Refine._blockedVendorNotified = false
+end
+
+--- One chat line when refine work is waiting and the merchant window is the block.
+--- Returns true only on the first notice. ClearBlockedNotify arms it again.
+function Refine.MaybeNotifyBlocked()
+    local allow, why = Refine.ShouldAllowRefineNow()
+    if allow == true or why ~= "vendor-open" then
+        Refine._blockedVendorNotified = false
+        return false
+    end
+    local ignore = { ignoreVendor = true }
+    local waiting = Refine.ShouldAllowRefineNow(ignore) == true
+        and #(Refine.CollectIntents(ignore) or {}) > 0
+    if waiting ~= true then
+        Refine._blockedVendorNotified = false
+        return false
+    end
+    if Refine._blockedVendorNotified == true then
+        return false
+    end
+    Refine._blockedVendorNotified = true
+    local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
+        or L"Refine stalled - close the merchant window to continue."
+    if StockPiler.Debug and StockPiler.Debug.Print then
+        StockPiler.Debug.Print(msg)
+    end
+    return true
 end
 
 ----------------------------------------------------------------
 -- CollectIntents / IssueOne
 ----------------------------------------------------------------
 
-function Refine.CollectIntents()
+function Refine.CollectIntents(opts)
+    opts = type(opts) == "table" and opts or {}
     if Refine.IsEnabled() ~= true then
         return {}
     end
-    if Refine.ShouldAllowRefineNow() ~= true then
+    if Refine.ShouldAllowRefineNow(opts) ~= true then
         return {}
     end
     local cacheKey = IntentCacheKey()
