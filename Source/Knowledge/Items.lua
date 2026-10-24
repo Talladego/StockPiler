@@ -558,7 +558,7 @@ function Items.ValidateAndRepairSavedItems()
 end
 
 --- Stamp EFFECT onto a learned plant from its seed (harvest/refine / migrate).
---- Only EFFECT transfers seed→plant. Cultivation SPECIAL_CHANCE / FAIL_CHANCE on
+--- Only EFFECT transfers seed->plant. Cultivation SPECIAL_CHANCE / FAIL_CHANCE on
 --- seeds must never be copied (different meaning than apo Super-Crit on plants).
 --- Does not overwrite a different existing non-zero effectId. Clears incomplete
 --- only when the row already has a usable main fingerprint (pwr/stab/slot).

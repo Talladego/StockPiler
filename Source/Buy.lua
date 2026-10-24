@@ -38,6 +38,9 @@ Buy._issueSeq = 0
 Buy._noSpendCooldownUntil = Buy._noSpendCooldownUntil or {}
 Buy._lateBuyAttempts = Buy._lateBuyAttempts or {}
 Buy._nextBuyAfter = 0
+Buy._nextBuyIsCooldown = false
+Buy._storeMatchCache = nil
+Buy._storeMatchCacheToken = nil
 
 ----------------------------------------------------------------
 -- Helpers
@@ -278,6 +281,66 @@ local function ArmPostBuyGap()
     if now > 0 and gap > 0 then
         Buy._nextBuyAfter = now + gap
     end
+    Buy._nextBuyIsCooldown = false
+end
+
+local function ArmCooldownResume(soonest)
+    if soonest ~= nil then
+        local cur = tonumber(Buy._nextBuyAfter) or 0
+        if soonest > cur then
+            Buy._nextBuyAfter = soonest
+        end
+    end
+    Buy._nextBuyIsCooldown = true
+end
+
+local function MaybeWakeForShortGap()
+    local wait = (tonumber(Buy._nextBuyAfter) or 0) - NowSec()
+    if wait <= (tonumber(Buy.POST_BUY_GAP_SEC) or 0.35) then
+        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+            StockPiler.Scheduler.WakeAutoBuy()
+        end
+    end
+end
+
+--- Negative and positive FindStoreMatch results for one store generation + bag snap.
+--- Unbuyable jobs must not walk every store row on every frame.
+local function StoreMatchCacheToken()
+    local VA = StockPiler.VendorAdapter
+    local gen = VA and tonumber(VA._matchIndexGen) or 0
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    return tostring(gen) .. ":" .. tostring(snap)
+end
+
+local function CachedFindStoreMatch(job, slot)
+    local token = StoreMatchCacheToken()
+    if Buy._storeMatchCacheToken ~= token or type(Buy._storeMatchCache) ~= "table" then
+        Buy._storeMatchCacheToken = token
+        Buy._storeMatchCache = {}
+    end
+    local uid = 0
+    local specKey = ""
+    if type(job) == "table" then
+        uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+        specKey = tostring(job.specKey or job.acquireKey or "")
+    end
+    local id = tostring(slot or 0) .. ":" .. tostring(uid) .. ":" .. specKey
+    local hit = Buy._storeMatchCache[id]
+    if type(hit) == "table" then
+        if hit.miss == true then
+            return nil, 0
+        end
+        return hit.item, hit.cost
+    end
+    local item, cost = Buy.FindStoreMatch(job)
+    cost = tonumber(cost) or 0
+    if type(item) ~= "table" then
+        Buy._storeMatchCache[id] = { miss = true }
+        return nil, 0
+    end
+    Buy._storeMatchCache[id] = { item = item, cost = cost }
+    return item, cost
 end
 
 local function IsGrowableStoreItem(item)
@@ -1544,8 +1607,13 @@ function Buy.IssueOne(opId)
                 StockPiler.Scheduler.WakeAutoBuy()
             end
         end
+        -- A long no-spend cooldown must not keep the buying phase spinning.
+        if Buy._nextBuyIsCooldown == true then
+            return done(false)
+        end
         return done(true)
     end
+    Buy._nextBuyIsCooldown = false
 
     local purchases = tonumber(Buy._visitPurchases) or 0
     if purchases >= (Buy.MAX_PURCHASES_PER_VISIT or 80) then
@@ -1616,35 +1684,52 @@ function Buy.IssueOne(opId)
         end
     end
     if allCooling then
-        if soonestCool ~= nil then
-            local cur = tonumber(Buy._nextBuyAfter) or 0
-            if soonestCool > cur then
-                Buy._nextBuyAfter = soonestCool
-            end
-        end
-        return done(true)
+        ArmCooldownResume(soonestCool)
+        MaybeWakeForShortGap()
+        return done(false)
     end
 
     local matched = 0
+    local matchedBuy = nil
     local zeroCost = 0
     local noMatch = 0
     local cooldownBlocked = false
     local containerJob = false
     local containerMatched = false
+    local containerSearched = false
+    local resumeAt = nil
+    local nowJobs = NowSec()
     for i = 1, #jobs do
         local job = jobs[i]
-        local item, unitCost = Buy.FindStoreMatch(job)
-        unitCost = tonumber(unitCost) or 0
+        local jobUid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+        local jobUntil = tonumber(Buy._noSpendCooldownUntil[jobUid]) or 0
+        local jobCooling = IsUidOnCooldown(jobUid)
+        local jobLate = OpenLateQtyForUid(jobUid) > 0
+        if jobCooling and jobUntil > nowJobs and (resumeAt == nil or jobUntil < resumeAt) then
+            resumeAt = jobUntil
+        end
+        local item, unitCost
+        if jobCooling or jobLate then
+            -- Do not walk the store for a uid that cannot buy this frame.
+            cooldownBlocked = true
+            item, unitCost = nil, 0
+        else
+            item, unitCost = CachedFindStoreMatch(job, i)
+            unitCost = tonumber(unitCost) or 0
+        end
         if job.skillUp == true and tostring(job.role or "") == "container" then
             containerJob = true
-            if type(item) == "table" then
-                containerMatched = true
-            end
-            local SU = StockPiler.SkillUp
-            if SU and SU.SetNoVendorContainer then
-                SU.SetNoVendorContainer(containerMatched ~= true)
-            elseif SU then
-                SU._apoNoVendorContainer = (containerMatched ~= true) and true or nil
+            if not jobCooling and not jobLate then
+                containerSearched = true
+                if type(item) == "table" then
+                    containerMatched = true
+                end
+                local SU = StockPiler.SkillUp
+                if SU and SU.SetNoVendorContainer then
+                    SU.SetNoVendorContainer(containerMatched ~= true)
+                elseif SU then
+                    SU._apoNoVendorContainer = (containerMatched ~= true) and true or nil
+                end
             end
         end
         if type(item) ~= "table" then
@@ -1667,7 +1752,12 @@ function Buy.IssueOne(opId)
             elseif IsUidOnCooldown(uid) or OpenLateQtyForUid(uid) > 0 then
                 -- Recent buy-no-spend / open late-confirm for this uid - stay armed (#9).
                 cooldownBlocked = true
+                local itemUntil = tonumber(Buy._noSpendCooldownUntil[uid]) or 0
+                if itemUntil > nowJobs and (resumeAt == nil or itemUntil < resumeAt) then
+                    resumeAt = itemUntil
+                end
             else
+                matchedBuy = item
                 local deficit = tonumber(job.deficit) or 0
                 local lateQty = OpenLateQtyForUid(uid)
                 local remaining = math.max(0, deficit - VisitAcquired(key) - lateQty)
@@ -1752,7 +1842,7 @@ function Buy.IssueOne(opId)
         end
     end
 
-    if containerJob then
+    if containerJob and containerSearched then
         local SU = StockPiler.SkillUp
         if SU and SU.SetNoVendorContainer then
             SU.SetNoVendorContainer(containerMatched ~= true)
@@ -1775,15 +1865,12 @@ function Buy.IssueOne(opId)
         ArmPlanAfterBuyFill("budget")
         return done(false)
     end
-    -- Jobs remain but uid is on short no-spend cooldown - keep buying phase alive.
-    if cooldownBlocked and Buy._visitStopReason == nil then
-        local wait = (tonumber(Buy._nextBuyAfter) or 0) - NowSec()
-        if wait <= (tonumber(Buy.POST_BUY_GAP_SEC) or 0.35) then
-            if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
-                StockPiler.Scheduler.WakeAutoBuy()
-            end
-        end
-        return done(true)
+    -- No free job can buy in this store. Sleep until the soonest cooldown
+    -- instead of returning true every frame.
+    if matchedBuy == nil and cooldownBlocked and Buy._visitStopReason == nil then
+        ArmCooldownResume(resumeAt)
+        MaybeWakeForShortGap()
+        return done(false)
     end
     if #jobs > 0 and matched <= 0 then
         local indexRows = 0

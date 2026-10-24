@@ -1704,7 +1704,7 @@ local function CollectAutoGrowSeedLines()
                                         seed = { uniqueID = seedUid, plantUid = plantUid }
                                     else
                                         -- Cult-max s0 (Savage Marshroot): do not ResolveSeedForSpec /
-                                        -- GetSeedUidsForPlant[1] — those prefer bag lower-tier seeds
+                                        -- GetSeedUidsForPlant[1] - those prefer bag lower-tier seeds
                                         -- and drop the plant cushion from AutoGrow seed lines.
                                         plantKnownNoSeed = true
                                     end
@@ -2610,7 +2610,7 @@ StampRowSeedBufferUids = function(row)
             end
         end
     end
-    -- Cold miss: tip plantUid / bound spec uid only — never FindPlantUidForSpec
+    -- Cold miss: tip plantUid / bound spec uid only - never FindPlantUidForSpec
     -- (full bag/Items ProductMatches walk) on the Watch status hot path.
     if #uids == 0 and #plantUids == 0 then
         local RS = RecipeSpec()
@@ -2882,6 +2882,98 @@ local function ApplyReadyStatus(row)
     end
 end
 
+--- True when this recipe's apothecary requirement is above the live skill.
+local function SkillBlocksRow(row)
+    local RS = RecipeSpec()
+    if not RS or not RS.RecipeSkillRequirements or type(row) ~= "table" then
+        return false
+    end
+    local req = RS.RecipeSkillRequirements(row.recipe)
+    if type(req) ~= "table" then
+        return false
+    end
+    local need = tonumber(req.apothecary) or tonumber(req.apo) or 0
+    if need <= 0 then
+        return false
+    end
+    local Caps = StockPiler.TradeSkillCaps
+    local apo = Caps and Caps.GetApoSkill and Caps.GetApoSkill() or 0
+    return apo < need
+end
+
+local function RowCoveredForSkillGate(row)
+    local have = tonumber(row.potionHave) or 0
+    local craftable = tonumber(row.craftable) or 0
+    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+    local deficit = tonumber(row.potionDeficit)
+    if deficit == nil then
+        deficit = math.max(0, target - have)
+    end
+    return target > 0 and deficit > 0 and (have + craftable) >= target
+end
+
+--- Re-apply need_skill / need_apothecary on one cached row.
+--- A skill point that does not cross a watched requirement leaves the row alone.
+local function RefreshRowSkillGate(row)
+    if type(row) ~= "table" or row.skillUp == true or row.addonOwned == true
+        or row.kind == "plant" or row.isPlantWatch == true
+    then
+        return false
+    end
+    local key = tostring(row.statusKey or "")
+    local gate = key == "ready_to_craft" or key == "ready_to_craft_shared"
+        or key == "need_skill" or key == "need_apothecary"
+    if not gate or not RowCoveredForSkillGate(row) then
+        return false
+    end
+    local prev = key
+    local blocks = SkillBlocksRow(row)
+    local canBrew = CanBrewPotionsSkill()
+    if key == "need_skill" and not blocks then
+        ApplyReadyStatus(row)
+        if not canBrew then
+            ApplyNeedApothecaryStatus(row)
+        end
+    elseif key == "need_apothecary" and canBrew then
+        ApplyReadyStatus(row)
+        ApplyNeedSkillStatus(row)
+    elseif (key == "ready_to_craft" or key == "ready_to_craft_shared")
+        and (blocks or not canBrew)
+    then
+        if not canBrew then
+            ApplyNeedApothecaryStatus(row)
+        end
+        if blocks then
+            ApplyNeedSkillStatus(row)
+        end
+    end
+    return tostring(row.statusKey or "") ~= prev
+end
+
+--- Cheap status pass. Does not BuildFull. Unrelated +1 skill points no-op.
+function Planner.RefreshSkillGateStatuses()
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) ~= "table" then
+        return false
+    end
+    local changed = false
+    for i = 1, #rows do
+        if RefreshRowSkillGate(rows[i]) then
+            changed = true
+        end
+    end
+    if changed then
+        InvalidateFocusCaches()
+        local Brew = StockPiler.Brew
+        if Brew and Brew.InvalidateCanBrewCache then
+            Brew.InvalidateCanBrewCache()
+        end
+    end
+    return changed
+end
+
 local function ApplyStockedStatus(row)
     row.statusKey = "potion_stocked"
     row.statusText = T("plan.status.potion_stocked")
@@ -2890,7 +2982,7 @@ local function ApplyStockedStatus(row)
 end
 
 --- Craft bag too tight for brew load (need a free slot to pull inventory mats).
---- Potion products land in the main bag — do not reserve craft space for output.
+--- Potion products land in the main bag - do not reserve craft space for output.
 --- Cache by snap + live free count so freeing slots is not stuck on an old snap.
 local function IsCraftBagFullCached()
     local BA = StockPiler.BagAdapter
@@ -3064,7 +3156,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     end
     -- Tip slots look covered (raw Have) but craftable may still be 0 under grow reserve,
     -- or partial craftable remains with bottleGap>0 (not Ready until covered).
-    -- Craft bag full: no room for brew output / harvest — do not paint Restocking.
+    -- Craft bag full: no room for brew output / harvest - do not paint Restocking.
     if IsCraftBagFullCached() then
         ApplyCraftBagFullStatus(row)
         return
@@ -4383,7 +4475,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
         end
     end
     -- Re-add ephemerals that BuildWatchStatusRows emits but live patch dropped
-    -- (e.g. transient unstocked mid seed-buffer refine → ephemeral-cleared).
+    -- (e.g. transient unstocked mid seed-buffer refine -> ephemeral-cleared).
     for i = 1, #fresh do
         local sr = fresh[i]
         if type(sr) == "table" then
@@ -4508,7 +4600,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         recountCraftable = false
     end
     -- Quiet/storm remount keeps prior have counts warm for orch probes. Never stamp
-    -- craftable from that remount — Watch would look one bag-move behind.
+    -- craftable from that remount - Watch would look one bag-move behind.
     if recountCraftable and HoldHaveCacheQuiet() and forceRecountCraftable ~= true then
         recountCraftable = false
     end
@@ -4706,9 +4798,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
     end
-    -- SkillUp rows are not count-patched above; rebuild status so waiting → planting
+    -- SkillUp rows are not count-patched above; rebuild status so waiting -> planting
     -- flips when watches stock without a full plan rebuild.
-    -- Mid-brew: skip — SeedBufferOk → BufferFlags after every ApplySlots (libperf hitch).
+    -- Mid-brew: skip - SeedBufferOk -> BufferFlags after every ApplySlots (libperf hitch).
     -- ForceBrew / post-session full flush refreshes SkillUp status.
     if not brewSessionActive then
         RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
@@ -4979,6 +5071,7 @@ local function TryCheapRebuild()
     stale.cacheKey = key
     stale.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
     PublishPlan(stale, key, { cheap = true })
+    Planner.RefreshSkillGateStatuses()
     PerfEnd("Planner.CheapRebuild")
     return stale
 end
@@ -5037,6 +5130,7 @@ local function TryGardenPatch()
     stale.cacheKey = key
     stale.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
     PublishPlan(stale, key, { gardenPatch = true })
+    Planner.RefreshSkillGateStatuses()
     PerfEnd("Planner.GardenPatch")
     return stale
 end
@@ -5474,6 +5568,7 @@ function Planner.LiveRecount(opts)
             })
         end
     end
+    Planner.RefreshSkillGateStatuses()
     Planner._liveGen = (tonumber(Planner._liveGen) or 0) + 1
     return Planner._liveGen
 end
@@ -5595,6 +5690,9 @@ function Planner.Build(opts)
             -- Miss when potion craftable lags the bag snap (quiet-end clear or
             -- a prior publish that advanced the key without recounting).
             if type(cached) == "table" and RowsCraftableCurrentForSnap(cached.rows) then
+                -- Skill points do not change the cache key. Re-check watched
+                -- need_skill / need_apothecary gates without BuildFull.
+                Planner.RefreshSkillGateStatuses()
                 return cached
             end
         end
@@ -5953,7 +6051,7 @@ function Planner.DumpGrowPlan(emit)
                 elseif not anyGrowableShort then
                     -- Flasks / butcher / resin only - grow correctly handed off.
                     -- plant_stock may still run (soft gate); GetPlantJob above would
-                    -- have returned a job if so — nil here means plant floors also idle.
+                    -- have returned a job if so - nil here means plant floors also idle.
                     nilReason = anyBuyOnlyShort and "buy-only-short" or "no-growable-short"
                 elseif not anyPlantUid then
                     nilReason = "no-plant-uid"

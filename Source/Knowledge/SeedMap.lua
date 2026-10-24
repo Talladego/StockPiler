@@ -320,7 +320,7 @@ function SM.HarvestSuccessRate(seedUid)
     return rate, successes, attempts, fails
 end
 
---- Plants still wanted → seeds to plant when Optimistic is off and rate is known.
+--- Plants still wanted -> seeds to plant when Optimistic is off and rate is known.
 function SM.PlantingsForExpectedPlants(seedUid, plantsNeeded)
     plantsNeeded = math.max(0, math.floor((tonumber(plantsNeeded) or 0) + 0.5))
     if plantsNeeded <= 0 then
@@ -459,7 +459,7 @@ local function StampPlantEffectFromSeedLink(seedUid, plantUid, plantData)
         return 0
     end
     local effectId = SM.ResolveSeedEffectId(seedUid)
-    -- Only EFFECT transfers seed→plant (cult Super-Crit / Fail Chance stay on seeds).
+    -- Only EFFECT transfers seed->plant (cult Super-Crit / Fail Chance stay on seeds).
     if StockPiler.Items and StockPiler.Items.StampPlantEffectFromSeed then
         StockPiler.Items.StampPlantEffectFromSeed(plantUid, effectId, plantData, seedUid)
     end
@@ -1156,7 +1156,7 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
         elseif plantReq > 0 and sReq > 0 and sReq < plantReq then
             -- Lower seed that crit into this plant (refine often returns it).
             -- Must lose to same-skillReq even when both share an exact grow name
-            -- (seen: L175 plant resolved to L150 seed → Apo brew reserve=0 while
+            -- (seen: L175 plant resolved to L150 seed -> Apo brew reserve=0 while
             -- the true L175 seed buffer was still short).
             score = score - 150000
         end
@@ -1265,7 +1265,7 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     -- Prefer any grow/refine-linked seed at the plant's skillReq before falling
     -- back to a lower planted seed (crit refine often returns L150 for an L175 plant).
     -- Grow-linked seeds with unknown skillReq still count (84043 may lack Items
-    -- sample after the last seed was planted) — never pick known-lower seeds.
+    -- sample after the last seed was planted) - never pick known-lower seeds.
     if plantReq > 0 then
         local bestSame, bestSameScore = 0, -1
         local bestUnknown = 0
@@ -1301,7 +1301,7 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     end
     -- Explicit refine/grow link wins when the seed is not in bags (score cannot
     -- verify name/skill). Without this, GrowReserve still falls back to
-    -- GetSeedUidsForPlant[1] while CollectAutoGrowSeedLines leaves seedUid=0 —
+    -- GetSeedUidsForPlant[1] while CollectAutoGrowSeedLines leaves seedUid=0 -
     -- brew craftable=0 with no seed-buffer plant job (Rejuvenating/Fusk stall).
     -- Never return a known lower-tier seed for a higher plant (buffer math would
     -- use the met lower buffer and brew away scarce same-tier feedstock).
@@ -1482,7 +1482,7 @@ local function SpecLooksButchering(spec)
             if rowUid > 0 and StockPiler.Items and StockPiler.Items.AsItemData then
                 probe = StockPiler.Items.AsItemData(rowUid) or row
             end
-            -- isRefinable==false + ProductMatch: butcher/vendor twin (scales, spittle, …).
+            -- isRefinable==false + ProductMatch: butcher/vendor twin (scales, spittle, ...).
             if MS.ProductMatches(probe, spec) == true then
                 return true
             end
@@ -1591,7 +1591,7 @@ local function IsGrowableSpecUncached(spec)
         return true
     end
     -- Fingerprint specs often omit uid/isRefinable; resolve via plant twin.
-    -- Bottled Rat Spittle / scales match as "plants" until LooksButcher runs —
+    -- Bottled Rat Spittle / scales match as "plants" until LooksButcher runs -
     -- their learned isRefinable==false must win over the cult-role heuristic.
     local plantUid = SM.FindPlantUidForSpec and tonumber(SM.FindPlantUidForSpec(spec)) or 0
     if plantUid > 0 then
@@ -2818,7 +2818,7 @@ end
 
 ----------------------------------------------------------------
 -- Migrate: stamp plant effectId from known seed links (one-shot).
--- Only EFFECT transfers seed→plant (never cult SPECIAL_CHANCE).
+-- Only EFFECT transfers seed->plant (never cult SPECIAL_CHANCE).
 ----------------------------------------------------------------
 
 -- Retired. The latch stays on old saves so validation still accepts it.

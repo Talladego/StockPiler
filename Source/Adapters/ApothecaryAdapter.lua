@@ -1064,7 +1064,7 @@ function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)
     end
     -- Soft locks from ApothecaryWindow.Show / a prior container add make
     -- AddCraftingItem no-op for mains/ingredients while AddCraftingContainer
-    -- still works. Only clear soft locks — ReleaseAllLocks mid-load can
+    -- still works. Only clear soft locks - ReleaseAllLocks mid-load can
     -- disturb the board (flask flicker) without helping the add.
     AA.SetSoftLocks(false)
     return TryCall(

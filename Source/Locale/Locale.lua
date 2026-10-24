@@ -54,8 +54,9 @@ end
 --- nothing and a value with one "%" replaces only the first {token}.
 local function LiteralReplacement(value)
     value = CoerceWString(value)
-    local escaped = wstring.gsub(value, L"%%", L"%%%%")
-    return escaped
+    -- Parentheses keep only the replaced string. The count must not become
+    -- the outer gsub's n (0 replacements when the value has no "%").
+    return (wstring.gsub(value, L"%%", L"%%%%"))
 end
 
 local function ApplyTokens(template, tokens)

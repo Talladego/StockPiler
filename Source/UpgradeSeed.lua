@@ -384,7 +384,7 @@ end
 --- opts.mode "climb" (default): L1 prefers buffer but never stalls empty plots;
 --- intermediate rungs keep 0 (not vendor-restocked).
 --- opts.mode "skillup": always fill empty plots (min bag, empty). Planting moves
---- live→ground so seed-buffer *credit* is unchanged; PreferRefine + Apo plant
+--- live->ground so seed-buffer *credit* is unchanged; PreferRefine + Apo plant
 --- reserve protect the cushion. A keep-1 while buffer-short left empty plots idle
 --- with 2 bag seeds (plantable=1) and stalled Cult XP.
 --- opts.intermediate: climb-only - treat as non-vendor intermediate rung.
@@ -409,7 +409,7 @@ function US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
     end
     -- L1 / vendor floor: prefer surplus above the seed buffer so AutoBuy can
     -- restock. If AutoBuy only filled the cushion (e.g. plots were full then),
-    -- still plant into empties — otherwise Majestic Goldweed stays need_buy
+    -- still plant into empties - otherwise Majestic Goldweed stays need_buy
     -- forever with 5 L1 seeds and open plots.
     local live = tonumber(budget.live) or bagSeeds
     local surplus = live - buffer
@@ -534,7 +534,7 @@ end
 
 --- Seed/plant uids on the needReq rung (Cult-max destination).
 --- When the rung exists, use its uids only (s0 stays 0). Fallback applies only
---- when the ladder has no needReq rung — never inherit a lower-tier seed onto a
+--- when the ladder has no needReq rung - never inherit a lower-tier seed onto a
 --- known orphan high rung (Spiderfrond L25 s0 + full Wispy buffer falsely ended climb).
 local function RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     needReq = tonumber(needReq) or 0
@@ -697,10 +697,10 @@ end
 
 --- Plant-watch climb descriptor (stock N vs Cult-max existence).
 --- pending = climb not finished; eligible = stocked, mid-climb, or arrive needed.
---- arriveNeeded: plant stock short and watched-tier seed/plant missing — climb to
+--- arriveNeeded: plant stock short and watched-tier seed/plant missing - climb to
 --- that tier must run without waiting for WatchesAllowUpgradeClimb (else L200
 --- watches with only lower seeds stall forever on "Seed buffer").
---- Arrive completes when HaveTargetRung (any plantable watched-tier seed/plant) —
+--- Arrive completes when HaveTargetRung (any plantable watched-tier seed/plant) -
 --- not when every plot can be filled; plant watch + seed buffer take over after that.
 --- Phase B (stocked + idle gate) keeps climbing until Cult-max seed buffer is full.
 function US.DescribePlantWatchClimb(watchPlantUid)
@@ -1202,7 +1202,7 @@ local function CollectUpgradeTargets()
     end
 
 --- Explicit plant watches:
-    -- Phase A arrive: stock short + missing watched-tier seed → climb to watchedReq
+    -- Phase A arrive: stock short + missing watched-tier seed -> climb to watchedReq
     -- until at least one plantable target-tier seed/plant exists (same as potion-mat
     -- arrive). Then the plant watch owns restock / seed buffer; ephemeral clears.
     -- Phase B Cult-max: after watches/buffer idle gate, climb until Cult-max seed
@@ -1290,8 +1290,8 @@ end
 
 --- Snap/watch-keyed cache over CollectUpgradeTargets (NeedsRefineFirst / PickPlantJob / status).
 local function GetUpgradeTargets()
-    -- Re-entrancy: cache is only published after Collect finishes. GrowReserve →
-    -- ShouldCultGrow → WatchesAllowIdle → IsActivelyClimbing used to call here while
+    -- Re-entrancy: cache is only published after Collect finishes. GrowReserve ->
+    -- ShouldCultGrow -> WatchesAllowIdle -> IsActivelyClimbing used to call here while
     -- Collect was already running and blew the C stack (uilog 0.3.348).
     if US._upgradeTargetsBuilding == true then
         if type(US._upgradeTargetsCache) == "table" then
@@ -1471,7 +1471,7 @@ function US.PickPlantJob()
                 -- (L1 Fusk 3010030 filled all plots while Cloudy Fusk waited to refine).
                 local plantGoesBackward = upgradePlantReq > ownedReq
                 -- Exception: destination-tier plants in bag but Cult-max / needReq
-                -- seed buffer still short — keep planting the best owned plantable
+                -- seed buffer still short - keep planting the best owned plantable
                 -- rung (SM fishing / refine-fail insurance). Mid-climb already felt
                 -- fine because higher plants were below needReq; a few L200 plants
                 -- used to stall all L175 planting via no-backslide alone.
@@ -1789,7 +1789,7 @@ function US.AppendRefineIntents(intents, appendFn)
                 end
             end
             -- Buffer refine for owned climb seed (settle only when garden full;
-            -- empty plots still refine up to headroom — see SeedBufferSettleDeferred).
+            -- empty plots still refine up to headroom - see SeedBufferSettleDeferred).
             if type(owned) == "table" and (tonumber(owned.seedUid) or 0) > 0 then
                 local seedUid = tonumber(owned.seedUid) or 0
                 local plantUid = tonumber(owned.plantUid) or 0
@@ -2281,7 +2281,7 @@ end
 
 --- True when Upgrade Seeds has climb work (potions, plant watches, or bag seeds).
 --- SkillUp yields Cult plots while this is true.
---- Never sync-builds GetUpgradeTargets here: GrowReserve → ShouldCultGrow →
+--- Never sync-builds GetUpgradeTargets here: GrowReserve -> ShouldCultGrow ->
 --- WatchesAllowIdleSkillUp calls this on every CountCraftsPossible slot.
 function US.IsActivelyClimbingPlantWatches()
     if US.IsEnabled() ~= true then

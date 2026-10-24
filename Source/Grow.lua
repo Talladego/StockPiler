@@ -1658,7 +1658,7 @@ function Grow.PickPlantCandidate()
         end
     end
 
-    -- Upgrade Seed refine-first: skip BuildBalancedSpecDemand (WarmHave.miss) —
+    -- Upgrade Seed refine-first: skip BuildBalancedSpecDemand (WarmHave.miss) -
     -- orch trails showed PickPlantCandidate + CollectIntents on every refine tick.
     local US = StockPiler.UpgradeSeed
     if US and US.IsEnabled and US.IsEnabled() == true then
@@ -1670,7 +1670,7 @@ function Grow.PickPlantCandidate()
         end
     end
 
-    -- Never sync WarmHave.miss on Orch frames — cacheOnly + FrameWork prewarm.
+    -- Never sync WarmHave.miss on Orch frames - cacheOnly + FrameWork prewarm.
     local demand = RS.BuildBalancedSpecDemand
         and RS.BuildBalancedSpecDemand({ cacheOnly = true })
         or nil
@@ -2272,7 +2272,7 @@ function Grow.ShouldHoldPlantForReadyHarvest()
 end
 
 --- forceImmediate=true: always SyncActionReadiness now (greying must not wait out
---- plant quiet / harvest storm — that left Harvest/Craft lit while clicks no-op).
+--- plant quiet / harvest storm - that left Harvest/Craft lit while clicks no-op).
 local function NudgeHarvestReadiness(forceImmediate)
     forceImmediate = forceImmediate == true
     local Sch = StockPiler.Scheduler
@@ -2494,7 +2494,7 @@ function Grow.MaybeNotifyHarvestReady()
     local ready = allReady == true and canHarvest == true
     local wasReady = Grow._harvestReadyLatched == true
     local Sch = StockPiler.Scheduler
-    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) during cult storms —
+    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) during cult storms -
     -- that was the 10s Footer/Macro trail piled on CultivationUpdated x4.
     local holdFooter = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
         or (Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true)

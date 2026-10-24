@@ -153,7 +153,7 @@ local function PotionOutputUid(rowOrSession)
 end
 
 --- Live bag count for the watch potion (nil if uid unknown / inventory not ready).
---- CountByUid returns 0 while Inv is not ready — that must not look like "0 stock"
+--- CountByUid returns 0 while Inv is not ready - that must not look like "0 stock"
 --- or PickReadyWatch / auto-load will brew already-stocked watches mid bag-flush.
 local function LivePotionHave(rowOrSession)
     local uid = PotionOutputUid(rowOrSession)
@@ -1033,7 +1033,7 @@ local function ForceBrewUiRefresh(opts)
 end
 
 --- Hold Watch ListBox rebinds across inter-craft idle (after-brew clears session
---- before the next BeginForRow). Full Refresh → ListBoxSetDisplayOrder blanks rows.
+--- before the next BeginForRow). Full Refresh -> ListBoxSetDisplayOrder blanks rows.
 Brew.WATCH_UI_HOLD_SEC = 6.0
 
 function Brew.ArmWatchUiHold(sec)
@@ -1516,7 +1516,7 @@ local function BeginLoadJob(row, source)
         Brew.ClearOpenFailBackoff()
     end
     -- Auto: refuse when craft bag has no free slot for inventory pulls.
-    -- (Potion output goes to the main bag — craft free is only for AddCraftingItem.)
+    -- (Potion output goes to the main bag - craft free is only for AddCraftingItem.)
     if source ~= "manual" then
         local backoffUntil = tonumber(Brew._autoLoadBackoffUntil) or 0
         if backoffUntil > 0 and NowSec() < backoffUntil then
@@ -1680,7 +1680,7 @@ local function BeginLoadJob(row, source)
     end
     SetSessionPhase("loading", "begin-load")
     Brew.InvalidateCanBrewCache()
-    -- Grey macros while load runs (IsBusy → CanBrewNow false). First click only
+    -- Grey macros while load runs (IsBusy -> CanBrewNow false). First click only
     -- starts the load; without this the button stayed lit and felt dead.
     ForceBrewUiRefresh({ rows = false })
     return true
@@ -1726,7 +1726,7 @@ local function AbortIncompleteLoad(reason)
         a.ClearSlots()
     end
     ClearSession({ reason = reason })
-    -- Stop AutoBrew clear→flask→fail→clear thrash when a step cannot land.
+    -- Stop AutoBrew clear->flask->fail->clear thrash when a step cannot land.
     Brew._autoLoadBackoffUntil = NowSec() + (tonumber(Brew.LOAD_ABORT_BACKOFF_SEC) or 4)
     -- Session is idle now. Ask Watch to recount craftable (craft-chat reject
     -- spends a mat). A FrameWork job queued while the session was active never
@@ -1873,7 +1873,7 @@ local function AdvanceLoadJob()
         end
         -- Only start load from ADDCONTAINER. Loading into leftover VALID_RECIPE
         -- rejects later AddCraftingItem after the flask (SP1 SessionReadyToFill).
-        -- Do not spam ClearSlots here when the board is already empty — that
+        -- Do not spam ClearSlots here when the board is already empty - that
         -- fights a concurrent AutoBrew restart and flickers the flask.
         local cs = GameData and GameData.CraftingStates
         local st = a.CraftingState and a.CraftingState()
@@ -1993,7 +1993,7 @@ local function AdvanceLoadJob()
 
         -- Confirm prior issued add landed before advancing (SP1 StepSatisfied).
         -- Firing the next AddCraftingItem before the server accepts the previous
-        -- one is silently rejected — board stuck with vial-only.
+        -- one is silently rejected - board stuck with vial-only.
         local function StepLanded(step)
             if type(step) ~= "table" then
                 return false
@@ -2115,7 +2115,7 @@ local function AdvanceLoadJob()
             slot.reservedOk = false
             Brew._lastIssuedUid = slot.matchedUid
             Brew._lastIssuedRole = role
-            -- Do not reserve until StepLanded — a failed land must not block
+            -- Do not reserve until StepLanded - a failed land must not block
             -- the craft-bag stack and force a doomed inventory retry.
             job.waitTicks = 0
             LogBrew(string.format(
@@ -2549,7 +2549,7 @@ function Brew.Tick()
 end
 
 --- Auto-load the top Ready row (SkillUp or watch) while idle so Craft/Brew only
---- light when a click would Perform — not for the silent "start load" click.
+--- light when a click would Perform - not for the silent "start load" click.
 function Brew.MaybeAutoLoadReady()
     if type(Brew._job) == "table" then
         return false
@@ -2681,7 +2681,7 @@ function Brew.MaybePerformAfterManualLoad()
             Brew.ClearLoadedSession({ reason = why })
             ForceBrewUiRefresh()
         end
-        -- Non-unload blocks (performing / empty-board / …): keep armed until TTL.
+        -- Non-unload blocks (performing / empty-board / ...): keep armed until TTL.
         return false
     end
     Brew._performAfterManualLoad = false

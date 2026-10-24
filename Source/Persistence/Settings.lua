@@ -91,7 +91,7 @@ StockPiler.DefaultSettings = {
     eventTrace = false,
     -- on | quiet | off. on keeps stall/ready lines; quiet is changes and harvest/brew.
     chatMode = "on",
-    -- Craft button display scale (0.50–2.0). Default 1.0. /stp button / Watch chip.
+    -- Craft button display scale (0.50-2.0). Default 1.0. /stp button / Watch chip.
     craftButtonScale = 1.0,
     -- Floating craft button: centered grow countdown. Default on.
     craftButtonShowTimer = true,

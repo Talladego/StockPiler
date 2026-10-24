@@ -1,8 +1,8 @@
 ----------------------------------------------------------------
 -- Craft macro harvest countdown.
--- Growing: stock Action…Cooldown wipe + Action…CooldownTimer text ("149s"),
+-- Growing: stock Action...Cooldown wipe + Action...CooldownTimer text ("149s"),
 -- same centered timer slot abilities use (m_Windows[3]).
--- Ready plant / brew icons: Action…Count (m_Windows[7]), lower-right.
+-- Ready plant / brew icons: Action...Count (m_Windows[7]), lower-right.
 -- Floating-button optional timer: /stp button timer (CraftButton).
 -- User wait (buy vials/mats, garden idle): 75% red tint on Craft macro + HUD
 -- (stock ability-block red blended 75% toward DefaultColor.RED from white).
@@ -26,7 +26,7 @@ local ACTION_BUTTON_BASE_ICON = 0
 local CD_TINT = { r = 0, g = 0, b = 0, a = 0.5 }
 -- Stock DefaultTimerFrame cooldown label color.
 local CD_TIMER_COLOR = { r = 243, g = 243, b = 16 }
--- User-block tint: 75% blend white → DefaultColor.RED (206,44,44).
+-- User-block tint: 75% blend white -> DefaultColor.RED (206,44,44).
 Timer.BLOCK_TINT = { r = 218, g = 97, b = 97 }
 Timer.CLEAR_TINT = { r = 255, g = 255, b = 255 }
 
@@ -188,7 +188,7 @@ end
 
 --- True when this plot can be harvested now (or the timer already hit 0 and
 --- stage has not flipped to GROWN yet). Used to stop grow CD as soon as the
---- first plot is ready — do not re-arm for still-growing siblings.
+--- first plot is ready - do not re-arm for still-growing siblings.
 local function IsPlotHarvestReady(plot)
     if type(plot) ~= "table" then
         return false
@@ -830,7 +830,7 @@ local function StyleGrowCooldown(cd, button)
 end
 
 --- Arm square wipe once per grow cycle (and per craft slot); re-arm on timer jump.
---- Stock ActionButton.UpdateCooldownAnimation hides Action…Cooldown whenever
+--- Stock ActionButton.UpdateCooldownAnimation hides Action...Cooldown whenever
 --- GetHotbarCooldown is 0 (macros never have one). The cooldown hook below
 --- keeps Show(true) while Timer._cdArmed; arm-once still avoids SetCooldown flicker.
 local function UpdateGrowCooldown(button, remain)

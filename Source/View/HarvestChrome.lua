@@ -151,7 +151,7 @@ function HarvestChrome.FireFooterHarvestAction()
     return tryWin(HARVEST_WIN, true) or tryWin(HARVEST_ACTION_WIN, true)
 end
 
---- Craft bar → footer → orphan Harvest slots.
+--- Craft bar -> footer -> orphan Harvest slots.
 function HarvestChrome.FireHarvestAction()
     if StockPiler.Macro and StockPiler.Macro.FireHarvestActionPreferred then
         return StockPiler.Macro.FireHarvestActionPreferred() == true

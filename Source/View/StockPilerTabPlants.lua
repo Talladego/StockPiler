@@ -457,7 +457,7 @@ function StockPilerTabPlants.Refresh()
     BuildVisibleList()
     local keyChanged = prevKey ~= StockPilerTabPlants._listStructureKey
     if DoesWindowExist("SPTabPlantsList") then
-        -- Empty→full ListBoxSetDisplayOrder resets scroll; skip when row ids unchanged.
+        -- Empty->full ListBoxSetDisplayOrder resets scroll; skip when row ids unchanged.
         if keyChanged or prevKey == nil then
             ListBoxSetDisplayOrder("SPTabPlantsList", {})
             ListBoxSetDisplayOrder("SPTabPlantsList", StockPilerTabPlants.displayOrder)
@@ -466,7 +466,7 @@ function StockPilerTabPlants.Refresh()
     end
 end
 
---- Bag-snap live stock (CountByUid) without ListBox rebuild — Watch catchup parity.
+--- Bag-snap live stock (CountByUid) without ListBox rebuild - Watch catchup parity.
 function StockPilerTabPlants.PatchLiveHave()
     local list = StockPilerTabPlants.listData
     if type(list) ~= "table" or #list == 0 then

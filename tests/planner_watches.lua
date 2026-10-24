@@ -414,12 +414,69 @@ local function testBuildFlagsClearOnError()
     eq(P._demandNeedScratch, nil, "demand scratch is cleared after an error")
 end
 
+local function testNeedSkillClearsWhenApoCrosses()
+    local apo = 40
+    StockPiler.TradeSkillCaps.GetApoSkill = function()
+        return apo
+    end
+    StockPiler.TradeSkillCaps.GetCultSkill = function()
+        return 200
+    end
+    StockPiler.TradeSkillCaps.CanAutoGrow = function()
+        return true
+    end
+    StockPiler.TradeSkillCaps.CanBrewPotions = function()
+        return apo > 0
+    end
+    StockPiler.RecipeSpec.RecipeSkillRequirements = function(recipe)
+        local need = tonumber(recipe and recipe.apoNeed) or 0
+        if need <= 0 then
+            return nil
+        end
+        return { apothecary = need, apo = need }
+    end
+    local mat = { key = "herbGate", role = "main" }
+    H.items = { { uniqueID = 42, stackCount = 10, matches = { herbGate = true } } }
+    H.watches = {
+        ["uid:9"] = { enabled = true, autoGrow = true, targetStock = 4, priorityTier = 1 },
+    }
+    H.recipes = {
+        ["uid:9"] = {
+            recipeKey = "r9",
+            recipeYield = 1,
+            out = 9,
+            apoNeed = 75,
+            slots = { { spec = mat, perCraft = 1, role = "main" } },
+        },
+    }
+    reset()
+    local plan = P.Build({ force = true })
+    check(type(plan) == "table" and type(plan.rows) == "table", "plan builds below the recipe skill")
+    local row = plan and plan.rows and plan.rows[1]
+    eq(row and row.statusKey, "need_skill", "watch is need_skill below the apothecary requirement")
+    local gen = plan and plan.planGen
+    local key = P.CacheKeyFromGens()
+    apo = 41
+    local held = P.Build()
+    eq(held, plan, "an unrelated skill point reuses the cached plan")
+    eq(held and held.planGen, gen, "an unrelated skill point does not rebuild")
+    eq(P.CacheKeyFromGens(), key, "an unrelated skill point keeps the cache key")
+    eq(held and held.rows[1].statusKey, "need_skill", "need_skill stays until the requirement is met")
+    apo = 75
+    local crossed = P.Build()
+    eq(crossed, plan, "crossing the requirement does not build a new plan")
+    eq(crossed and crossed.planGen, gen, "crossing the requirement does not full-rebuild")
+    eq(crossed and crossed.rows[1].statusKey, "ready_to_craft",
+        "the watch leaves need_skill after the skill-up")
+end
+
 testSameOutput()
 testCoveredReserve()
 testWarmHave()
 testResinInflation()
 testSkillPointKeepsCacheKey()
 testBuildFlagsClearOnError()
+testNeedSkillClearsWhenApoCrosses()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
