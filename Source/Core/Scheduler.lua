@@ -613,6 +613,16 @@ function Sch.ArmOrchDecisionHold(ticks)
     local cur = tonumber(Sch._orchDecisionHoldTicks) or 0
     if ticks > cur then
         Sch._orchDecisionHoldTicks = ticks
+        -- Remember the bag generation this hold started on. A later extend
+        -- keeps that generation so a snap move during the hold is still visible
+        -- when the hold ends.
+        if cur <= 0 then
+            local snap = 0
+            if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
+                snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
+            end
+            Sch._orchHoldSnapGen = snap
+        end
     end
 end
 
@@ -625,17 +635,32 @@ local function DecayOrchDecisionHold()
     if n > 0 then
         Sch._orchDecisionHoldTicks = n - 1
         if (tonumber(Sch._orchDecisionHoldTicks) or 0) <= 0 then
-            -- Hold end: same Have bust as quiet-end so CheapRebuild cannot trust
-            -- remounted mat totals from the probe window.
+            -- Bust Have only when the bag moved during the hold, or a probe
+            -- actually served the previous counts. An unchanged snap must not
+            -- schedule the quiet-end prewarm; that flag sticks until a harvest
+            -- storm ends.
+            local snap = 0
+            if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
+                snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
+            end
+            local armed = Sch._orchHoldSnapGen
+            Sch._orchHoldSnapGen = nil
+            local moved = armed ~= nil and snap ~= armed
             local Planner = StockPiler.Planner
-            if Planner and Planner.InvalidateHaveWarm then
-                Planner.InvalidateHaveWarm()
+            local substituted = false
+            if Planner and Planner.ConsumedHeldCounts then
+                substituted = Planner.ConsumedHeldCounts() == true
             end
-            Sch._pendingPrewarmAfterQuiet = true
-            if Sch._pendingPrewarmReason == nil then
-                Sch._pendingPrewarmReason = "orch-hold-end"
+            if moved or substituted then
+                if Planner and Planner.InvalidateHaveWarm then
+                    Planner.InvalidateHaveWarm()
+                end
+                local suppressed = Sch.IsSuppressed and Sch.IsSuppressed() == true
+                if suppressed ~= true then
+                    RequestCachePrewarm("orch-hold-end")
+                end
+                Sch._pendingPlanAfterPrewarm = true
             end
-            Sch._pendingPlanAfterPrewarm = true
         end
     end
 end
@@ -1051,25 +1076,41 @@ function Sch.OnUpdate(timeElapsed)
     local now = Now()
     local pollSec = tonumber(Sch.POLL_SEC) or 0.25
     local pollDue = now <= 0 or (now - (tonumber(Sch._pollAt) or 0) >= pollSec)
+    local function Quiet(name, fn)
+        local Util = StockPiler.Util
+        if Util and Util.TryCallQuiet then
+            Util.TryCallQuiet(name, fn)
+            return
+        end
+        pcall(fn)
+    end
     if pollDue then
         Sch._pollAt = now
-        if StockPiler.Buy and StockPiler.Buy.PollStorePresence then
-            StockPiler.Buy.PollStorePresence()
-        end
-        if StockPiler.Grow and StockPiler.Grow.ExpireStalePending then
-            StockPiler.Grow.ExpireStalePending()
-        end
+        Quiet("buy-poll", function()
+            if StockPiler.Buy and StockPiler.Buy.PollStorePresence then
+                StockPiler.Buy.PollStorePresence()
+            end
+        end)
+        Quiet("grow-expire", function()
+            if StockPiler.Grow and StockPiler.Grow.ExpireStalePending then
+                StockPiler.Grow.ExpireStalePending()
+            end
+        end)
     end
     local Brew = StockPiler.Brew
     if Brew and Brew.OnUpdate then
         local loadJob = Brew.IsLoadJobActive and Brew.IsLoadJobActive() == true
         if loadJob then
-            Brew.OnUpdate(timeElapsed)
+            Quiet("brew-update", function()
+                Brew.OnUpdate(timeElapsed)
+            end)
         else
             local brewDue = now <= 0 or (now - (tonumber(Sch._brewLightAt) or 0) >= pollSec)
             if brewDue then
                 Sch._brewLightAt = now
-                Brew.OnUpdate(timeElapsed)
+                Quiet("brew-update", function()
+                    Brew.OnUpdate(timeElapsed)
+                end)
             end
         end
     end
@@ -1149,7 +1190,9 @@ function Sch.OnUpdate(timeElapsed)
             end
             Sch._armedPlantDue = false
             if ranTick and tickOk ~= true then
-                error(tickErr or "Orchestrator.Tick failed", 0)
+                if StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
+                    StockPiler.Debug.ReportProtectedCallFailure("Orchestrator.Tick", tickErr, true)
+                end
             end
         end
     end

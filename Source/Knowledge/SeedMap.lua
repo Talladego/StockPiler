@@ -244,6 +244,8 @@ local function LookupDescription(specOrItem)
 end
 
 local function TouchIfStructural(reason)
+    -- Plant-to-seed indexes rebuild on the next read after a structural edit.
+    SM._plantSeedIndexGen = nil
     if StockPiler.Knowledge and StockPiler.Knowledge.Touch then
         StockPiler.Knowledge.Touch(reason or "seedmap")
     end
@@ -384,16 +386,9 @@ local function HasProvenSeedConvert(plantUid)
     if plantUid <= 0 then
         return false
     end
-    local entry = RefinesTable() and RefinesTable()[tostring(plantUid)]
-    if type(entry) == "table" and type(entry.seedOut) == "table" then
-        for _, row in pairs(entry.seedOut) do
-            if type(row) == "table" and (tonumber(row.samples) or 0) > 0 then
-                return true
-            end
-        end
-    end
-    local uids = SM.GetSeedUidsForPlant(plantUid)
-    return type(uids) == "table" and #uids > 0
+    -- Harvest links are not a refine. Only an observed seedOut counts.
+    local proven = SM.GetRefineSeedUidsForPlant and SM.GetRefineSeedUidsForPlant(plantUid) or nil
+    return type(proven) == "table" and #proven > 0
 end
 
 --- EFFECT id from a seed item (bag / learned / DB). Seeds parse as non-main unless hinted.
@@ -641,11 +636,139 @@ function SM.EffectiveSeedCredit(seedUid, bagCount)
     return math.max(plots, buffer, bagCount)
 end
 
+local function KnowledgeGen()
+    if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
+        return tonumber(StockPiler.Knowledge.GetGen()) or 0
+    end
+    return 0
+end
+
+local function CopyUidList(list)
+    local out = {}
+    if type(list) ~= "table" then
+        return out
+    end
+    for i = 1, #list do
+        out[i] = list[i]
+    end
+    return out
+end
+
+--- Rebuild plant -> harvest seeds and plant -> refine seeds when knowledge
+--- changes. Refine entries are only seeds a refine actually produced.
+local function EnsurePlantSeedIndex()
+    local gen = KnowledgeGen()
+    local grows = GrowsTable()
+    local refines = RefinesTable()
+    if SM._plantSeedIndexGen == gen
+        and SM._plantSeedIndexGrows == grows
+        and SM._plantSeedIndexRefines == refines
+        and type(SM._plantHarvestSeeds) == "table"
+        and type(SM._plantRefineSeeds) == "table"
+    then
+        return
+    end
+    local harvest = {}
+    local refine = {}
+    local function add(map, plantUid, seedUid)
+        plantUid = tonumber(plantUid) or 0
+        seedUid = tonumber(seedUid) or 0
+        if plantUid <= 0 or seedUid <= 0 or SM.IsSeedPacketUid(seedUid) then
+            return
+        end
+        local list = map[plantUid]
+        if list == nil then
+            list = {}
+            map[plantUid] = list
+        end
+        for i = 1, #list do
+            if list[i] == seedUid then
+                return
+            end
+        end
+        list[#list + 1] = seedUid
+    end
+    if type(grows) == "table" then
+        for seedKey, bucket in pairs(grows) do
+            if type(bucket) == "table" and type(bucket.products) == "table" then
+                local seedUid = tonumber(seedKey) or tonumber(bucket.seedUid) or 0
+                for plantKey, prod in pairs(bucket.products) do
+                    if type(prod) == "table" then
+                        add(harvest, plantKey, seedUid)
+                    end
+                end
+            end
+        end
+    end
+    if type(refines) == "table" then
+        for plantKey, entry in pairs(refines) do
+            if type(entry) == "table" and type(entry.seedOut) == "table" then
+                for seedKey, row in pairs(entry.seedOut) do
+                    if type(row) == "table" and (tonumber(row.samples) or 0) > 0 then
+                        add(refine, tonumber(plantKey) or entry.plantUid, seedKey)
+                    end
+                end
+            end
+        end
+    end
+    SM._plantHarvestSeeds = harvest
+    SM._plantRefineSeeds = refine
+    SM._plantSeedIndexGen = gen
+    SM._plantSeedIndexGrows = grows
+    SM._plantSeedIndexRefines = refines
+end
+
+function SM.InvalidatePlantSeedIndex()
+    SM._plantSeedIndexGen = nil
+    SM._plantHarvestSeeds = nil
+    SM._plantRefineSeeds = nil
+    SM._plantSeedIndexGrows = nil
+    SM._plantSeedIndexRefines = nil
+    SM._seedUidsForPlant = nil
+    SM._seedUidsForPlantGen = nil
+    SM._seedUidsForPlantIdx = nil
+end
+
+function SM.GetHarvestSeedUidsForPlant(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        return {}
+    end
+    EnsurePlantSeedIndex()
+    return CopyUidList(SM._plantHarvestSeeds[plantUid])
+end
+
+function SM.GetRefineSeedUidsForPlant(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        return {}
+    end
+    EnsurePlantSeedIndex()
+    return CopyUidList(SM._plantRefineSeeds[plantUid])
+end
+
 function SM.GetSeedUidsForPlant(plantUid)
     plantUid = tonumber(plantUid) or 0
     local out = {}
     if plantUid <= 0 then
         return out
+    end
+    local know = 0
+    if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
+        know = tonumber(StockPiler.Knowledge.GetGen()) or 0
+    end
+    EnsurePlantSeedIndex()
+    local idx = tostring(SM._plantSeedIndexGen)
+    if SM._seedUidsForPlantGen ~= know or SM._seedUidsForPlantIdx ~= idx
+        or type(SM._seedUidsForPlant) ~= "table"
+    then
+        SM._seedUidsForPlant = {}
+        SM._seedUidsForPlantGen = know
+        SM._seedUidsForPlantIdx = idx
+    end
+    local cached = SM._seedUidsForPlant[plantUid]
+    if type(cached) == "table" then
+        return CopyUidList(cached)
     end
     local seen = {}
     local function addSeed(seedUid)
@@ -655,29 +778,21 @@ function SM.GetSeedUidsForPlant(plantUid)
             out[#out + 1] = seedUid
         end
     end
-    local grows = GrowsTable()
-    if type(grows) == "table" then
-        for seedKey, bucket in pairs(grows) do
-            if type(bucket) == "table" and type(bucket.products) == "table" then
-                local prod = bucket.products[tostring(plantUid)]
-                if type(prod) == "table" then
-                    addSeed(tonumber(seedKey) or tonumber(bucket.seedUid) or 0)
-                end
-            end
-        end
+    local harvest = SM.GetHarvestSeedUidsForPlant(plantUid)
+    for i = 1, #harvest do
+        addSeed(harvest[i])
+    end
+    local proven = SM.GetRefineSeedUidsForPlant(plantUid)
+    for i = 1, #proven do
+        addSeed(proven[i])
     end
     local entry = RefinesTable() and RefinesTable()[tostring(plantUid)]
     if type(entry) == "table" then
+        -- Keep a recorded primary seed even when its sample row is still empty.
         addSeed(entry.seedUid)
-        -- Crit harvest plants often refine back to the lower planted seed; also keep
-        -- every observed seedOut so same-tier seeds (e.g. 3010035 vs 3010034) compete.
-        if type(entry.seedOut) == "table" then
-            for seedKey, _ in pairs(entry.seedOut) do
-                addSeed(seedKey)
-            end
-        end
     end
-    return out
+    SM._seedUidsForPlant[plantUid] = out
+    return CopyUidList(out)
 end
 
 function SM.HarvestProducts(seedUid)
@@ -1244,18 +1359,13 @@ function SM.IsOneWayHarvestSpec(spec)
             if type(seeds) == "table" and #seeds > 0 then
                 return true
             end
-            -- Also: seed primary plant is this uid with no refine entry.
-            local grows = GrowsTable()
-            if type(grows) == "table" then
-                for _, bucket in pairs(grows) do
-                    if type(bucket) == "table" and type(bucket.products) == "table"
-                        and type(bucket.products[tostring(uid)]) == "table"
-                    then
-                        local entry = RefinesTable() and RefinesTable()[tostring(uid)]
-                        if type(entry) ~= "table" or (tonumber(entry.seedUid) or 0) <= 0 then
-                            return true
-                        end
-                    end
+            -- Harvest index already answered the grow link. No refine entry
+            -- means the plant was harvested and does not refine.
+            local harvested = SM.GetHarvestSeedUidsForPlant(uid)
+            if type(harvested) == "table" and #harvested > 0 then
+                local entry = RefinesTable() and RefinesTable()[tostring(uid)]
+                if type(entry) ~= "table" or (tonumber(entry.seedUid) or 0) <= 0 then
+                    return true
                 end
             end
         end
@@ -1331,23 +1441,17 @@ local function SpecLinkedToGrowOrRefine(spec)
     if uid <= 0 then
         return false
     end
-    local seeds = SM.GetSeedUidsForPlant(uid)
-    if type(seeds) == "table" and #seeds > 0 then
+    local harvested = SM.GetHarvestSeedUidsForPlant(uid)
+    if type(harvested) == "table" and #harvested > 0 then
+        return true
+    end
+    local refined = SM.GetRefineSeedUidsForPlant(uid)
+    if type(refined) == "table" and #refined > 0 then
         return true
     end
     local entry = RefinesTable() and RefinesTable()[tostring(uid)]
     if type(entry) == "table" and (tonumber(entry.seedUid) or 0) > 0 then
         return true
-    end
-    local grows = GrowsTable()
-    if type(grows) == "table" then
-        for _, bucket in pairs(grows) do
-            if type(bucket) == "table" and type(bucket.products) == "table"
-                and type(bucket.products[tostring(uid)]) == "table"
-            then
-                return true
-            end
-        end
     end
     return false
 end
@@ -1538,14 +1642,21 @@ function SM.IsGrowableSpec(spec)
     end
     local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
     local role = tostring(spec.role or "")
-    local cacheKey = tostring(uid) .. ":" .. role
-    if uid > 0 and _growableCache[cacheKey] ~= nil then
+    local cacheKey
+    if uid > 0 then
+        cacheKey = tostring(uid) .. ":" .. role
+    else
+        local productKey = SpecProductCacheKey(spec)
+        if productKey == "" then
+            return IsGrowableSpecUncached(spec) == true
+        end
+        cacheKey = "s:" .. productKey .. ":" .. role
+    end
+    if _growableCache[cacheKey] ~= nil then
         return _growableCache[cacheKey] == true
     end
     local growable = IsGrowableSpecUncached(spec) == true
-    if uid > 0 then
-        _growableCache[cacheKey] = growable
-    end
+    _growableCache[cacheKey] = growable
     return growable
 end
 
@@ -2008,6 +2119,13 @@ function SM.OnCraftChat(payload)
     local kind = tostring(payload.kind or "")
     local pending = NewestPendingHarvest()
     local CC = StockPiler.CraftChatAdapter
+    -- Apothecary uses the same failure line. Do not close a harvest on a brew.
+    if kind == "critical_failure" or kind == "critical_success" or kind == "special_moment" then
+        local Brew = StockPiler.Brew
+        if Brew and Brew.PerformedWithin and Brew.PerformedWithin(5) == true then
+            return
+        end
+    end
     if kind == "critical_failure" then
         if type(pending) == "table" then
             pending.chatCriticalFailure = true
@@ -2395,9 +2513,9 @@ function SM.BeginPendingRefine(itemData)
     if SM.IsRefineConvertFailed(plantUid) then
         return false
     end
-    -- Only a learned grow/refine link may pre-pick the seed. A family or tier
-    -- guess from whatever is already in the bags watches the wrong output.
-    local learned = SM.GetSeedUidsForPlant(plantUid)
+    -- Only a seed a refine of this plant actually produced may be pre-picked.
+    -- A harvest link, including a same-genus crit plant, is not that seed.
+    local learned = SM.GetRefineSeedUidsForPlant(plantUid)
     local expectedSeedUid = 0
     if type(learned) == "table" and #learned > 0 then
         expectedSeedUid = tonumber(SM.PickBestSeedUid(plantUid, learned)) or 0
@@ -2537,6 +2655,32 @@ local function ClearPendingRefine()
     SM._pendingRefine = nil
 end
 
+--- Seed gains whose normalized name matches the plant. skipUid is the expected
+--- seed, already counted on the known path. Packets and unrelated gains disqualify.
+local function ExactSeedGains(pending, plantUid, skipUid)
+    local _, seedsNow = SnapshotRefineBags(plantUid)
+    local beforeSeeds = type(pending.beforeSeeds) == "table" and pending.beforeSeeds or {}
+    local plantName = type(pending.plantItem) == "table" and pending.plantItem.name or nil
+    local related = {}
+    local disqualify = false
+    skipUid = tonumber(skipUid) or 0
+    for uid, count in pairs(seedsNow) do
+        uid = tonumber(uid) or 0
+        local delta = (tonumber(count) or 0) - (tonumber(beforeSeeds[uid]) or 0)
+        if uid > 0 and uid ~= plantUid and uid ~= skipUid and delta > 0 then
+            local item = LiveBagItem(uid)
+            if type(item) ~= "table" or IsSeedPacketItem(item) or not IsBagSeedOrSporeItem(item) then
+                disqualify = true
+            elseif RefineOutputNameMatches(plantName, item.name) then
+                related[#related + 1] = { uid = uid, delta = delta, item = item }
+            else
+                disqualify = true
+            end
+        end
+    end
+    return related, disqualify
+end
+
 local function AcceptRefineOutput(pending, plantUid, seedUid, delta, seedItem)
     -- Keep the pre-use plant copy: the last stack is already gone from the bags.
     StoreRefinePair(pending.plantItem, seedItem or LiveBagItem(seedUid))
@@ -2555,7 +2699,8 @@ function SM.TryCompletePendingRefine()
     local plantUid = tonumber(pending.plantUid) or 0
     local seedUid = tonumber(pending.expectedSeedUid) or 0
 
-    -- Known link: watch the learned seed only. Do not replace it with a guess.
+    -- Known link: watch the learned seed. A single exact-name seed that is not
+    -- the expected one still counts; do not fail that refine.
     if seedUid > 0 then
         local after = 0
         if StockPiler.Inventory and StockPiler.Inventory.CountByUid then
@@ -2568,6 +2713,13 @@ function SM.TryCompletePendingRefine()
         if delta > 0 then
             return AcceptRefineOutput(pending, plantUid, seedUid, delta, LiveBagItem(seedUid))
         end
+        local plantNow = SnapshotRefineBags(plantUid)
+        local consumed = plantNow < (tonumber(pending.beforePlant) or 0)
+        local related, disqualify = ExactSeedGains(pending, plantUid, seedUid)
+        if consumed and not disqualify and #related == 1 then
+            local gain = related[1]
+            return AcceptRefineOutput(pending, plantUid, gain.uid, gain.delta, gain.item)
+        end
         if timedOut then
             SM.MarkRefineConvertFailed(plantUid, "fast-fail")
             -- Do not EnsureRefineEntry here - that created dead seedUid=0 SV rows.
@@ -2577,38 +2729,24 @@ function SM.TryCompletePendingRefine()
         return false
     end
 
-    -- Unknown output. Rescan only when the bag generation moved, or on expiry.
+    -- An expired unknown attempt must not learn from a later bag delta.
+    if timedOut then
+        ClearPendingRefine()
+        return false
+    end
+
+    -- Unknown output. Rescan only when the bag generation moved.
     local snap, hasGen = InventorySnapGen()
-    if pending.hasSnapGen == true and hasGen and not timedOut
-        and pending.scannedGen == snap
-    then
+    if pending.hasSnapGen == true and hasGen and pending.scannedGen == snap then
         return false
     end
     if hasGen then
         pending.scannedGen = snap
     end
 
-    local plantNow, seedsNow = SnapshotRefineBags(plantUid)
+    local plantNow = SnapshotRefineBags(plantUid)
     local consumed = plantNow < (tonumber(pending.beforePlant) or 0)
-    local beforeSeeds = type(pending.beforeSeeds) == "table" and pending.beforeSeeds or {}
-    local plantName = type(pending.plantItem) == "table" and pending.plantItem.name or nil
-    local related = {}
-    local disqualify = false
-    for uid, count in pairs(seedsNow) do
-        uid = tonumber(uid) or 0
-        local delta = (tonumber(count) or 0) - (tonumber(beforeSeeds[uid]) or 0)
-        if uid > 0 and uid ~= plantUid and delta > 0 then
-            local item = LiveBagItem(uid)
-            if type(item) ~= "table" or IsSeedPacketItem(item) or not IsBagSeedOrSporeItem(item) then
-                -- Packet, missing name, or a non-seed that only matched by label.
-                disqualify = true
-            elseif RefineOutputNameMatches(plantName, item.name) then
-                related[#related + 1] = { uid = uid, delta = delta, item = item }
-            else
-                disqualify = true
-            end
-        end
-    end
+    local related, disqualify = ExactSeedGains(pending, plantUid, 0)
 
     -- One consumed plant and exactly one related seed/spore. Nothing else.
     if consumed and not disqualify and #related == 1 then
@@ -2618,11 +2756,6 @@ function SM.TryCompletePendingRefine()
     -- Unrelated gain, seed packet, or several outputs: do not guess, do not
     -- blacklist the plant, and do not write an empty refine row.
     if consumed and (disqualify or #related > 1) then
-        ClearPendingRefine()
-        return false
-    end
-    if timedOut then
-        -- Unknown output never becomes convert-failed. Expiry drops the pending.
         ClearPendingRefine()
         return false
     end
@@ -2797,23 +2930,40 @@ end
 -- Family ladders (Upgrade Seed / SkillUp graduation)
 ----------------------------------------------------------------
 
+local function PositiveSkillReq(value)
+    value = tonumber(value)
+    if value ~= nil and value > 0 then
+        return value
+    end
+    return nil
+end
+
 ItemSkillReq = function(item)
     if type(item) ~= "table" then
         return 0
     end
-    local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq) or 0
+    -- A stored 0 is "unknown", not a real requirement. tonumber(0) is truthy,
+    -- so each field has to be checked on its own.
+    local req = PositiveSkillReq(item.craftingSkillRequirement)
+        or PositiveSkillReq(item.skillReq)
+        or PositiveSkillReq(item.skillLevel)
+        or 0
     if req <= 0 and type(item.bonuses) == "table" then
-        req = tonumber(item.bonuses[9]) or 0
+        req = PositiveSkillReq(item.bonuses[9]) or PositiveSkillReq(item.bonuses["9"]) or 0
     end
     if req <= 0 then
         local Items = StockPiler.Items
         local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
         if uid > 0 and Items and Items.ToSpec then
             local spec = Items.ToSpec(uid)
-            req = tonumber(spec and spec.skillLevel) or 0
+            req = PositiveSkillReq(spec and spec.skillLevel) or 0
         end
     end
     return req
+end
+
+function SM.ItemSkillReq(item)
+    return ItemSkillReq(item)
 end
 
 --- Last-token genus after normalize (e.g. "majestic goldweed" -> "goldweed").

@@ -364,6 +364,8 @@ function BL.RefreshBoardSnapshot()
         BL._lastBoardSkillUpOrigin = nil
     end
     BL._lastBoardFromSession = sessionMats ~= nil
+    -- A loaded board is not a brew. Only Perform / PERFORMING may arm a learn.
+    BL._lastBoardFromPerform = nil
     return true
 end
 
@@ -371,7 +373,7 @@ function BL.ArmPendingFromLastBoard()
     if type(BL._pendingCraft) == "table" then
         return true
     end
-    if type(BL._lastBoardMaterials) ~= "table" then
+    if type(BL._lastBoardMaterials) ~= "table" or BL._lastBoardFromPerform ~= true then
         return false
     end
     local at = tonumber(BL._lastBoardAt) or 0
@@ -392,6 +394,8 @@ function BL.ArmPendingFromLastBoard()
         successChance = tonumber(BL._lastBoardSuccessChance) or LatchSuccessChance(),
         skillUpOrigin = skillUpOrigin,
         fromSessionRecipe = BL._lastBoardFromSession == true,
+        fromPerform = true,
+        rearmed = true,
     }
     return true
 end
@@ -438,6 +442,7 @@ function BL.BeginPendingCraft()
         BL._lastBoardSkillUpOrigin = nil
     end
     BL._lastBoardFromSession = fromSession
+    BL._lastBoardFromPerform = true
     BL._pendingCraft = {
         materials = materials,
         recipeKey = recipeKey,
@@ -445,8 +450,67 @@ function BL.BeginPendingCraft()
         successChance = successChance,
         skillUpOrigin = skillUpOrigin,
         fromSessionRecipe = fromSession,
+        fromPerform = true,
     }
     return true
+end
+
+local function BonusEffectId(item)
+    if type(item) ~= "table" then
+        return 0
+    end
+    local bonuses = item.craftingBonus or item.bonuses
+    if type(bonuses) ~= "table" then
+        return 0
+    end
+    local effectRef = BL.CraftBonus.EFFECT or 6
+    for i = 1, #bonuses do
+        local bonus = bonuses[i]
+        if type(bonus) == "table" and tonumber(bonus.bonusReference) == effectRef then
+            return tonumber(bonus.bonusValue) or 0
+        end
+    end
+    for _, bonus in pairs(bonuses) do
+        if type(bonus) == "table" and tonumber(bonus.bonusReference) == effectRef then
+            return tonumber(bonus.bonusValue) or 0
+        end
+    end
+    return 0
+end
+
+local function MainEffectId(materials)
+    if type(materials) ~= "table" then
+        return 0
+    end
+    for i = 1, #materials do
+        local row = materials[i]
+        if type(row) == "table" and row.role == "main" then
+            local id = BonusEffectId(row.itemData)
+            if id <= 0 then
+                id = BonusEffectId(row)
+            end
+            if id > 0 then
+                return id
+            end
+        end
+    end
+    return 0
+end
+
+local function FilterOutputsForMain(materials, outputs)
+    local mainEffect = MainEffectId(materials)
+    if mainEffect <= 0 or type(outputs) ~= "table" then
+        return outputs
+    end
+    local kept = {}
+    for i = 1, #outputs do
+        local out = outputs[i]
+        local effect = BonusEffectId(out and out.itemData)
+        if effect > 0 and effect == mainEffect then
+            kept[#kept + 1] = out
+        end
+    end
+    return kept
 end
 
 function BL.CompletePendingCraftLearn(opts)
@@ -456,11 +520,18 @@ function BL.CompletePendingCraftLearn(opts)
         BL._pendingCraft = nil
         return false
     end
+    if pending.fromPerform ~= true then
+        BL._pendingCraft = nil
+        return false
+    end
 
     local after = SnapshotPotionCounts()
     local outputs = {}
     if opts.failed ~= true then
         outputs = DiffPotionOutputs(pending.potionCountsBefore, after)
+        if pending.rearmed == true then
+            outputs = FilterOutputsForMain(pending.materials, outputs)
+        end
     end
     -- Keep pending when bag has not updated yet (SUCCESS can beat inventory).
     if #outputs == 0 and opts.failed ~= true then
@@ -644,10 +715,7 @@ function BL.OnCraftingUpdated()
     if type(States) ~= "table" then
         return false
     end
-    -- Soft-arm while a valid recipe sits on the board (before instant SUCCESS).
-    if state == States.VALID_RECIPE or state == States.PERFORMING then
-        BL.RefreshBoardSnapshot()
-    end
+    -- VALID_RECIPE is only a loaded board. Learn from Perform / PERFORMING.
     if state == States.PERFORMING then
         -- Always refresh before-counts for this brew (do not keep a stale re-arm).
         BL.BeginPendingCraft()

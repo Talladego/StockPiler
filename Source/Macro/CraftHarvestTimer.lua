@@ -874,9 +874,32 @@ local function UpdateGrowCooldown(button, remain)
     PaintCooldownTimer(button, remain)
 end
 
+--- Verified ownership at a native callback. A cached id can point at a slot
+--- the player has already rewritten.
+local function VerifiedCraftMacroId()
+    local macro = StockPiler.Macro
+    if macro and type(macro.GetCraftMacroId) == "function" then
+        return tonumber(macro.GetCraftMacroId()) or 0
+    end
+    return 0
+end
+
+local function ButtonIsVerifiedCraft(self, craftId)
+    craftId = tonumber(craftId) or 0
+    if craftId <= 0 or type(self) ~= "table" then
+        return false
+    end
+    local actions = GameData and GameData.PlayerActions
+    local doMacro = actions and actions.DO_MACRO
+    if doMacro == nil or self.m_ActionType ~= doMacro then
+        return false
+    end
+    return tonumber(self.m_ActionId) == craftId
+end
+
 --- Stock UpdateCooldownAnimation: if m_Cooldown<=0 and the frame is showing, it
 --- Hide()s every tick. Grow wipe uses the same window with no hotbar CD, so
---- skip that path while craft grow is armed. Keep CooldownTimer text visible.
+--- skip that path while craft grow is armed on a slot we still own.
 local function installCooldownHook()
     if Timer._cdHooked == true then
         return
@@ -884,32 +907,38 @@ local function installCooldownHook()
     if not ActionButton or type(ActionButton.UpdateCooldownAnimation) ~= "function" then
         return
     end
-    Timer._orgUpdateCooldownAnimation = ActionButton.UpdateCooldownAnimation
-    ActionButton.UpdateCooldownAnimation = function(self, timeElapsed, updateCooldown)
-        -- Match the cached craft macro id. Refresh / UpdateCraftMacro re-scan
-        -- it about once a second. Do not call GetMacrosData from this hook.
-        if Timer._cdArmed == true and self then
-            local actions = GameData and GameData.PlayerActions
-            local doMacro = actions and actions.DO_MACRO
-            local macro = StockPiler.Macro
-            local craftId = macro and tonumber(macro.CraftMacroId) or 0
-            if doMacro ~= nil and craftId > 0
-                and self.m_ActionType == doMacro
-                and tonumber(self.m_ActionId) == craftId
-            then
-                local remain = tonumber(Timer._cdRemain)
-                if remain ~= nil and remain > 0 then
-                    local cd = CooldownFrame(self)
-                    if type(cd) == "table" and cd.Show then
-                        cd:Show(true)
-                    end
-                    PaintCooldownTimer(self, remain)
-                    return
+    local prev = ActionButton.UpdateCooldownAnimation
+    local active = true
+    local function wrapper(...)
+        if active ~= true then
+            if prev ~= nil then
+                return prev(...)
+            end
+            return
+        end
+        local self = ...
+        if Timer._cdArmed == true and ButtonIsVerifiedCraft(self, VerifiedCraftMacroId()) then
+            local remain = tonumber(Timer._cdRemain)
+            if remain ~= nil and remain > 0 then
+                local cd = CooldownFrame(self)
+                if type(cd) == "table" and cd.Show then
+                    cd:Show(true)
                 end
+                PaintCooldownTimer(self, remain)
+                return
             end
         end
-        return Timer._orgUpdateCooldownAnimation(self, timeElapsed, updateCooldown)
+        if prev ~= nil then
+            return prev(...)
+        end
     end
+    local function deactivate()
+        active = false
+    end
+    Timer._cdWrapper = wrapper
+    Timer._cdDeactivate = deactivate
+    Timer._orgUpdateCooldownAnimation = prev
+    ActionButton.UpdateCooldownAnimation = wrapper
     Timer._cdHooked = true
 end
 
@@ -996,23 +1025,46 @@ local function EachActionButton(fn)
     end
 end
 
+local function HudShowing()
+    local CB = StockPiler.CraftButton
+    if CB and CB.IsWindowShowing then
+        return CB.IsWindowShowing() == true
+    end
+    return false
+end
+
 local function RefreshBody()
     local Macro = StockPiler.Macro
     local craftId = 0
     if Macro and Macro.GetCraftMacroId then
         craftId = tonumber(Macro.GetCraftMacroId()) or 0
     end
+    local hud = HudShowing()
     -- No owned Craft macro: skip plot scans and the hotbar walk.
+    -- A hidden HUD has nothing to paint, so skip readiness work too.
     if craftId == 0 then
         local CB = StockPiler.CraftButton
-        if CB and CB.TickGrowVisuals then
+        if hud and CB and CB.TickGrowVisuals then
             CB.TickGrowVisuals()
         end
         return
     end
-    -- Plot, potion, and user-stay fields fill on the first read.
+    -- Arm the verified id before the hotbar walk so each button compares
+    -- against this refresh instead of reading the macro table again.
     Timer._refreshSnap = { craftId = craftId }
+    local ownedVisible = false
     if Macro and Macro.IsCraftMacroButton then
+        EachActionButton(function(button)
+            if Macro.IsCraftMacroButton(button) then
+                ownedVisible = true
+            end
+        end)
+    end
+    -- Neither a Craft copy on a bar nor the HUD is visible: skip plot reads.
+    if ownedVisible ~= true and hud ~= true then
+        return
+    end
+    if ownedVisible and Macro and Macro.IsCraftMacroButton then
         EachActionButton(function(button)
             if Macro.IsCraftMacroButton(button) then
                 Timer.Paint(button)
@@ -1021,13 +1073,13 @@ local function RefreshBody()
     end
     -- Floating craft button: grow pie + lit harvest while plots tick.
     local CB = StockPiler.CraftButton
-    if CB and CB.TickGrowVisuals then
+    if hud and CB and CB.TickGrowVisuals then
         CB.TickGrowVisuals()
     end
     -- Harvest/Brew readiness never flips when plots start growing, so the
     -- appearance key would leave Craft on the disabled texture until the
     -- player re-places the slot. Retint when grow/ready activity changes.
-    if Macro and Macro.AlignCraftEnable then
+    if ownedVisible and Macro and Macro.AlignCraftEnable then
         local growLit = Timer.HasHarvestReady() == true
             or (Timer.ShortestSeconds() ~= nil)
         local userStay = Timer.NeedsUserStay() == true
@@ -1069,10 +1121,19 @@ function Timer.Install()
         return
     end
     installCooldownHook()
-    local org = ActionButton.UpdateInventory
-    Timer._orgUpdateInventory = org
-    ActionButton.UpdateInventory = function(self)
-        org(self)
+    local prev = ActionButton.UpdateInventory
+    local active = true
+    local function wrapper(...)
+        if active ~= true then
+            if prev ~= nil then
+                return prev(...)
+            end
+            return
+        end
+        local self = ...
+        if prev ~= nil then
+            prev(self)
+        end
         if not self then
             return
         end
@@ -1091,22 +1152,7 @@ function Timer.Install()
                 end
             end
         end
-        local actions = GameData and GameData.PlayerActions
-        local doMacro = actions and actions.DO_MACRO
-        if doMacro == nil or self.m_ActionType ~= doMacro then
-            maybeRestoreFitted()
-            return
-        end
-        local Macro = StockPiler.Macro
-        local craftId = Macro and tonumber(Macro.CraftMacroId) or 0
-        if craftId <= 0 and Macro and Macro.GetCraftMacroId then
-            local frame = tonumber(StockPiler.FrameCounter) or 0
-            if Timer._craftIdFrame ~= frame then
-                Timer._craftIdFrame = frame
-                craftId = tonumber(Macro.GetCraftMacroId()) or 0
-            end
-        end
-        if craftId <= 0 or self.m_ActionId ~= craftId then
+        if not ButtonIsVerifiedCraft(self, VerifiedCraftMacroId()) then
             maybeRestoreFitted()
             return
         end
@@ -1118,20 +1164,37 @@ function Timer.Install()
                 "CraftHarvestTimer.Paint", paintErr, true)
         end
     end
+    local function deactivate()
+        active = false
+    end
+    Timer._invWrapper = wrapper
+    Timer._invDeactivate = deactivate
+    Timer._orgUpdateInventory = prev
+    ActionButton.UpdateInventory = wrapper
     Timer._hooked = true
 end
 
 function Timer.Shutdown()
-    if Timer._hooked == true and ActionButton and Timer._orgUpdateInventory then
+    if Timer._invDeactivate then
+        Timer._invDeactivate()
+    end
+    if Timer._cdDeactivate then
+        Timer._cdDeactivate()
+    end
+    if Timer._hooked == true and ActionButton and Timer._invWrapper
+        and ActionButton.UpdateInventory == Timer._invWrapper
+        and Timer._orgUpdateInventory
+    then
         ActionButton.UpdateInventory = Timer._orgUpdateInventory
     end
-    if Timer._cdHooked == true and ActionButton and Timer._orgUpdateCooldownAnimation then
+    if Timer._cdHooked == true and ActionButton and Timer._cdWrapper
+        and ActionButton.UpdateCooldownAnimation == Timer._cdWrapper
+        and Timer._orgUpdateCooldownAnimation
+    then
         ActionButton.UpdateCooldownAnimation = Timer._orgUpdateCooldownAnimation
     end
     Timer._hooked = false
-    Timer._orgUpdateInventory = nil
     Timer._cdHooked = false
-    Timer._orgUpdateCooldownAnimation = nil
     Timer._acc = 0
     Timer._cdMax = 0
     Timer._cdRemain = nil

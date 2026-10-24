@@ -2,6 +2,14 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.1
+
+- A recipe is saved when you brew it.
+- Practice plots and surplus plantings use a basic additive. Plots grown for a watch or a seed upgrade use the best additive you have.
+- Crafting messages follow the language of your client.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.0
 
 - Share a recipe from Potions or Watch: right-click and choose Link in chat, or Shift+left-click the potion's name, icon, or row. Copy string puts a plain recipe line in the chat box. `/stp link` repeats the last recipe you chose Link in chat for. Clicking a chat link, or `/stp apply`, opens a preview of the potion, its ingredients, and their crafting bonuses. Learn recipe adds it to Known Potions and does not create a watch. Cancel, the close button, and Escape leave your saved recipes unchanged. A different recipe for a potion you already know is stored as an alternative and does not replace your active recipe.

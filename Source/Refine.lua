@@ -1645,7 +1645,7 @@ function Refine.OnUpdateProcessed(timeElapsed)
         Refine.ReconcileAll()
     end
     Refine.ExpireStuckOutstanding()
-    Refine.DecayRefineWaitTicks()
+    -- Wait ticks count Orchestrator ticks. Scheduler.OnUpdate decrements them.
 end
 
 function Refine.OnUpdate(timeElapsed)

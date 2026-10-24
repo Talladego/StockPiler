@@ -392,6 +392,42 @@ local function ResolvePotionItemData(uid)
     return nil
 end
 
+local function CommitPotionRows(rows)
+    SortRows(rows)
+    local order = {}
+    local structureKey = tostring(#rows)
+    for i = 1, #rows do
+        order[i] = i
+        local row = rows[i]
+        local id = type(row) == "table" and (row.potionKey or row.id or row.uniqueID) or ""
+        structureKey = structureKey .. "|" .. tostring(id)
+    end
+    StockPilerTabPotions.listData = rows
+    StockPilerTabPotions.displayOrder = order
+    StockPilerTabPotions._listStructureKey = structureKey
+end
+
+local function PotionListCacheKey(effectFilter)
+    local know = 0
+    local watch = 0
+    local snap = 0
+    if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
+        know = tonumber(StockPiler.Knowledge.GetGen()) or 0
+    end
+    if StockPiler.Watch and StockPiler.Watch.GetGen then
+        watch = tonumber(StockPiler.Watch.GetGen()) or 0
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
+        snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
+    end
+    local stats = 0
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.GetRecipeStatsGen then
+        stats = tonumber(StockPiler.RecipeSpec.GetRecipeStatsGen()) or 0
+    end
+    return tostring(know) .. ":" .. tostring(watch) .. ":" .. tostring(snap)
+        .. ":" .. tostring(stats) .. ":" .. tostring(effectFilter or "")
+end
+
 local function BuildVisibleList()
     local s = GetSettings()
     if type(s) ~= "table" then
@@ -400,6 +436,20 @@ local function BuildVisibleList()
     local nameFilter = s.potionNameFilter or ""
     local effectFilter = s.potionEffectFilter or ""
     local rows = {}
+    local cacheKey = PotionListCacheKey(effectFilter)
+    if StockPilerTabPotions._builtKey == cacheKey
+        and type(StockPilerTabPotions._builtRows) == "table"
+    then
+        local built = StockPilerTabPotions._builtRows
+        for i = 1, #built do
+            local row = built[i]
+            if PassesFilters(row, nameFilter, effectFilter) then
+                rows[#rows + 1] = row
+            end
+        end
+        CommitPotionRows(rows)
+        return
+    end
 
     if StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
         StockPiler.Inventory.RefreshAllIfNeeded()
@@ -408,6 +458,7 @@ local function BuildVisibleList()
         StockPiler.Watch.ScrubPristineDisabledStubs()
     end
 
+    local builtRows = {}
     local Catalog = StockPiler.Catalog
     local RS = StockPiler.RecipeSpec
     local potions = Catalog and Catalog.ListPotionRecipeEntries and Catalog.ListPotionRecipeEntries() or {}
@@ -533,23 +584,15 @@ local function BuildVisibleList()
             potionBase
         )
         row.hasRecipe = row.recipeData ~= nil
+        builtRows[#builtRows + 1] = row
         if PassesFilters(row, nameFilter, effectFilter) then
             rows[#rows + 1] = row
         end
     end
 
-    SortRows(rows)
-    local order = {}
-    local structureKey = tostring(#rows)
-    for i = 1, #rows do
-        order[i] = i
-        local row = rows[i]
-        local id = type(row) == "table" and (row.potionKey or row.id or row.uniqueID) or ""
-        structureKey = structureKey .. "|" .. tostring(id)
-    end
-    StockPilerTabPotions.listData = rows
-    StockPilerTabPotions.displayOrder = order
-    StockPilerTabPotions._listStructureKey = structureKey
+    StockPilerTabPotions._builtRows = builtRows
+    StockPilerTabPotions._builtKey = cacheKey
+    CommitPotionRows(rows)
 end
 
 local function SetIconTexture(iconWin, iconNum)
@@ -880,15 +923,8 @@ function StockPilerTabPotions.OnMouseOverRecipe()
     end
 end
 
-function StockPilerTabPotions.ConfirmForgetRecipe()
-    local outputUid = StockPilerTabPotions._pendingForgetOutputUid
-    local recipeSpecKey = StockPilerTabPotions._pendingForgetRecipeKey
-    local potionKey = StockPilerTabPotions._pendingForgetKey
-    local label = StockPilerTabPotions._pendingForgetLabel or recipeSpecKey
-    StockPilerTabPotions._pendingForgetOutputUid = nil
-    StockPilerTabPotions._pendingForgetRecipeKey = nil
-    StockPilerTabPotions._pendingForgetKey = nil
-    StockPilerTabPotions._pendingForgetLabel = nil
+function StockPilerTabPotions.ConfirmForgetRecipe(outputUid, recipeSpecKey, potionKey, label)
+    label = label or recipeSpecKey
     local forgot = false
     if StockPiler.Catalog and StockPiler.Catalog.ForgetPotionRecipeLink then
         forgot = StockPiler.Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey) == true
@@ -919,14 +955,13 @@ function StockPilerTabPotions.OnForgetRow()
     end
     local outputUid = tonumber(data.uniqueID) or 0
     local recipeSpecKey = data.recipeSpecKey
+    local potionKey = data.potionRecipeKey or data.potionKey
     local label = data.name or T("ui.potion_fallback")
-    StockPilerTabPotions._pendingForgetOutputUid = outputUid
-    StockPilerTabPotions._pendingForgetRecipeKey = recipeSpecKey
-    StockPilerTabPotions._pendingForgetKey = data.potionRecipeKey or data.potionKey
-    StockPilerTabPotions._pendingForgetLabel = label
     StockPiler.ViewList.ConfirmTwoButton(
         T("potions.forget_confirm", { name = label }),
-        StockPilerTabPotions.ConfirmForgetRecipe
+        function()
+            StockPilerTabPotions.ConfirmForgetRecipe(outputUid, recipeSpecKey, potionKey, label)
+        end
     )
 end
 

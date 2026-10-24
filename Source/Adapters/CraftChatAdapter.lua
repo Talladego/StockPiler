@@ -427,46 +427,133 @@ function CC.ArmHarvestSpecialMomentSticky()
     CC._harvestSpecialMomentStickyAt = now
 end
 
+local CRAFT_PHRASE_FALLBACK = {
+    ["craft.fail"] = "your creation failed",
+    ["craft.critical_failure"] = "critical failure",
+    ["craft.critical_success"] = "critical success",
+    ["craft.special_moment"] = "special moment",
+    ["craft.harvested"] = "You have harvested {count} {name}",
+    ["craft.created"] = "You created {name}",
+    ["craft.bad_seed"] = "bad seed data",
+    ["craft.bad_seed_generate"] = "seed could not be generated",
+    ["craft.bad_seed_generate_alt"] = "seed couldn't be generated",
+    ["craft.add_main"] = "add main ingredient before",
+}
+
+local function NarrowTemplate(key)
+    local template = nil
+    local Locale = StockPiler.Locale
+    if Locale and Locale.ResolveTemplate then
+        template = Locale.ResolveTemplate(key)
+    end
+    local narrow = nil
+    if template ~= nil and StockPiler.Util and StockPiler.Util.ToNarrow then
+        narrow = StockPiler.Util.ToNarrow(template)
+    elseif type(template) == "string" then
+        narrow = template
+    end
+    if type(narrow) ~= "string" or narrow == "" or string.sub(narrow, 1, 1) == "[" then
+        narrow = CRAFT_PHRASE_FALLBACK[key]
+    end
+    return narrow
+end
+
+local function StartsWithPhrase(lower, phrase)
+    phrase = string.lower(tostring(phrase or ""))
+    if phrase == "" then
+        return false
+    end
+    if string.sub(lower, 1, #phrase) ~= phrase then
+        return false
+    end
+    local nextCh = string.sub(lower, #phrase + 1, #phrase + 1)
+    return nextCh == "" or nextCh == "." or nextCh == "!" or nextCh == " "
+end
+
+local function MatchCraftTemplate(text, template)
+    template = tostring(template or "")
+    if template == "" then
+        return nil
+    end
+    local countPos = string.find(template, "{count}", 1, true)
+    local namePos = string.find(template, "{name}", 1, true)
+    if countPos == nil and namePos == nil then
+        return nil
+    end
+    local pattern = "^"
+    local function esc(s)
+        return (string.gsub(s, "([%%%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"))
+    end
+    local cursor = 1
+    local tokens = {}
+    while true do
+        local cPos = string.find(template, "{count}", cursor, true)
+        local nPos = string.find(template, "{name}", cursor, true)
+        local pos, kind, skip = nil, nil, 0
+        if cPos ~= nil and (nPos == nil or cPos <= nPos) then
+            pos, kind, skip = cPos, "count", 7
+        elseif nPos ~= nil then
+            pos, kind, skip = nPos, "name", 6
+        else
+            break
+        end
+        pattern = pattern .. esc(string.sub(template, cursor, pos - 1))
+        if kind == "count" then
+            pattern = pattern .. "(%d+)"
+        else
+            pattern = pattern .. "(.+)"
+        end
+        tokens[#tokens + 1] = kind
+        cursor = pos + skip
+    end
+    pattern = pattern .. esc(string.sub(template, cursor)) .. "%.?$"
+    local a, b = string.match(text, pattern)
+    if a == nil then
+        return nil
+    end
+    local out = {}
+    if tokens[1] ~= nil then
+        out[tokens[1]] = a
+    end
+    if tokens[2] ~= nil then
+        out[tokens[2]] = b
+    end
+    return out
+end
+
 local function ParseCraftingLine(text)
     if text == "" then
         return nil
     end
     local lower = string.lower(text)
-    if string.find(lower, "your creation failed", 1, true) == 1
-        or string.find(lower, "critical failure", 1, true) == 1
-        or lower == "critical failure."
-        or string.find(lower, "^critical failure%.?")
+    if StartsWithPhrase(lower, NarrowTemplate("craft.fail"))
+        or StartsWithPhrase(lower, NarrowTemplate("craft.critical_failure"))
     then
         return { kind = "critical_failure" }
     end
-    if string.find(lower, "critical success", 1, true) == 1
-        or lower == "critical success."
-        or string.find(lower, "^critical success%.?")
-    then
+    if StartsWithPhrase(lower, NarrowTemplate("craft.critical_success")) then
         return { kind = "critical_success" }
     end
     -- Cultivation Special Moment (super-crit) - same cue family as critical success.
-    if string.find(lower, "special moment", 1, true) == 1
-        or lower == "special moment."
-        or string.find(lower, "^special moment%.?")
-    then
+    if StartsWithPhrase(lower, NarrowTemplate("craft.special_moment")) then
         return { kind = "special_moment" }
     end
-    local qty, plant = string.match(text, "^You have harvested (%d+) (.+)%.?$")
-    if qty and plant then
-        return { kind = "harvested", count = tonumber(qty), name = plant }
+    local harvested = MatchCraftTemplate(text, NarrowTemplate("craft.harvested"))
+    if type(harvested) == "table" and harvested.count ~= nil and harvested.name ~= nil then
+        local plant = string.gsub(harvested.name, "%.$", "")
+        return { kind = "harvested", count = tonumber(harvested.count), name = plant }
     end
-    local created = string.match(text, "^You created (.+)%.?$")
-    if created then
-        created = string.gsub(created, "%.$", "")
-        return { kind = "created", name = created }
+    local created = MatchCraftTemplate(text, NarrowTemplate("craft.created"))
+    if type(created) == "table" and created.name ~= nil then
+        local name = string.gsub(created.name, "%.$", "")
+        return { kind = "created", name = name }
     end
     -- Server destroys the item it just refused ("it has been lost") and tells
     -- you the main never landed. One line is enough to stop the load.
-    if string.find(lower, "bad seed data", 1, true)
-        or string.find(lower, "seed couldn't be generated", 1, true)
-        or string.find(lower, "seed could not be generated", 1, true)
-        or string.find(lower, "add main ingredient before", 1, true)
+    if string.find(lower, string.lower(NarrowTemplate("craft.bad_seed")), 1, true)
+        or string.find(lower, string.lower(NarrowTemplate("craft.bad_seed_generate_alt")), 1, true)
+        or string.find(lower, string.lower(NarrowTemplate("craft.bad_seed_generate")), 1, true)
+        or string.find(lower, string.lower(NarrowTemplate("craft.add_main")), 1, true)
     then
         return { kind = "bad_seed" }
     end

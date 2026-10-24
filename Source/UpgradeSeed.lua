@@ -935,12 +935,16 @@ function US.ScanUpgradePlant(opts)
         .. ":" .. fam .. ":" .. tostring(opts.ownedSeedReq or 0)
         .. ":" .. tostring(opts.mainsOnly == true)
         .. ":" .. tostring(emptyPlots)
-    if US._scanPlantKey == cacheKey then
-        return US._scanPlant
+    if US._scanPlantSnap ~= invSnap or type(US._scanPlantByKey) ~= "table" then
+        US._scanPlantByKey = {}
+        US._scanPlantSnap = invSnap
+    end
+    local cached = US._scanPlantByKey[cacheKey]
+    if type(cached) == "table" and cached.seen == true then
+        return cached.value
     end
     local function done(result)
-        US._scanPlantKey = cacheKey
-        US._scanPlant = result
+        US._scanPlantByKey[cacheKey] = { seen = true, value = result }
         return result
     end
     if climbCap < 1 then
@@ -1034,10 +1038,31 @@ function US.PickBestOwnedSeed(opts)
     if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
         ladder = SM.GetFamilyLadder(opts.familyKey)
     end
-    if type(ladder) == "table" and SM and SM.BestOwnedSeedOnLadder then
-        return SM.BestOwnedSeedOnLadder(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+    local invSnap = 0
+    local Inv = StockPiler.Inventory
+    if Inv and Inv.GetSnapGen then
+        invSnap = tonumber(Inv.GetSnapGen()) or 0
     end
-    return nil
+    local fam = tostring(opts.familyKey or "")
+    if fam == "" and type(ladder) == "table" then
+        fam = tostring(ladder.key or ladder.genus or "")
+    end
+    local cacheKey = tostring(invSnap) .. ":" .. tostring(climbCap)
+        .. ":" .. fam .. ":" .. tostring(opts.mainsOnly == true)
+    if US._ownedSeedSnap ~= invSnap or type(US._ownedSeedByKey) ~= "table" then
+        US._ownedSeedByKey = {}
+        US._ownedSeedSnap = invSnap
+    end
+    local cached = US._ownedSeedByKey[cacheKey]
+    if type(cached) == "table" and cached.seen == true then
+        return cached.value
+    end
+    local result = nil
+    if type(ladder) == "table" and SM and SM.BestOwnedSeedOnLadder then
+        result = SM.BestOwnedSeedOnLadder(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+    end
+    US._ownedSeedByKey[cacheKey] = { seen = true, value = result }
+    return result
 end
 
 --- Collect climb targets: potion mat shorts + enabled plant watches.
@@ -1152,8 +1177,13 @@ local function CollectUpgradeTargets()
         }
     end
 
-    -- Potion / balanced demand (growable mats short).
-    local demand = RS and RS.BuildBalancedSpecDemand and RS.BuildBalancedSpecDemand() or nil
+    -- Potion / balanced demand (growable mats short). Read the cached demand
+    -- only. A hold or a cold miss must not be stored as this snap's targets.
+    local Sch = StockPiler.Scheduler
+    local held = Sch and Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true
+    local demand = RS and RS.BuildBalancedSpecDemand
+        and RS.BuildBalancedSpecDemand({ cacheOnly = true }) or nil
+    US._upgradeDemandStale = (demand == nil) or (held == true)
     if type(demand) == "table" then
         for _, row in pairs(demand) do
             if type(row) == "table" and type(row.spec) == "table" then
@@ -1276,8 +1306,19 @@ local function GetUpgradeTargets()
     US._upgradeTargetsBuilding = true
     local ok, out = pcall(CollectUpgradeTargets)
     US._upgradeTargetsBuilding = false
+    local stale = US._upgradeDemandStale == true
+    US._upgradeDemandStale = nil
     if ok ~= true or type(out) ~= "table" then
         out = type(US._upgradeTargetsCache) == "table" and US._upgradeTargetsCache or {}
+        US._upgradeTargetsCache = out
+        US._upgradeTargetsKey = key
+        return out
+    end
+    if stale then
+        if type(US._upgradeTargetsCache) == "table" then
+            return US._upgradeTargetsCache
+        end
+        return out
     end
     US._upgradeTargetsCache = out
     US._upgradeTargetsKey = key
@@ -1288,7 +1329,13 @@ function US.NeedsRefineFirst()
     if US.IsEnabled() ~= true then
         return false
     end
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    local memoKey = tostring(frame) .. ":" .. tostring(US._upgradeTargetsKey)
+    if US._needsRefineKey == memoKey and US._needsRefineHit == true then
+        return US._needsRefineValue == true
+    end
     local targets = GetUpgradeTargets()
+    memoKey = tostring(frame) .. ":" .. tostring(US._upgradeTargetsKey)
     local anyRefine = false
     local anyPlantable = false
     for i = 1, #targets do
@@ -1309,7 +1356,11 @@ function US.NeedsRefineFirst()
     end
     -- Only skip demand/plant when refine is the only climb work.
     -- Spumepetal refine must not starve Fusk (or other) plantable climb seeds.
-    return anyRefine == true and anyPlantable ~= true
+    local result = anyRefine == true and anyPlantable ~= true
+    US._needsRefineKey = memoKey
+    US._needsRefineHit = true
+    US._needsRefineValue = result
+    return result
 end
 
 --- Hold empty plots for climb status only when no target has plantable seeds
@@ -1559,17 +1610,45 @@ function US.PickPlantJob()
             end
             return (tonumber(a.short) or 0) > (tonumber(b.short) or 0)
         end)
+        local function VendorOpen()
+            local VA = StockPiler.VendorAdapter
+            return VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+        end
+        local function SiblingCanPlantNow(t2, index)
+            if type(t2) ~= "table" then
+                return false
+            end
+            if type(t2.ladder) ~= "table" or type(t2.ladder.rungs) ~= "table" or #t2.ladder.rungs == 0 then
+                return false
+            end
+            for ci = 1, #plantCandidates do
+                if (tonumber(plantCandidates[ci].targetIndex) or 0) == index then
+                    return true
+                end
+            end
+            local plantable = TargetPlantableCount(t2)
+            if (tonumber(plantable) or 0) >= 1 then
+                return true
+            end
+            -- need_buy holds a climb only while a vendor can actually sell the seed.
+            if VendorOpen() then
+                return true
+            end
+            return false
+        end
         local function SiblingBehind(cand)
             for i = 1, #targets do
                 if i ~= (tonumber(cand.targetIndex) or 0) then
                     local t2 = targets[i]
-                    local owned2 = US.PickBestOwnedSeed({
-                        ladder = t2.ladder,
-                        climbCap = US.ClimbCap(t2.needReq),
-                    })
-                    local req2 = type(owned2) == "table" and (tonumber(owned2.skillReq) or 0) or 0
-                    if req2 < (tonumber(cand.ownedReq) or 0) then
-                        return true
+                    if SiblingCanPlantNow(t2, i) then
+                        local owned2 = US.PickBestOwnedSeed({
+                            ladder = t2.ladder,
+                            climbCap = US.ClimbCap(t2.needReq),
+                        })
+                        local req2 = type(owned2) == "table" and (tonumber(owned2.skillReq) or 0) or 0
+                        if req2 < (tonumber(cand.ownedReq) or 0) then
+                            return true
+                        end
                     end
                 end
             end
@@ -1955,14 +2034,12 @@ local function RebuildWatchStatusCache()
     US._statusByPlant = {}
     US._statusByGenus = {}
     if US.IsEnabled() ~= true then
-        US._active = nil
         return
     end
     local targets = GetUpgradeTargets()
     if #targets < 1 then
-        -- Climb done / no targets: always clear latch. Keeping planting/refining
-        -- here made ApplySeedBufferStatus re-paint upgrading_seed via GetActiveStatus.
-        US._active = nil
+        -- Status is a read. PickPlantJob owns _active, including clearing it
+        -- when the climb is finished.
         return
     end
     for i = 1, #targets do
@@ -2009,14 +2086,6 @@ local function RebuildWatchStatusCache()
             end
             if genus and genus ~= "" then
                 US._statusByGenus[genus] = st
-            end
-            -- Keep _active filled so stalls / dumps reflect the climb even when
-            -- Grow planted via plant_stock rather than upgrade_seed.
-            if i == 1 then
-                local curWhy = type(US._active) == "table" and tostring(US._active.why or "") or ""
-                if curWhy ~= "planting" and curWhy ~= "refining" then
-                    US._active = st
-                end
             end
         end
     end

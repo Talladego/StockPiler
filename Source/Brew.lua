@@ -167,7 +167,13 @@ local function LivePotionHave(rowOrSession)
     if Inv.IsReady and Inv.IsReady() ~= true then
         return nil
     end
-    if Inv._snapPending == true then
+    local snapPending = false
+    if Inv.IsSnapshotPending then
+        snapPending = Inv.IsSnapshotPending() == true
+    else
+        snapPending = Inv._snapPending == true
+    end
+    if snapPending then
         return nil
     end
     if Inv.CountByUid then
@@ -193,11 +199,11 @@ local function RowNeedsMorePotions(rowOrSession)
         return false
     end
     local live = LivePotionHave(rowOrSession)
-    local have = live
-    if have == nil then
-        have = tonumber(rowOrSession.potionHave) or 0
+    -- Nil means the bag count is not ready. Do not substitute the cached plan count.
+    if live == nil then
+        return nil
     end
-    return have < min
+    return live < min
 end
 
 local function RowIsReadyToCraft(row)
@@ -757,8 +763,21 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
     end
 
     if BA and BA.IterateSlots and (BA.FetchForce or BA.FetchLight) then
-        -- Force-refresh during load: stale craft indexes make AddCraftingItem no-op.
-        local bags = BA.FetchForce and BA.FetchForce() or BA.FetchLight()
+        -- One bag snapshot per job phase and frame. A rejected add clears it
+        -- so the retry still force-fetches.
+        local phase = tostring(Brew._job and Brew._job.phase or "")
+        local frame = tonumber(StockPiler.FrameCounter) or 0
+        local snapKey = phase .. ":" .. tostring(frame)
+        local bags
+        if type(Brew._bagSnap) == "table" and Brew._bagSnapKey == snapKey then
+            bags = Brew._bagSnap
+        else
+            bags = BA.FetchForce and BA.FetchForce() or BA.FetchLight()
+            if type(bags) == "table" then
+                Brew._bagSnap = bags
+                Brew._bagSnapKey = snapKey
+            end
+        end
         local craftBagType = "craft"
         -- Pass 1: craft bag
         for i = 1, #bags do
@@ -837,6 +856,13 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         return fallbackSlot, fallbackItem, fallbackType, fallbackUid
     end
     return bestSlot, bestItem, bestType, bestUid
+end
+
+Brew.FindCraftingBagItemBySpec = FindCraftingBagItemBySpec
+
+function Brew.InvalidateBagSnapshot()
+    Brew._bagSnap = nil
+    Brew._bagSnapKey = nil
 end
 
 --- Auto holds that pause Ready brew (plant/refine/harvest). Seed buffer is per-watch
@@ -990,8 +1016,6 @@ local function ForceBrewUiRefresh(opts)
     end
     if StockPilerWindow and StockPilerWindow.SyncActionReadiness then
         StockPilerWindow.SyncActionReadiness({ immediate = true })
-        StockPilerWindow._footerRefreshPending = false
-        StockPilerWindow._footerSyncAllowDeferred = false
     elseif StockPiler.Macro and StockPiler.Macro.RefreshMacroButtonAppearance then
         local canHarvest = StockPiler.Grow and StockPiler.Grow.CanHarvestNow
             and StockPiler.Grow.CanHarvestNow() == true
@@ -1633,7 +1657,13 @@ local function BeginLoadJob(row, source)
     else
         Brew._skillUpRow = nil
         SyncSessionStockFromBags(session)
-        if not RowNeedsMorePotions(session) then
+        local needsMore = RowNeedsMorePotions(session)
+        if needsMore ~= true then
+            if needsMore == nil then
+                LogBrew("load wait bag count unknown")
+                ClearSession({ reason = "have-unknown" })
+                return false
+            end
             -- Auto must not overstock once the watch target is met.
             -- Manual Load/Brew: allow one more craft when Craftable is green (buffer-safe).
             if source == "manual" and RowCanPrematureLoad(row) then
@@ -1741,6 +1771,7 @@ function Brew.OnCraftServerReject()
         if Brew._rejectedCraftUids[uid] ~= true then
             Brew._rejectedCraftUids[uid] = true
             newly = true
+            Brew.InvalidateBagSnapshot()
             LogBrew("craft chat rejected main uid=" .. tostring(uid))
         end
     end
@@ -2333,6 +2364,8 @@ function Brew.TryPerform(opId)
     local ok = a and a.Perform and a.Perform() == true
     if ok then
         Brew._awaitingBrewComplete = true
+        Brew._lastPerformAt = NowSec()
+        Brew._postBrewClearArmed = false
         Brew._brewHaveBefore = LivePotionHave(GetSession())
         LogBrew("perform opId=" .. tostring(opId or "?")
             .. " haveBefore=" .. tostring(Brew._brewHaveBefore))
@@ -2351,6 +2384,20 @@ function Brew.TryPerform(opId)
         Perf.End("Brew.TryPerform")
     end
     return ok == true
+end
+
+--- True when a brew Perform happened within the last few seconds.
+function Brew.PerformedWithin(sec)
+    local at = tonumber(Brew._lastPerformAt) or 0
+    if at <= 0 then
+        return false
+    end
+    local now = NowSec()
+    sec = tonumber(sec) or 5
+    if now <= 0 then
+        return false
+    end
+    return (now - at) >= 0 and (now - at) <= sec
 end
 
 --- Returns "go" | "blocked"
@@ -2383,7 +2430,7 @@ function Brew.TryBrewClick()
             return "blocked"
         end
         SyncSessionStockFromBags(session)
-        if not RowNeedsMorePotions(session) then
+        if RowNeedsMorePotions(session) == false then
             PatchPlanRowTargetMet(session, session.potionHave)
             Brew.ClearLoadedSession({ reason = "click-target-met" })
             ForceBrewUiRefresh()
@@ -2822,20 +2869,16 @@ function Brew.RefreshSessionAfterBrew()
     end
 
     local haveBefore = Brew._brewHaveBefore
-    Brew._brewHaveBefore = nil
     -- Prefer live bag count (yield estimates under/over-count crits and lag).
     SyncSessionStockFromBags(session)
     local haveAfter = LivePotionHave(session)
     if haveAfter == nil then
-        local yieldAdd = math.max(1, tonumber(session.recipeYield) or 2)
-        session.potionHave = (tonumber(session.potionHave) or 0) + yieldAdd
-        local min = PotionTargetMin(session)
-        if min > 0 then
-            session.potionDeficit = math.max(0, min - (tonumber(session.potionHave) or 0))
-        elseif session.potionDeficit ~= nil then
-            session.potionDeficit = math.max(0, (tonumber(session.potionDeficit) or 0) - yieldAdd)
-        end
+        -- Bag snapshot has not landed. Wait; do not invent a count from the plan.
+        Brew._postBrewClearArmed = true
+        LogBrew("after-brew have unknown; waiting for bags")
+        return
     end
+    Brew._brewHaveBefore = nil
     if session.craftable ~= nil then
         session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
     end
@@ -2854,7 +2897,8 @@ function Brew.RefreshSessionAfterBrew()
     end
     deficit = tonumber(deficit) or 0
     -- Live bags are SoT: treat target-met even if deficit field lagged.
-    if not RowNeedsMorePotions(session) then
+    -- Unknown (nil) is not target-met; the post-brew bag recheck decides later.
+    if RowNeedsMorePotions(session) == false then
         deficit = 0
         session.potionDeficit = 0
     end
@@ -2862,6 +2906,12 @@ function Brew.RefreshSessionAfterBrew()
     local advanced = nil
     if haveBefore ~= nil and haveAfter ~= nil then
         advanced = haveAfter > haveBefore
+    end
+    if advanced == false then
+        Brew._postBrewClearArmed = true
+        Brew._brewHaveBefore = haveBefore
+        LogBrew("after-brew bag has not advanced; waiting for bags")
+        return
     end
 
     LogBrew(string.format(
@@ -2924,7 +2974,7 @@ function Brew.OnInventorySnapshot()
     SyncSessionStockFromBags(session)
     -- Bags just snapped: refresh Watch stock/status/craftable for manual + auto.
     SyncWatchLiveCountsAfterBrew()
-    if not RowNeedsMorePotions(session) then
+    if RowNeedsMorePotions(session) == false then
         if Brew._loadSource == "manual" and Brew.ValidateApothecaryPerform() == true then
             Brew._postBrewClearArmed = false
             Brew._brewHaveBefore = nil
@@ -2976,8 +3026,8 @@ function Brew.MaybeClearLoadedIfCannotContinue(reason)
     local row = FindSessionRow()
     -- Unload when target met, or when this watch is no longer uncontested Ready
     -- (mats short / shared / buy / restocking - AutoGrow/AutoBuy must refill first).
-    if deficit <= 0 or not RowNeedsMorePotions(session) or not RowIsReadyToCraft(row) then
-        if deficit <= 0 or not RowNeedsMorePotions(session) then
+    if deficit <= 0 or RowNeedsMorePotions(session) == false or not RowIsReadyToCraft(row) then
+        if deficit <= 0 or RowNeedsMorePotions(session) == false then
             PatchPlanRowTargetMet(session, session.potionHave)
         end
         Brew.ClearLoadedSession({ reason = reason or "cannot-continue" })

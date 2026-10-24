@@ -26,6 +26,11 @@ local CRAFT_MACRO_TEXT = L"/script StockPiler.Macro.CraftClick()"
 local CRAFT_MACRO_ICON_HARVEST = MACRO_ICON
 local CRAFT_MACRO_ICON_BREW = BREW_MACRO_ICON
 
+-- Declared here so RemoveCraftMacro can call them. In Lua 5.1 a
+-- `local function` later in the file would be a different local.
+local ForgetCachedMacroSlot
+local ReleaseForeignMacroButtons
+
 local actionButtonHooksInstalled = false
 local setActionDataHooked = false
 local updateEnabledStateHooked = false
@@ -459,9 +464,17 @@ local function CraftIconIdForMode(iconMode)
 end
 
 --- Apply Craft macro icon only when latch harvest↔brew changes (never on idle alone).
-local function EnsureCraftMacroIcon(iconMode)
+--- slot, when passed, is the id already verified for this hotbar pass.
+local function EnsureCraftMacroIcon(iconMode, slot)
     iconMode = (iconMode == "brew") and "brew" or "harvest"
-    local slot = Macro.GetCraftMacroId()
+    if slot == nil then
+        slot = Macro.GetCraftMacroId()
+    else
+        slot = tonumber(slot) or 0
+        if slot <= 0 then
+            slot = nil
+        end
+    end
     if not slot then
         return false
     end
@@ -903,6 +916,12 @@ function Macro.IsCraftMacroButton(button)
     if actionId <= 0 then
         return false
     end
+    -- A hotbar pass resolved the Craft id once. Hooks fired while painting
+    -- that pass compare against it instead of rebuilding the macro table.
+    if Macro._craftIdPassActive == true then
+        local passId = tonumber(Macro._craftIdPass) or 0
+        return passId > 0 and actionId == passId
+    end
     local Timer = StockPiler.CraftHarvestTimer
     if Timer and type(Timer.SnapCraftMacroId) == "function" then
         local snapId = Timer.SnapCraftMacroId()
@@ -913,6 +932,31 @@ function Macro.IsCraftMacroButton(button)
     end
     local macroId = tonumber(Macro.GetCraftMacroId()) or 0
     return macroId > 0 and actionId == macroId
+end
+
+--- One verified Craft id for a hotbar pass. Outside a refresh snapshot this
+--- reads the macro table once. A zero or missing id never matches.
+local function PassCraftMacroId()
+    local Timer = StockPiler.CraftHarvestTimer
+    if Timer and type(Timer.SnapCraftMacroId) == "function" then
+        local snapId = Timer.SnapCraftMacroId()
+        if snapId ~= nil then
+            local id = tonumber(snapId) or 0
+            if id > 0 then
+                return id
+            end
+            return nil
+        end
+    end
+    return Macro.GetCraftMacroId()
+end
+
+local function ButtonIsPassCraft(button, craftId)
+    craftId = tonumber(craftId) or 0
+    if craftId <= 0 or not button or not IsDoMacroAction(button.m_ActionType) then
+        return false
+    end
+    return (tonumber(button.m_ActionId) or 0) == craftId
 end
 
 local function FireHarvestFromMacroSlots(macroId)
@@ -1114,18 +1158,27 @@ function Macro.ReapplyCraftEnable()
         canHarvest = canHarvest,
         canBrew = canBrew,
     })
-    local craftId = Macro.GetCraftMacroId()
+    local craftId = PassCraftMacroId()
     if craftId then
         local opts = {
             snap = snap,
             canHarvest = canHarvest,
             canBrew = canBrew,
         }
-        ForEachActionButton(function(button)
-            if Macro.IsCraftMacroButton(button) then
-                Macro.ApplyCraftButtonAppearance(button, opts)
-            end
+        Macro._craftIdPassActive = true
+        Macro._craftIdPass = craftId
+        local passOk, passErr = pcall(function()
+            ForEachActionButton(function(button)
+                if ButtonIsPassCraft(button, craftId) then
+                    Macro.ApplyCraftButtonAppearance(button, opts)
+                end
+            end)
         end)
+        Macro._craftIdPassActive = false
+        Macro._craftIdPass = nil
+        if passOk ~= true then
+            D("reapply craft failed: " .. tostring(passErr))
+        end
     end
     Macro._craftIconEcho = false
     Macro._reapplyingCraft = false
@@ -1152,7 +1205,7 @@ end
 --- Cached ids are trusted without rescanning, so a slot the player rewrote
 --- (e.g. old Harvest slot now holding /assist) must be dropped or that
 --- button keeps getting our enable/bind/click overrides.
-local function ForgetCachedMacroSlot(macroId)
+ForgetCachedMacroSlot = function(macroId)
     macroId = tonumber(macroId)
     local dropped = false
     if macroId == nil then
@@ -1180,7 +1233,7 @@ end
 
 --- Hand a no-longer-ours macro slot back to stock: rebind its Action window
 --- and drop our grey tint / forced enable state.
-local function ReleaseForeignMacroButtons(macroId)
+ReleaseForeignMacroButtons = function(macroId)
     RebuildOurMacroIds()
     if Macro._ourIds[macroId] == true then
         return
@@ -1317,10 +1370,12 @@ function Macro.AlignCraftEnable(canHarvest, canBrew)
     end
     Macro._alignCraftFrame = frame
     Macro._alignCraftKey = key
-    local craftId = Macro.GetCraftMacroId()
+    local craftId = PassCraftMacroId()
     if not craftId then
         return
     end
+    Macro._craftIdPassActive = true
+    Macro._craftIdPass = craftId
     Macro._aligningCraft = true
     local ok, err = pcall(function()
         RebuildOurMacroIds()
@@ -1331,7 +1386,7 @@ function Macro.AlignCraftEnable(canHarvest, canBrew)
         }
         local paintedCraft = 0
         ForEachActionButton(function(button)
-            if Macro.IsCraftMacroButton(button) then
+            if ButtonIsPassCraft(button, craftId) then
                 Macro.ApplyCraftButtonAppearance(button, opts)
                 paintedCraft = paintedCraft + 1
             end
@@ -1342,6 +1397,8 @@ function Macro.AlignCraftEnable(canHarvest, canBrew)
         end
     end)
     Macro._aligningCraft = false
+    Macro._craftIdPassActive = false
+    Macro._craftIdPass = nil
     if ok ~= true then
         D("align craft failed: " .. tostring(err))
     end
@@ -1443,7 +1500,11 @@ function Macro.RefreshMacroButtonAppearance(opts)
         RebuildOurMacroIds()
         local macroId = Macro.GetMacroId()
         local brewId = Macro.GetBrewMacroId()
-        local craftId = Macro.GetCraftMacroId()
+        local craftId = PassCraftMacroId()
+        if craftId then
+            Macro._craftIdPassActive = true
+            Macro._craftIdPass = craftId
+        end
         local harvestOpts = { canUse = canHarvest }
         local brewOpts = { canUse = canBrew }
         local craftOpts = {
@@ -1456,7 +1517,7 @@ function Macro.RefreshMacroButtonAppearance(opts)
         local paintedBrew = 0
         local paintedCraft = 0
         if applyCraft and craftId then
-            EnsureCraftMacroIcon(craftIconMode)
+            EnsureCraftMacroIcon(craftIconMode, craftId)
         end
         ForEachActionButton(function(button)
             if applyHarvest and macroId and Macro.IsMacroButton(button) then
@@ -1465,7 +1526,7 @@ function Macro.RefreshMacroButtonAppearance(opts)
             elseif applyBrew and brewId and Macro.IsBrewMacroButton(button) then
                 Macro.ApplyBrewButtonAppearance(button, brewOpts)
                 paintedBrew = paintedBrew + 1
-            elseif applyCraft and craftId and Macro.IsCraftMacroButton(button) then
+            elseif applyCraft and craftId and ButtonIsPassCraft(button, craftId) then
                 Macro.ApplyCraftButtonAppearance(button, craftOpts)
                 paintedCraft = paintedCraft + 1
             end
@@ -1493,6 +1554,8 @@ function Macro.RefreshMacroButtonAppearance(opts)
         RememberSlotFingerprint()
     end)
     Macro._refreshingAppearance = false
+    Macro._craftIdPassActive = false
+    Macro._craftIdPass = nil
     Macro._refreshCanHarvest = nil
     Macro._refreshCanBrew = nil
     Macro._refreshCraftCanUse = nil

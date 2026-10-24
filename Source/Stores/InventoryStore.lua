@@ -19,6 +19,10 @@ Inv._dirtyFull = false
 Inv._needQueue = false
 Inv._snapPending = false
 Inv._snapPendingReason = nil
+
+function Inv.IsSnapshotPending()
+    return Inv._snapPending == true
+end
 Inv._pendingUidDelta = nil
 Inv._lastNetUidDelta = nil
 Inv._dirtyEngine = false

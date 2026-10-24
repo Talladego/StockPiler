@@ -27,6 +27,9 @@ Buy._visitMoneyBrass = 0
 Buy._visitBought = 0
 Buy._visitStopReason = nil
 Buy._visitAcquired = Buy._visitAcquired or {}
+-- Per confirmed buy: bag arrival clears that credit only (not every open credit).
+Buy._visitCreditLedger = Buy._visitCreditLedger or {}
+Buy._visitBagSeen = Buy._visitBagSeen or {}
 Buy._fillChatPending = Buy._fillChatPending or {}
 Buy._allowPlantBuys = false
 Buy._planArmedAfterFill = false
@@ -337,11 +340,88 @@ local function VisitAcquired(key)
     return tonumber(Buy._visitAcquired[key]) or 0
 end
 
-local function AddVisitAcquired(key, n)
+local function AddVisitAcquired(key, n, uid, bagAt)
     if key == nil then
         return
     end
-    Buy._visitAcquired[key] = VisitAcquired(key) + (tonumber(n) or 0)
+    n = tonumber(n) or 0
+    if n == 0 then
+        return
+    end
+    Buy._visitAcquired[key] = VisitAcquired(key) + n
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return
+    end
+    bagAt = tonumber(bagAt)
+    if bagAt == nil then
+        bagAt = BagCountUid(uid)
+    end
+    if Buy._visitBagSeen[uid] == nil then
+        Buy._visitBagSeen[uid] = bagAt
+    end
+    local ledger = Buy._visitCreditLedger
+    ledger[#ledger + 1] = { key = key, uid = uid, qty = n }
+end
+
+--- Drop visit credit only for buys whose items have actually reached the bag.
+local function SettleVisitAcquiredFromBags()
+    local ledger = Buy._visitCreditLedger
+    if type(ledger) ~= "table" or #ledger == 0 then
+        return
+    end
+    local seen = Buy._visitBagSeen
+    local byUid = {}
+    local uidOrder = {}
+    for i = 1, #ledger do
+        local entry = ledger[i]
+        local uid = tonumber(entry.uid) or 0
+        if byUid[uid] == nil then
+            byUid[uid] = {}
+            uidOrder[#uidOrder + 1] = uid
+        end
+        local list = byUid[uid]
+        list[#list + 1] = entry
+    end
+    local keep = {}
+    for i = 1, #uidOrder do
+        local uid = uidOrder[i]
+        local entries = byUid[uid]
+        local current = BagCountUid(uid)
+        local cursor = tonumber(seen[uid])
+        if cursor == nil then
+            cursor = current
+        end
+        local gain = current - cursor
+        if gain < 0 then
+            gain = 0
+            cursor = current
+        end
+        for j = 1, #entries do
+            local entry = entries[j]
+            local qty = tonumber(entry.qty) or 0
+            if gain > 0 and qty > 0 then
+                local take = gain
+                if take > qty then
+                    take = qty
+                end
+                gain = gain - take
+                qty = qty - take
+                local left = VisitAcquired(entry.key) - take
+                if left > 0 then
+                    Buy._visitAcquired[entry.key] = left
+                else
+                    Buy._visitAcquired[entry.key] = nil
+                end
+                entry.qty = qty
+            end
+            if (tonumber(entry.qty) or 0) > 0 then
+                keep[#keep + 1] = entry
+            end
+        end
+        seen[uid] = current
+    end
+    Buy._visitCreditLedger = keep
 end
 
 local function JobAcquireKey(job, item)
@@ -477,10 +557,7 @@ local function AccountConfirmedBuy(pending, liveMoney)
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ reason = "autobuy-spent" })
     end
-    if StockPilerTabWatch and StockPilerTabWatch.RefreshAutoBuyMoneyUi then
-        StockPilerTabWatch.RefreshAutoBuyMoneyUi()
-    end
-    AddVisitAcquired(key, qty)
+    AddVisitAcquired(key, qty, pending.uid, pending.bagBefore)
     if type(pending.job) == "table" and type(pending.item) == "table" then
         NoteFillProgress(pending.job, pending.item, qty, unitCost)
     elseif (tonumber(pending.uid) or 0) > 0 then
@@ -935,10 +1012,6 @@ local function WakeBrewAfterBuyFill(reason)
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "buy-fill" })
     end
-    -- Do not wait for store-close / coalesced flush - visit often stays open.
-    if StockPilerTabWatch and StockPilerTabWatch.UpdateRows then
-        StockPilerTabWatch.UpdateRows({ keepVisible = true })
-    end
     LogBuy("wake-brew-after-fill reason=" .. reason)
 end
 
@@ -989,6 +1062,8 @@ local function ResetVisit()
     Buy._visitBought = 0
     Buy._visitStopReason = nil
     Buy._visitAcquired = {}
+    Buy._visitCreditLedger = {}
+    Buy._visitBagSeen = {}
     Buy._fillChatPending = {}
     Buy._planArmedAfterFill = false
     Buy._pendingBuy = nil
@@ -1463,8 +1538,11 @@ function Buy.IssueOne(opId)
     local nowGate = NowSec()
     local nextBuyAfter = tonumber(Buy._nextBuyAfter) or 0
     if nextBuyAfter > 0 and nowGate > 0 and nowGate < nextBuyAfter then
-        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
-            StockPiler.Scheduler.WakeAutoBuy()
+        local wait = nextBuyAfter - nowGate
+        if wait <= (tonumber(Buy.POST_BUY_GAP_SEC) or 0.35) then
+            if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+                StockPiler.Scheduler.WakeAutoBuy()
+            end
         end
         return done(true)
     end
@@ -1481,7 +1559,11 @@ function Buy.IssueOne(opId)
         -- After a successful fill, stop the visit so Orch does not re-IssueOne
         -- every tick (was spamming idle-no-jobs while the store stayed open).
         if (tonumber(Buy._visitBought) or 0) > 0 and Buy._visitStopReason == nil then
-            local meta = StockPiler.Planner and StockPiler.Planner._vendorBuyJobsMeta
+            local Planner = StockPiler.Planner
+            local meta = Planner and Planner.GetVendorBuyMeta and Planner.GetVendorBuyMeta()
+            if type(meta) ~= "table" and Planner then
+                meta = Planner._vendorBuyJobsMeta
+            end
             if type(meta) == "table" then
                 LogBuy(string.format(
                     "idle-no-jobs source=%s maxBottleGap=%s focusWatches=%s",
@@ -1507,24 +1589,62 @@ function Buy.IssueOne(opId)
     local reserveBlock = false
     local budgetBlock = false
 
+    -- Every remaining job is on a no-spend cooldown or an open late confirm.
+    -- Skip the store walk until the soonest of those waits ends.
+    local allCooling = #jobs > 0
+    local soonestCool = nil
+    local nowCool = NowSec()
+    for i = 1, #jobs do
+        local job = jobs[i]
+        local uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+        if uid <= 0 then
+            allCooling = false
+            break
+        end
+        local untilT = tonumber(Buy._noSpendCooldownUntil[uid]) or 0
+        local cooling = untilT > nowCool and nowCool > 0
+        if IsUidOnCooldown(uid) then
+            cooling = true
+        end
+        local late = OpenLateQtyForUid(uid) > 0
+        if not cooling and not late then
+            allCooling = false
+            break
+        end
+        if cooling and untilT > nowCool and (soonestCool == nil or untilT < soonestCool) then
+            soonestCool = untilT
+        end
+    end
+    if allCooling then
+        if soonestCool ~= nil then
+            local cur = tonumber(Buy._nextBuyAfter) or 0
+            if soonestCool > cur then
+                Buy._nextBuyAfter = soonestCool
+            end
+        end
+        return done(true)
+    end
+
     local matched = 0
     local zeroCost = 0
     local noMatch = 0
     local cooldownBlocked = false
+    local containerJob = false
     local containerMatched = false
     for i = 1, #jobs do
         local job = jobs[i]
         local item, unitCost = Buy.FindStoreMatch(job)
         unitCost = tonumber(unitCost) or 0
         if job.skillUp == true and tostring(job.role or "") == "container" then
-            local SU = StockPiler.SkillUp
+            containerJob = true
             if type(item) == "table" then
                 containerMatched = true
-                if SU then
-                    SU._apoNoVendorContainer = nil
-                end
-            elseif containerMatched ~= true and SU then
-                SU._apoNoVendorContainer = true
+            end
+            local SU = StockPiler.SkillUp
+            if SU and SU.SetNoVendorContainer then
+                SU.SetNoVendorContainer(containerMatched ~= true)
+            elseif SU then
+                SU._apoNoVendorContainer = (containerMatched ~= true) and true or nil
             end
         end
         if type(item) ~= "table" then
@@ -1632,6 +1752,19 @@ function Buy.IssueOne(opId)
         end
     end
 
+    if containerJob then
+        local SU = StockPiler.SkillUp
+        if SU and SU.SetNoVendorContainer then
+            SU.SetNoVendorContainer(containerMatched ~= true)
+        elseif SU then
+            if containerMatched == true then
+                SU._apoNoVendorContainer = nil
+            else
+                SU._apoNoVendorContainer = true
+            end
+        end
+    end
+
     if reserveBlock then
         ChatVisitStop("reserve")
         ArmPlanAfterBuyFill("reserve")
@@ -1644,8 +1777,11 @@ function Buy.IssueOne(opId)
     end
     -- Jobs remain but uid is on short no-spend cooldown - keep buying phase alive.
     if cooldownBlocked and Buy._visitStopReason == nil then
-        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
-            StockPiler.Scheduler.WakeAutoBuy()
+        local wait = (tonumber(Buy._nextBuyAfter) or 0) - NowSec()
+        if wait <= (tonumber(Buy.POST_BUY_GAP_SEC) or 0.35) then
+            if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+                StockPiler.Scheduler.WakeAutoBuy()
+            end
         end
         return done(true)
     end
@@ -1757,9 +1893,9 @@ end
 function Buy.OnInventorySnapshot()
     -- Do not Flatten here; jobs rebuild on next Collect via snapGen key.
     Buy.InvalidateJobsCache()
-    -- Bag deficit is truth: drop optimistic visit-acquired while store is open.
+    -- Clear a credit only once that item's bag count has caught the buy.
     if Buy._storeWasOpen == true then
-        Buy._visitAcquired = {}
+        SettleVisitAcquiredFromBags()
     end
     local woke = false
     -- Inventory may confirm a pending buy via bag gain.

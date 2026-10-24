@@ -98,6 +98,8 @@ local function SanitizeName(name)
     end
     name = string.gsub(name, "%^.*$", "")
     name = string.gsub(name, '[<>"&;%[%]^=%c]', "")
+    -- "%" is a gsub capture marker in every phrase that prints this name.
+    name = string.gsub(name, "%%", "")
     name = string.gsub(name, "%s+", " ")
     name = string.gsub(name, "^%s+", "")
     name = string.gsub(name, "%s+$", "")
@@ -117,6 +119,9 @@ local function ValidName(name)
         return nil
     end
     if string.match(name, '[<>"&;%[%]^=%c]') ~= nil then
+        return nil
+    end
+    if string.find(name, "%", 1, true) ~= nil then
         return nil
     end
     return name
@@ -1430,36 +1435,6 @@ function RL.ImportKnownPotion(fields)
         return "known"
     end
 
-    local Know = StockPiler.Knowledge
-    local recipes = Know and Know.Recipes and Know.Recipes() or nil
-    if type(recipes) ~= "table" then
-        return "failed"
-    end
-
-    if type(recipes[rk]) ~= "table" then
-        recipes[rk] = {
-            recipeSpecKey = rk,
-            slots = slots,
-            outcomes = {},
-            brewAttempts = 0,
-            brewSuccesses = 0,
-            brewCrits = 0,
-            brewSuperCrits = 0,
-            brewFailures = 0,
-            brewVolatiles = 0,
-            yieldProductSum = 0,
-            yieldSamples = 0,
-            crafts = 0,
-            outputUid = uid,
-            activeOutcomeUid = uid,
-            sharedImport = true,
-            unverified = true,
-        }
-        if RS and RS.SlimRecipeForStorage then
-            pcall(RS.SlimRecipeForStorage, recipes[rk])
-        end
-    end
-
     local out = { uniqueID = uid }
     if fields.name ~= nil and ToNarrow(fields.name) ~= "" then
         out.name = ToW(fields.name)
@@ -1491,6 +1466,43 @@ function RL.ImportKnownPotion(fields)
     end
     if quality == "failed" then
         quality = "good"
+    end
+    if RS.ImportSharedRecipe then
+        local imported = RS.ImportSharedRecipe(uid, slots, { out = out, quality = quality })
+        if imported ~= "imported" then
+            return imported == "known" and "known" or "failed"
+        end
+        AfterPotionImport()
+        return "imported"
+    end
+
+    local Know = StockPiler.Knowledge
+    local recipes = Know and Know.Recipes and Know.Recipes() or nil
+    if type(recipes) ~= "table" then
+        return "failed"
+    end
+    if type(recipes[rk]) ~= "table" then
+        recipes[rk] = {
+            recipeSpecKey = rk,
+            slots = slots,
+            outcomes = {},
+            brewAttempts = 0,
+            brewSuccesses = 0,
+            brewCrits = 0,
+            brewSuperCrits = 0,
+            brewFailures = 0,
+            brewVolatiles = 0,
+            yieldProductSum = 0,
+            yieldSamples = 0,
+            crafts = 0,
+            outputUid = uid,
+            activeOutcomeUid = uid,
+            sharedImport = true,
+            unverified = true,
+        }
+        if RS.SlimRecipeForStorage then
+            pcall(RS.SlimRecipeForStorage, recipes[rk])
+        end
     end
     RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
     AfterPotionImport()
@@ -1630,14 +1642,32 @@ function RL.OpenApply(text)
     return false
 end
 
-local function OnHyperLinkLButtonUp(linkData, flags, x, y)
-    local parsed = RL.ParseLinkData(linkData)
-    if parsed ~= nil then
-        RL.PresentLinkedRecipe(parsed)
-        return
+-- Each install keeps its own previous handler and active flag. A later addon
+-- can keep calling this wrapper after shutdown; clearing the saved handler
+-- would swallow ordinary item and player links.
+local hyperlinkInstall = nil
+
+local function InstallHyperlinkWrapper(prev)
+    local active = true
+    local function wrapper(...)
+        if active ~= true then
+            if prev ~= nil then
+                return prev(...)
+            end
+            return
+        end
+        local linkData = ...
+        local parsed = RL.ParseLinkData(linkData)
+        if parsed ~= nil then
+            RL.PresentLinkedRecipe(parsed)
+            return
+        end
+        if prev ~= nil then
+            return prev(...)
+        end
     end
-    if RL._prevOnHyperLinkLButtonUp then
-        RL._prevOnHyperLinkLButtonUp(linkData, flags, x, y)
+    return wrapper, function()
+        active = false
     end
 end
 
@@ -1648,8 +1678,15 @@ function RL.InstallHyperlinkHook()
     if type(EA_ChatWindow) ~= "table" or type(EA_ChatWindow.OnHyperLinkLButtonUp) ~= "function" then
         return
     end
-    RL._prevOnHyperLinkLButtonUp = EA_ChatWindow.OnHyperLinkLButtonUp
-    EA_ChatWindow.OnHyperLinkLButtonUp = OnHyperLinkLButtonUp
+    local prev = EA_ChatWindow.OnHyperLinkLButtonUp
+    local wrapper, deactivate = InstallHyperlinkWrapper(prev)
+    hyperlinkInstall = {
+        wrapper = wrapper,
+        deactivate = deactivate,
+        prev = prev,
+    }
+    RL._prevOnHyperLinkLButtonUp = prev
+    EA_ChatWindow.OnHyperLinkLButtonUp = wrapper
     RL._hyperlinkHooked = true
 end
 
@@ -1657,13 +1694,17 @@ function RL.UninstallHyperlinkHook()
     if not RL._hyperlinkHooked then
         return
     end
-    if type(EA_ChatWindow) == "table"
-        and EA_ChatWindow.OnHyperLinkLButtonUp == OnHyperLinkLButtonUp
-        and RL._prevOnHyperLinkLButtonUp ~= nil
-    then
-        EA_ChatWindow.OnHyperLinkLButtonUp = RL._prevOnHyperLinkLButtonUp
+    local installed = hyperlinkInstall
+    if installed and installed.deactivate then
+        installed.deactivate()
     end
-    RL._prevOnHyperLinkLButtonUp = nil
+    if type(EA_ChatWindow) == "table"
+        and installed
+        and EA_ChatWindow.OnHyperLinkLButtonUp == installed.wrapper
+        and installed.prev ~= nil
+    then
+        EA_ChatWindow.OnHyperLinkLButtonUp = installed.prev
+    end
     RL._hyperlinkHooked = false
 end
 

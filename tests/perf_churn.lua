@@ -172,17 +172,25 @@ P.ResetSettingsToDefaults()
 local resetRow = P.GetCharacterBucket(true)
 eq(shapes, 2, "reset invalidates the bucket cache")
 eq(resetRow.autoGrowEnabled, false, "reset restores the auto-grow default")
-eq(resetRow.retiredJunk, nil, "reset drops a retired key on the next lookup")
+eq(resetRow.retiredJunk, true, "reset keeps a character field that is not retired")
 local replaced = { retiredJunk = 1 }
 StockPiler.Settings.characters[P.GetCharacterKey()] = replaced
 local shaped = P.GetCharacterBucket(true)
 eq(shaped, replaced, "a replaced bucket is the stored table")
 eq(shapes, 3, "a replaced bucket is normalised")
-eq(shaped.retiredJunk, nil, "a replaced bucket drops retired keys")
+eq(shaped.retiredJunk, 1, "a replaced bucket keeps unknown fields")
 eq(type(shaped.watches), "table", "a replaced bucket receives defaults")
 local quiet = P.GetCharacterBucket(true)
 eq(quiet, shaped, "the replaced bucket is cached")
 eq(shapes, 3, "the cached replacement is not normalised again")
+StockPiler.RetiredCharacterSettingKeys = { "goneKey" }
+local retiredRow = { goneKey = true, keptNote = "stay" }
+StockPiler.Settings.characters[P.GetCharacterKey()] = retiredRow
+local dropped = P.GetCharacterBucket(true)
+eq(dropped.goneKey, nil, "a listed retired key is dropped")
+eq(dropped.keptNote, "stay", "a field outside the retired list is kept")
+eq(shapes, 4, "a retired-key bucket is normalised once")
+StockPiler.RetiredCharacterSettingKeys = nil
 
 local Sch = StockPiler.Scheduler
 local Ui = StockPiler.Ui

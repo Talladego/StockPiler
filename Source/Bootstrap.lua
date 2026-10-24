@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.1.0"
+StockPiler.Version = L"1.1.1"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -819,6 +819,9 @@ function StockPiler.Initialize()
 end
 
 function StockPiler.Shutdown()
+    if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.Shutdown then
+        StockPiler.RecipeTooltip.Shutdown()
+    end
     if StockPiler.RecipeLink and StockPiler.RecipeLink.Shutdown then
         StockPiler.RecipeLink.Shutdown()
     end

@@ -91,11 +91,10 @@ end
 
 function Bridge.OnInventoryUpdated(updatedSlots)
     -- Stock DataUtils.ReloadItems sticks itemsDirty; mirror so force reads see it.
+    -- Stock EASystem_Utils already reloads items. Keep the dirty flag so a
+    -- later read still sees the update; do not reload again here.
     if GameData and GameData.Player then
         GameData.Player.itemsDirty = true
-    end
-    if DataUtils and type(DataUtils.ReloadItems) == "function" then
-        pcall(DataUtils.ReloadItems)
     end
     Bridge._pendingMainSlots = Bridge._pendingMainSlots or {}
     Bridge._pendingMainSlotSet = Bridge._pendingMainSlotSet or {}
@@ -108,9 +107,6 @@ function Bridge.OnCraftingSlotUpdated(updatedSlots)
     -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here→main.
     if GameData and GameData.Player then
         GameData.Player.craftingItemsDirty = true
-    end
-    if DataUtils and type(DataUtils.ReloadCraftingItems) == "function" then
-        pcall(DataUtils.ReloadCraftingItems)
     end
     Bridge._pendingCraftSlots = Bridge._pendingCraftSlots or {}
     Bridge._pendingCraftSlotSet = Bridge._pendingCraftSlotSet or {}
@@ -130,9 +126,6 @@ end
 function Bridge.OnCraftingInventoryUpdated()
     if GameData and GameData.Player then
         GameData.Player.craftingItemsDirty = true
-    end
-    if DataUtils and type(DataUtils.ReloadCraftingItems) == "function" then
-        pcall(DataUtils.ReloadCraftingItems)
     end
     local Inv = StockPiler.Inventory
     if Inv and Inv.ForceFullRefresh then
@@ -505,76 +498,122 @@ function Bridge.OnCombatFlagUpdated()
     RequestFooterViaBus({ reason = "combat-flag" })
 end
 
+local STAGE_FAIL_WARN = 30
+
+local function RunStage(name, fn)
+    local Util = StockPiler.Util
+    local ok = false
+    if Util and Util.TryCallQuiet then
+        ok = Util.TryCallQuiet(name, fn) == true
+    else
+        ok = pcall(fn) == true
+    end
+    Bridge._stageFailStreak = Bridge._stageFailStreak or {}
+    if ok then
+        Bridge._stageFailStreak[name] = 0
+        return
+    end
+    local n = (tonumber(Bridge._stageFailStreak[name]) or 0) + 1
+    Bridge._stageFailStreak[name] = n
+    if n >= STAGE_FAIL_WARN and Bridge._stageFailChatWarned ~= true then
+        Bridge._stageFailChatWarned = true
+        local Debug = StockPiler.Debug
+        if Debug and Debug.Reply then
+            local msg = StockPiler.T and StockPiler.T("boot.stage_skipped") or nil
+            if msg ~= nil then
+                Debug.Reply(msg)
+            end
+        end
+    end
+end
+
 local function RunUpdateProcessed(timeElapsed)
     StockPiler.FrameCounter = (tonumber(StockPiler.FrameCounter) or 0) + 1
 
-    -- Perf.OnFrame first when in-addon hitch logger (LibPerf sets Available=true).
-    local Perf = StockPiler.Perf
-    if Perf and Perf.OnFrame and Perf.Available ~= true then
-        Perf.OnFrame(timeElapsed)
-    end
+    -- Each stage is isolated. One throw must not stop later automation.
+    RunStage("perf", function()
+        local Perf = StockPiler.Perf
+        if Perf and Perf.OnFrame and Perf.Available ~= true then
+            Perf.OnFrame(timeElapsed)
+        end
+    end)
 
-    if StockPiler.Garden and StockPiler.Garden.FlushPendingSyncAll then
-        StockPiler.Garden.FlushPendingSyncAll()
-    end
+    RunStage("garden", function()
+        if StockPiler.Garden and StockPiler.Garden.FlushPendingSyncAll then
+            StockPiler.Garden.FlushPendingSyncAll()
+        end
+    end)
 
-    -- Coalesced Inv.ApplySlots (main + craft)
-    Bridge.FlushPendingMainSlots()
-    Bridge.FlushPendingCraftSlots()
+    RunStage("slots", function()
+        Bridge.FlushPendingMainSlots()
+        Bridge.FlushPendingCraftSlots()
+    end)
 
-    -- Flush pending snapGen
-    if StockPiler.Inventory and StockPiler.Inventory.FlushPendingSnapGen then
-        StockPiler.Inventory.FlushPendingSnapGen()
-    end
+    RunStage("snapshot", function()
+        if StockPiler.Inventory and StockPiler.Inventory.FlushPendingSnapGen then
+            StockPiler.Inventory.FlushPendingSnapGen()
+        end
+    end)
 
-    -- LearnBridge drain
-    if StockPiler.LearnBridge and StockPiler.LearnBridge.OnUpdateProcessed then
-        StockPiler.LearnBridge.OnUpdateProcessed()
-    end
+    RunStage("learn", function()
+        if StockPiler.LearnBridge and StockPiler.LearnBridge.OnUpdateProcessed then
+            StockPiler.LearnBridge.OnUpdateProcessed()
+        end
+    end)
 
-    -- Refine OnUpdate
-    if StockPiler.Refine and StockPiler.Refine.OnUpdateProcessed then
-        StockPiler.Refine.OnUpdateProcessed(timeElapsed)
-    elseif StockPiler.Refine and StockPiler.Refine.OnUpdate then
-        StockPiler.Refine.OnUpdate(timeElapsed)
-    end
+    RunStage("refine", function()
+        if StockPiler.Refine and StockPiler.Refine.OnUpdateProcessed then
+            StockPiler.Refine.OnUpdateProcessed(timeElapsed)
+        elseif StockPiler.Refine and StockPiler.Refine.OnUpdate then
+            StockPiler.Refine.OnUpdate(timeElapsed)
+        end
+    end)
 
-    -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
-    if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
-        StockPiler.Scheduler.OnUpdate(timeElapsed)
-    end
+    RunStage("scheduler", function()
+        if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
+            StockPiler.Scheduler.OnUpdate(timeElapsed)
+        end
+    end)
 
-    -- First-open Watch ListBox bind: must run even when Scheduler skips UI.
-    if StockPilerWindow and StockPilerWindow.FlushOpenPaint then
-        StockPilerWindow.FlushOpenPaint()
-    end
+    RunStage("open-paint", function()
+        if StockPilerWindow and StockPilerWindow.FlushOpenPaint then
+            StockPilerWindow.FlushOpenPaint()
+        end
+    end)
 
-    -- Coalesced macro enable sync (footer/cultivation storms).
-    if StockPiler.Macro and StockPiler.Macro.DrainEnabledSync then
-        StockPiler.Macro.DrainEnabledSync()
-    end
-    if StockPiler.Macro and StockPiler.Macro.DrainEnableReassert then
-        StockPiler.Macro.DrainEnableReassert()
-    end
-    if StockPiler.CraftHarvestTimer and StockPiler.CraftHarvestTimer.OnUpdate then
-        StockPiler.CraftHarvestTimer.OnUpdate(timeElapsed)
-    end
+    RunStage("macro", function()
+        if StockPiler.Macro and StockPiler.Macro.DrainEnabledSync then
+            StockPiler.Macro.DrainEnabledSync()
+        end
+        if StockPiler.Macro and StockPiler.Macro.DrainEnableReassert then
+            StockPiler.Macro.DrainEnableReassert()
+        end
+    end)
 
-    -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
-    local Sch = StockPiler.Scheduler
-    local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
-    if not holdFooter and StockPilerWindow and StockPilerWindow.FlushPendingFooterRefresh then
-        StockPilerWindow.FlushPendingFooterRefresh()
-    end
-    if Sch and Sch.ClearSkipUiHoldFooter then
-        Sch.ClearSkipUiHoldFooter()
-    end
-    -- Deferred tab list repop (SelectTab deferRefresh / OnShow) — SP2 parity.
-    if StockPilerWindow and StockPilerWindow.FlushPendingListRepopulate
-        and StockPilerWindow._repopulatePending == true
-    then
-        StockPilerWindow.FlushPendingListRepopulate()
-    end
+    RunStage("harvest-timer", function()
+        if StockPiler.CraftHarvestTimer and StockPiler.CraftHarvestTimer.OnUpdate then
+            StockPiler.CraftHarvestTimer.OnUpdate(timeElapsed)
+        end
+    end)
+
+    RunStage("footer", function()
+        local Sch = StockPiler.Scheduler
+        local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
+        if not holdFooter and StockPilerWindow and StockPilerWindow.FlushPendingFooterRefresh then
+            StockPilerWindow.FlushPendingFooterRefresh()
+        end
+        if Sch and Sch.ClearSkipUiHoldFooter then
+            Sch.ClearSkipUiHoldFooter()
+        end
+    end)
+
+    RunStage("list", function()
+        if StockPilerWindow and StockPilerWindow.FlushPendingListRepopulate
+            and StockPilerWindow._repopulatePending == true
+        then
+            StockPilerWindow.FlushPendingListRepopulate()
+        end
+    end)
 end
 
 function Bridge.OnUpdateProcessed(timeElapsed)

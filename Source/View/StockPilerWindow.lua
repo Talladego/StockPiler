@@ -668,12 +668,10 @@ function StockPilerWindow.OnClose()
     WindowSetShowing("StockPilerWindow", false)
 end
 
-function StockPilerWindow.ConfirmClearWatches()
-    -- Scope captured at dialog open (tab may change before Yes).
-    local kind = StockPilerWindow._pendingClearKind
-    StockPilerWindow._pendingClearKind = nil
+function StockPilerWindow.ConfirmClearWatches(kind)
+    -- Kind is captured by the dialog closure. A later dialog must not retarget this one.
     if kind ~= "plant" and kind ~= "potion" then
-        kind = StockPilerWindow.SelectedTab == StockPilerWindow.TABS_PLANTS and "plant" or "potion"
+        return
     end
     local onPlants = kind == "plant"
     local n = 0
@@ -751,10 +749,12 @@ function StockPilerWindow.OnClearWatches()
             StockPilerWindow.RefreshFooterButtons()
             return
         end
-        StockPilerWindow._pendingClearKind = "plant"
+        local kind = "plant"
         StockPiler.ViewList.ConfirmTwoButton(
             T("ui.clear_plant_watches_confirm", { count = tostring(count) }),
-            StockPilerWindow.ConfirmClearWatches
+            function()
+                StockPilerWindow.ConfirmClearWatches(kind)
+            end
         )
         return
     end
@@ -768,10 +768,12 @@ function StockPilerWindow.OnClearWatches()
         StockPilerWindow.RefreshFooterButtons()
         return
     end
-    StockPilerWindow._pendingClearKind = "potion"
+    local kind = "potion"
     StockPiler.ViewList.ConfirmTwoButton(
         T("ui.clear_watches_confirm", { count = tostring(count) }),
-        StockPilerWindow.ConfirmClearWatches
+        function()
+            StockPilerWindow.ConfirmClearWatches(kind)
+        end
     )
 end
 

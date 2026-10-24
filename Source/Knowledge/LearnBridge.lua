@@ -337,4 +337,7 @@ function LB.Shutdown()
     LB._harvestCompletePending = false
     LB._harvestCompleteSeenUpdate = false
     LB._prevPlotStages = {}
+    if StockPiler.SeedMap then
+        StockPiler.SeedMap._pendingRefine = nil
+    end
 end

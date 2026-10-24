@@ -656,6 +656,67 @@ eq(presentedIcon, 77, "a nameless link uses the saved potion icon")
 eq(presentedRarity, 3, "presentation uses the saved rarity")
 eq(presentedLevel, 36, "presentation uses the saved level")
 
+local fields = fieldsFor(998812, "Cancel Probe", sampleSlots())
+eq(Share.Show(fields), true, "preview opens")
+Share.OnClose()
+eq(Share.OnLearn(), false, "closed preview cannot learn")
+eq(StockPiler.Account.potions["uid:998812"], nil,
+    "dismissed recipe stays unlearned")
+eq(Share._open, false, "cancel marks the preview closed")
+eq(Share._fields, nil, "cancel clears the pending recipe")
+
+eq(Share.Show(fields), true, "close button reopens the preview")
+Share.OnClose()
+eq(Share._fields, nil, "close button clears the pending recipe")
+eq(Share.OnLearn(), false, "close button leaves the recipe unlearned")
+eq(StockPiler.Account.potions["uid:998812"], nil, "close button does not import")
+
+eq(Share.Show(fields), true, "escape reopens the preview")
+local escape = openList[WIN]
+check(type(escape) == "function", "escape handler is registered")
+escape()
+eq(shown[WIN], false, "escape hides the preview")
+eq(Share._open, false, "escape marks the preview closed")
+eq(Share._fields, nil, "escape clears the pending recipe")
+eq(Share.OnLearn(), false, "escape leaves the recipe unlearned")
+
+eq(Share.Show(fields), true, "direct hide reopens the preview")
+Share.OnHidden()
+eq(Share._open, false, "direct hide marks the preview closed")
+eq(Share._fields, nil, "direct hide clears the pending recipe")
+eq(Share.OnLearn(), false, "hidden preview cannot learn")
+eq(StockPiler.Account.potions["uid:998812"], nil, "direct hide does not import")
+
+eq(Share.Show(fields), true, "reopening a link allows learn")
+eq(Share._open, true, "reopened preview is open")
+check(type(Share._fields) == "table", "reopened preview keeps the recipe")
+eq(Share.OnLearn(), true, "learn works after the preview is opened again")
+check(type(StockPiler.Account.potions["uid:998812"]) == "table", "reopened learn saves the potion")
+
+wstring = {
+    gsub = function(s, pat, repl)
+        return string.gsub(tostring(s), tostring(pat), repl)
+    end,
+}
+load_module("Source/Locale/Locale.lua")
+load_module("Source/Locale/enUS.lua")
+local okPercent, imported = pcall(StockPiler.T, "link.imported", { name = "Bad %2" })
+check(okPercent == true, "a percent token does not throw")
+check(type(imported) == "string" and string.find(imported, "Bad %2", 1, true) ~= nil,
+    "percent name is kept in the imported line")
+local okTrail, forgetLine = pcall(StockPiler.T, "potions.forget_confirm", { name = "Elixir 100%" })
+check(okTrail == true, "a trailing percent does not throw")
+check(type(forgetLine) == "string" and string.find(forgetLine, "100%", 1, true) ~= nil,
+    "trailing percent is kept in the forget line")
+local okSlot, slotLine = pcall(StockPiler.T, "share.slot_line", {
+    qty = "1",
+    role = "main",
+    name = "Root %2",
+})
+check(okSlot == true, "an ingredient percent does not throw")
+check(type(slotLine) == "string" and string.find(slotLine, "Root %2", 1, true) ~= nil,
+    "ingredient percent is kept in the slot line")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)
