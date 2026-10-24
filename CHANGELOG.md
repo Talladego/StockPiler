@@ -2,6 +2,10 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.3
+
+- Performance improvements.
+
 ## 1.1.2
 
 - Fixes broken window title, chat, and tooltip text in 1.1.1.

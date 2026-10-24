@@ -812,6 +812,12 @@ function Watch.SetCharacterField(name, value)
         return false
     end
     row[name] = value
+    -- SettingsHash reads these fields. Drop the plan-key memo on the write so
+    -- a same-tick lookup does not keep the previous hash.
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     return true
 end
 

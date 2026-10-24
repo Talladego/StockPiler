@@ -179,6 +179,10 @@ function SkillUp.SetCultEnabled(enabled)
     end
     row.skillUpCultEnabled = enabled == true
     SkillUp._latchedCultToggle = enabled == true
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     local Watch = StockPiler.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
@@ -201,6 +205,10 @@ function SkillUp.SetApoEnabled(enabled)
     end
     row.skillUpApoEnabled = enabled == true
     SkillUp._latchedApoToggle = enabled == true
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     local Watch = StockPiler.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()

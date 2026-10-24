@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.1.2"
+StockPiler.Version = L"1.1.3"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -737,6 +737,9 @@ function StockPiler.Initialize()
             end
             if StockPiler.Scheduler and StockPiler.Scheduler.OnTradeSkillsChanged then
                 Bus.Subscribe(E.TRADE_SKILLS_CHANGED, StockPiler.Scheduler.OnTradeSkillsChanged)
+            end
+            if StockPiler.Planner and StockPiler.Planner.OnTradeSkillsChanged then
+                Bus.Subscribe(E.TRADE_SKILLS_CHANGED, StockPiler.Planner.OnTradeSkillsChanged)
             end
         end
         if E.CRAFT_CHAT then

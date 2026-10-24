@@ -920,6 +920,12 @@ function Sch.EnqueueBagFlush(needQueue)
 end
 
 function Sch.OnTradeSkillsChanged(payload)
+    -- Clear even for load-time "trade-caps". A learned or dropped profession
+    -- has to change the plan key before the next read-only lookup.
+    local Planner = StockPiler.Planner
+    if Planner and Planner.OnTradeSkillsChanged then
+        Planner.OnTradeSkillsChanged(payload)
+    end
     if type(payload) == "table" and payload.reason == "trade-caps" then
         return
     end

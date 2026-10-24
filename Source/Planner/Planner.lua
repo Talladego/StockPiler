@@ -211,6 +211,119 @@ local function SettingsHash()
     return hash
 end
 
+--- SettingsHash reaches the live trade-skill API five times (AutoGrow, seed
+--- buffer, grow reserve, and the two capability checks). Read-only plan
+--- lookups call CacheKeyFromGens on every pass, so that work is once per
+--- frame/tick unless a skill pulse or a watch setting clears it.
+local function ClearSettingsHashMemo()
+    Planner._memoSettingsHash = nil
+    Planner._memoSettingsHashClock = nil
+    Planner._memoSettingsHashToken = nil
+    -- FullCacheKey keeps its own copy of this hash. Drop it with the memo so
+    -- the plan key and the demand/focus key cannot disagree after a clear.
+    Planner._fullCacheFrame = nil
+    Planner._fullCacheBase = nil
+    Planner._fullCacheStatsGen = nil
+    Planner._fullCacheSnap = nil
+    Planner._fullCacheWatch = nil
+end
+
+local function SettingsMemoClock()
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    local tick = 0
+    if type(GetGameTime) == "function" then
+        -- Integer second. The raw clock is a float and can change inside one
+        -- OnUpdate; FrameCounter is what stays still for that frame.
+        tick = math.floor(tonumber(GetGameTime()) or 0)
+    end
+    -- No frame and no game clock: do not memo. Callers keep a live hash.
+    if frame <= 0 and tick <= 0 then
+        return nil
+    end
+    return tostring(frame) .. ":" .. tostring(tick)
+end
+
+--- Raw watch fields and sticky profession availability. No trade-skill API.
+--- A direct row write or a sticky on/off change misses the memo on the next
+--- lookup even when the game clock has not moved.
+local function SettingsMemoToken()
+    local row = CharacterRow()
+    local autoGrow = "0"
+    local seedOn = "1"
+    local seedMin = "5"
+    local autoBuy = "0"
+    local optimistic = "1"
+    local reserve = "1"
+    local cultToggle = "0"
+    local apoToggle = "0"
+    if type(row) == "table" then
+        if row.autoGrowEnabled == true then
+            autoGrow = "1"
+        end
+        if row.growSeedBufferEnabled == false then
+            seedOn = "0"
+        end
+        local n = tonumber(row.growSeedBufferMin)
+        if n == nil or n < 0 then
+            n = 5
+        else
+            n = math.floor(n)
+        end
+        seedMin = tostring(n)
+        if row.autoBuyEnabled == true then
+            autoBuy = "1"
+        end
+        if row.watchOptimisticOutcomeEstimate == false then
+            optimistic = "0"
+        end
+        if row.brewRespectGrowReserve == false then
+            reserve = "0"
+        end
+        if row.skillUpCultEnabled == true then
+            cultToggle = "1"
+        end
+        if row.skillUpApoEnabled == true then
+            apoToggle = "1"
+        end
+    end
+    local cultOn = "0"
+    local apoOn = "0"
+    local Caps = StockPiler.TradeSkillCaps
+    if Caps then
+        if (tonumber(Caps._lastCult) or 0) > 0 then
+            cultOn = "1"
+        end
+        if (tonumber(Caps._lastApo) or 0) > 0 then
+            apoOn = "1"
+        end
+    end
+    return autoGrow .. ":" .. seedOn .. ":" .. seedMin .. ":" .. autoBuy
+        .. ":" .. optimistic .. ":" .. reserve
+        .. ":" .. cultToggle .. ":" .. apoToggle
+        .. ":" .. cultOn .. ":" .. apoOn
+end
+
+local function MemoSettingsHash()
+    local clock = SettingsMemoClock()
+    local token = SettingsMemoToken()
+    if clock ~= nil
+        and Planner._memoSettingsHash ~= nil
+        and Planner._memoSettingsHashClock == clock
+        and Planner._memoSettingsHashToken == token
+    then
+        return Planner._memoSettingsHash
+    end
+    local hash = SettingsHash()
+    if clock ~= nil then
+        -- Restamp after the hash so a cold GetCultSkill that fills sticky
+        -- availability is part of the token, not a guaranteed miss next call.
+        Planner._memoSettingsHash = hash
+        Planner._memoSettingsHashClock = clock
+        Planner._memoSettingsHashToken = SettingsMemoToken()
+    end
+    return hash
+end
+
 local function ReadGens()
     local Inv = StockPiler.Inventory
     local Garden = StockPiler.Garden
@@ -225,7 +338,7 @@ local function ReadGens()
         knowledgeGen = Know and Know.GetGen and Know.GetGen() or 0,
         recipeStatsGen = (StockPiler.RecipeSpec and StockPiler.RecipeSpec.GetRecipeStatsGen
             and StockPiler.RecipeSpec.GetRecipeStatsGen()) or 0,
-        settingsHash = SettingsHash(),
+        settingsHash = MemoSettingsHash(),
     }
 end
 
@@ -2166,6 +2279,7 @@ local function ScheduleDemandPrewarm(reason)
 end
 
 local function InvalidateFocusCaches()
+    ClearSettingsHashMemo()
     Planner._autoGrowFocusCache = nil
     Planner._autoGrowFocusKey = nil
     Planner._autoBuyFocusCache = nil
@@ -5236,6 +5350,20 @@ end
 ----------------------------------------------------------------
 -- Public API
 ----------------------------------------------------------------
+
+--- Drops the per-frame settings-hash memo. Watch settings and skill pulses
+--- call this so the plan key changes on the same game tick.
+function Planner.InvalidateSettingsHashMemo()
+    ClearSettingsHashMemo()
+end
+
+--- Bus handler for TRADE_SKILLS_CHANGED. Load pulses (trade-caps) and later
+--- skill pulses both clear the memo. The scheduler still decides whether to
+--- enqueue a rebuild.
+function Planner.OnTradeSkillsChanged(_payload)
+    -- trade-skill and trade-caps both drop the memo.
+    ClearSettingsHashMemo()
+end
 
 function Planner.CacheKeyFromGens()
     return FormatCacheKey(ReadGens())

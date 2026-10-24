@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler" version="1.1.2" date="2026-10-24">
+    <UiMod name="StockPiler" version="1.1.3" date="2026-10-24">
         <Author name="Talladego" email="" />
         <Description text="Stock potions and plants. Grow, buy, and brew toward the amounts you set." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
