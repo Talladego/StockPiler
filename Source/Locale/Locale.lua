@@ -49,9 +49,13 @@ end
 --- A replacement string treats % as a capture marker. Double each percent so
 --- "%2" and a trailing "%" stay literal text instead of raising
 --- "invalid capture index".
+--- wstring.gsub returns (result, count). Returning that call would forward
+--- count as the outer gsub's n, so a value with no "%" (count 0) replaces
+--- nothing and a value with one "%" replaces only the first {token}.
 local function LiteralReplacement(value)
     value = CoerceWString(value)
-    return wstring.gsub(value, L"%%", L"%%%%")
+    local escaped = wstring.gsub(value, L"%%", L"%%%%")
+    return escaped
 end
 
 local function ApplyTokens(template, tokens)
@@ -66,7 +70,8 @@ local function ApplyTokens(template, tokens)
         local key = tostring(name or "")
         if key ~= "" then
             local needle = L"{" .. towstring(key) .. L"}"
-            out = wstring.gsub(out, needle, LiteralReplacement(value))
+            local rep = LiteralReplacement(value)
+            out = wstring.gsub(out, needle, rep)
         end
     end
     return out

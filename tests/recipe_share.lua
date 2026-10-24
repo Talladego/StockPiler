@@ -694,19 +694,19 @@ eq(Share.OnLearn(), true, "learn works after the preview is opened again")
 check(type(StockPiler.Account.potions["uid:998812"]) == "table", "reopened learn saves the potion")
 
 wstring = {
-    gsub = function(s, pat, repl)
-        return string.gsub(tostring(s), tostring(pat), repl)
+    -- Game client: optional 4th arg n, and both return values (result, count).
+    gsub = function(s, pat, repl, n)
+        return string.gsub(tostring(s or ""), tostring(pat or ""), repl, n)
     end,
 }
 load_module("Source/Locale/Locale.lua")
 load_module("Source/Locale/enUS.lua")
 local okPercent, imported = pcall(StockPiler.T, "link.imported", { name = "Bad %2" })
 check(okPercent == true, "a percent token does not throw")
-check(type(imported) == "string" and string.find(imported, "Bad %2", 1, true) ~= nil,
-    "percent name is kept in the imported line")
+eq(imported, "Added Bad %2 to Known Potions.", "percent name is kept in the imported line")
 local okTrail, forgetLine = pcall(StockPiler.T, "potions.forget_confirm", { name = "Elixir 100%" })
 check(okTrail == true, "a trailing percent does not throw")
-check(type(forgetLine) == "string" and string.find(forgetLine, "100%", 1, true) ~= nil,
+eq(forgetLine, "Forget this learned potion recipe?\nElixir 100%",
     "trailing percent is kept in the forget line")
 local okSlot, slotLine = pcall(StockPiler.T, "share.slot_line", {
     qty = "1",
@@ -714,8 +714,16 @@ local okSlot, slotLine = pcall(StockPiler.T, "share.slot_line", {
     name = "Root %2",
 })
 check(okSlot == true, "an ingredient percent does not throw")
-check(type(slotLine) == "string" and string.find(slotLine, "Root %2", 1, true) ~= nil,
-    "ingredient percent is kept in the slot line")
+eq(slotLine, "1x main: Root %2", "ingredient percent is kept in the slot line")
+eq(StockPiler.T("ui.title_version", { version = "1.1.1" }), "StockPiler v1.1.1",
+    "a version token with no percent is replaced")
+eq(StockPiler.T("tip.watch.have_target", { have = 3, target = 10 }), "Have 3 / Target 10",
+    "every token in a multi-token line is replaced")
+StockPiler.Locale.Packs[1]["test.repeat_name"] = "{name} and {name}"
+eq(StockPiler.T("test.repeat_name", { name = "Potion" }), "Potion and Potion",
+    "a repeated token with no percent is replaced every time")
+eq(StockPiler.T("test.repeat_name", { name = "A%B" }), "A%B and A%B",
+    "a repeated token with one percent is replaced every time")
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
