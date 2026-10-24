@@ -819,6 +819,9 @@ function StockPiler.Initialize()
 end
 
 function StockPiler.Shutdown()
+    if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.Shutdown then
+        StockPiler.RecipeTooltip.Shutdown()
+    end
     if StockPiler.RecipeLink and StockPiler.RecipeLink.Shutdown then
         StockPiler.RecipeLink.Shutdown()
     end

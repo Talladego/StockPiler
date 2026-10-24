@@ -916,6 +916,12 @@ function Macro.IsCraftMacroButton(button)
     if actionId <= 0 then
         return false
     end
+    -- A hotbar pass resolved the Craft id once. Hooks fired while painting
+    -- that pass compare against it instead of rebuilding the macro table.
+    if Macro._craftIdPassActive == true then
+        local passId = tonumber(Macro._craftIdPass) or 0
+        return passId > 0 and actionId == passId
+    end
     local Timer = StockPiler.CraftHarvestTimer
     if Timer and type(Timer.SnapCraftMacroId) == "function" then
         local snapId = Timer.SnapCraftMacroId()
@@ -1159,11 +1165,20 @@ function Macro.ReapplyCraftEnable()
             canHarvest = canHarvest,
             canBrew = canBrew,
         }
-        ForEachActionButton(function(button)
-            if ButtonIsPassCraft(button, craftId) then
-                Macro.ApplyCraftButtonAppearance(button, opts)
-            end
+        Macro._craftIdPassActive = true
+        Macro._craftIdPass = craftId
+        local passOk, passErr = pcall(function()
+            ForEachActionButton(function(button)
+                if ButtonIsPassCraft(button, craftId) then
+                    Macro.ApplyCraftButtonAppearance(button, opts)
+                end
+            end)
         end)
+        Macro._craftIdPassActive = false
+        Macro._craftIdPass = nil
+        if passOk ~= true then
+            D("reapply craft failed: " .. tostring(passErr))
+        end
     end
     Macro._craftIconEcho = false
     Macro._reapplyingCraft = false
@@ -1359,6 +1374,8 @@ function Macro.AlignCraftEnable(canHarvest, canBrew)
     if not craftId then
         return
     end
+    Macro._craftIdPassActive = true
+    Macro._craftIdPass = craftId
     Macro._aligningCraft = true
     local ok, err = pcall(function()
         RebuildOurMacroIds()
@@ -1380,6 +1397,8 @@ function Macro.AlignCraftEnable(canHarvest, canBrew)
         end
     end)
     Macro._aligningCraft = false
+    Macro._craftIdPassActive = false
+    Macro._craftIdPass = nil
     if ok ~= true then
         D("align craft failed: " .. tostring(err))
     end
@@ -1482,6 +1501,10 @@ function Macro.RefreshMacroButtonAppearance(opts)
         local macroId = Macro.GetMacroId()
         local brewId = Macro.GetBrewMacroId()
         local craftId = PassCraftMacroId()
+        if craftId then
+            Macro._craftIdPassActive = true
+            Macro._craftIdPass = craftId
+        end
         local harvestOpts = { canUse = canHarvest }
         local brewOpts = { canUse = canBrew }
         local craftOpts = {
@@ -1531,6 +1554,8 @@ function Macro.RefreshMacroButtonAppearance(opts)
         RememberSlotFingerprint()
     end)
     Macro._refreshingAppearance = false
+    Macro._craftIdPassActive = false
+    Macro._craftIdPass = nil
     Macro._refreshCanHarvest = nil
     Macro._refreshCanBrew = nil
     Macro._refreshCraftCanUse = nil

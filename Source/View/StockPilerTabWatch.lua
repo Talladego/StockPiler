@@ -3755,3 +3755,9 @@ function StockPilerTabWatch.OnMouseOverLoad()
     end
     Tip(T("watch.col.brew"))
 end
+
+if StockPiler.Planner and StockPiler.Planner.SetWatchListSource then
+    StockPiler.Planner.SetWatchListSource(function()
+        return StockPilerTabWatch.listData, StockPilerTabWatch._boundPlanRows
+    end)
+end

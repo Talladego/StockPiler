@@ -49,6 +49,17 @@ local function InstallClearTooltipHook()
     end
 end
 
+function RecipeTooltip.Shutdown()
+    if Tooltips and RecipeTooltip._origClearTooltip then
+        Tooltips.ClearTooltip = RecipeTooltip._origClearTooltip
+    end
+    RecipeTooltip._origClearTooltip = nil
+    RecipeTooltip._raisedRows = nil
+    if Tooltips then
+        Tooltips.NUM_ROWS = STOCK_TOOLTIP_ROWS
+    end
+end
+
 local function RgbDef(rgb)
     if not rgb then
         return nil

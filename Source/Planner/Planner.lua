@@ -188,8 +188,14 @@ local function SettingsHash()
     end
     local Caps = StockPiler.TradeSkillCaps
     if Caps then
-        hash = hash + (Caps.GetCultSkill and Caps.GetCultSkill() or 0) * 11
-        hash = hash + (Caps.GetApoSkill and Caps.GetApoSkill() or 0) * 13
+        -- A single skill point must not miss the cheap rebuild. Only the
+        -- on/off craft gates change the plan shape.
+        if Caps.CanAutoGrow and Caps.CanAutoGrow() == true then
+            hash = hash + 11
+        end
+        if Caps.CanBrewPotions and Caps.CanBrewPotions() == true then
+            hash = hash + 13
+        end
     end
     local SkillUp = StockPiler.SkillUp
     if SkillUp then
@@ -327,6 +333,7 @@ local function EnsureHaveCacheForSnap()
             -- Keep prior counts for orch probes, but do NOT claim this snap is warm
             -- and do NOT advance _specHaveSnapGen. Remount-as-warm left CheapRebuild
             -- trusting stale mat totals after the first bag move (Watch craftable stuck).
+            Planner._heldCountsUsed = true
             return Planner._specHaveCache, snapGen
         end
         Planner._specHaveCache = {}
@@ -355,6 +362,7 @@ local function WarmSpecHaveCache(specs)
     if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table"
         and Planner._forceWarmHave ~= true
     then
+        Planner._heldCountsUsed = true
         EnsureHaveCacheForSnap()
         return 0
     end
@@ -660,12 +668,18 @@ end
 
 local function BeginPlanCraftsMemo()
     Planner._craftsMemo = {}
+    Planner._craftsMemoSnap = CurrentSnapGen()
 end
 
 local function CountCraftsPossibleMemo(recipe)
     local RS = RecipeSpec()
     if type(recipe) ~= "table" or not RS or not RS.CountCraftsPossible then
         return 0
+    end
+    local snap = CurrentSnapGen()
+    if Planner._craftsMemoSnap ~= snap or type(Planner._craftsMemo) ~= "table" then
+        Planner._craftsMemo = {}
+        Planner._craftsMemoSnap = snap
     end
     local memo = Planner._craftsMemo
     local key = tostring(recipe.recipeKey or recipe.key or recipe.id or "")
@@ -1136,6 +1150,7 @@ local function BuildBalancedSpecDemand(opts)
     -- Plant/refine quiet / Orch decision hold: reuse last demand (ignore snap bump).
     -- The old watch/plan suffix test returned the same cache on both sides (PLN-4).
     if HoldHaveCacheQuiet() and type(Planner._demandCache) == "table" then
+        Planner._heldCountsUsed = true
         return Planner._demandCache
     end
     -- Orch PickPlantCandidate: never bag-walk; FrameWork prewarm owns cold fills.
@@ -4476,10 +4491,13 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 Planner._forceWarmHave = true
             end
             -- Always clear the force flag even if WarmHave errors.
-            local ok = pcall(WarmSpecHaveCacheForWatches)
+            local ok, warmErr = pcall(WarmSpecHaveCacheForWatches)
             Planner._forceWarmHave = nil
             if ok then
                 haveWarm = IsHaveCacheWarmForSnap()
+            elseif StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
+                StockPiler.Debug.ReportProtectedCallFailure(
+                    "Planner.WarmSpecHaveCacheForWatches", warmErr, true)
             end
         end
     end
@@ -5037,13 +5055,26 @@ local function BuildFull(opts)
     PerfEnd("Build.WarmHave")
     Planner._buildRows = nil
     Planner._buildPlanGen = nil
+    Planner._demandDeferStore = nil
+    Planner._demandNeedScratch = nil
     local ctx = ReadGens()
     local Watch = StockPiler.Watch
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
     local key = FormatCacheKey(ctx)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
-    local rows, seedBufferTipData, demand = BuildWatchRows(ctx, watches)
+    local ok, rows, seedBufferTipData, demand = pcall(BuildWatchRows, ctx, watches)
+    Planner._buildRows = nil
+    Planner._buildPlanGen = nil
+    Planner._demandDeferStore = nil
+    Planner._demandNeedScratch = nil
+    if ok ~= true then
+        if StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
+            StockPiler.Debug.ReportProtectedCallFailure("Planner.BuildWatchRows", rows, true)
+        end
+        PerfEnd("Planner.Build")
+        return nil
+    end
     local plan = {
         planGen = planGen,
         cacheKey = key,
@@ -5093,6 +5124,34 @@ end
 
 function Planner.BuildBalancedSpecDemand(opts)
     return BuildBalancedSpecDemand(opts)
+end
+
+--- True once when a quiet/orch hold served the previous have or demand counts.
+--- The caller (hold end) uses this to decide whether those counts must be rebuilt.
+function Planner.ConsumedHeldCounts()
+    local used = Planner._heldCountsUsed == true
+    Planner._heldCountsUsed = nil
+    return used
+end
+
+function Planner.GetVendorBuyMeta()
+    local meta = Planner._vendorBuyJobsMeta
+    if type(meta) ~= "table" then
+        return nil
+    end
+    return meta
+end
+
+function Planner.SetWatchListSource(fn)
+    if type(fn) == "function" then
+        Planner._watchListSource = fn
+    else
+        Planner._watchListSource = nil
+    end
+end
+
+function Planner.CollectGrowFocus(rowsOpt)
+    return CollectFocus("grow", rowsOpt)
 end
 
 --- Bust Have warm only (bag snap / orch-hold end). Forces re-warm before craftable.
@@ -5362,7 +5421,17 @@ function Planner.LiveRecount(opts)
     local PS = StockPiler.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     local planRows = type(plan) == "table" and plan.rows or nil
-    local listData = StockPilerTabWatch and StockPilerTabWatch.listData or nil
+    local listData = opts.listData
+    local boundRows = opts.boundPlanRows
+    if listData == nil and type(Planner._watchListSource) == "function" then
+        local srcOk, srcList, srcBound = pcall(Planner._watchListSource)
+        if srcOk == true then
+            listData = srcList
+            if boundRows == nil then
+                boundRows = srcBound
+            end
+        end
+    end
     if opts.invalidateStamps == true and Planner.InvalidateCraftableStamps then
         Planner.InvalidateCraftableStamps(listData)
     end
@@ -5376,7 +5445,7 @@ function Planner.LiveRecount(opts)
         PatchWatchRowsLiveCounts(planRows, patchOpts)
     end
     if type(listData) == "table" and #listData > 0 and listData ~= planRows then
-        local bound = StockPilerTabWatch and StockPilerTabWatch._boundPlanRows
+        local bound = boundRows
         -- A sorted copy shares plan row objects, so the plan patch is enough.
         -- preferPrev can keep the bound flag on a list of different row objects.
         local shares = type(planRows) == "table" and bound == planRows

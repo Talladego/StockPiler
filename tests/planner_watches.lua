@@ -360,10 +360,66 @@ local function testResinInflation()
     eq(d.plantP.brewAbsolute, 10, "brew reserve stays the grouped craft need")
 end
 
+local function testSkillPointKeepsCacheKey()
+    local cult, apo = 200, 200
+    StockPiler.TradeSkillCaps.GetCultSkill = function()
+        return cult
+    end
+    StockPiler.TradeSkillCaps.GetApoSkill = function()
+        return apo
+    end
+    StockPiler.TradeSkillCaps.CanAutoGrow = function()
+        return cult > 0
+    end
+    StockPiler.TradeSkillCaps.CanBrewPotions = function()
+        return apo > 0
+    end
+    local before = P.CacheKeyFromGens()
+    cult = 201
+    apo = 201
+    eq(P.CacheKeyFromGens(), before, "one skill point keeps the plan cache key")
+    cult = 0
+    check(P.CacheKeyFromGens() ~= before, "losing cultivation changes the plan cache key")
+    cult = 200
+end
+
+local function testBuildFlagsClearOnError()
+    H.watches = {
+        ["uid:1"] = { enabled = true, autoGrow = true, targetStock = 10 },
+    }
+    H.recipes = {
+        ["uid:1"] = {
+            recipeKey = "rA", recipeYield = 1, out = 1,
+            slots = { { spec = { key = "m", role = "main" }, perCraft = 1, role = "main" } },
+        },
+    }
+    reset()
+    local orig = StockPiler.RecipeSpec.HydrateRecipeSlots
+    local hydrates = 0
+    StockPiler.RecipeSpec.HydrateRecipeSlots = function(...)
+        hydrates = hydrates + 1
+        if hydrates > 1 then
+            error("status-boom")
+        end
+        return orig(...)
+    end
+    P._buildRows = { "stuck" }
+    P._demandDeferStore = true
+    P._demandNeedScratch = { stuck = true }
+    local plan = P.Build({ force = true })
+    StockPiler.RecipeSpec.HydrateRecipeSlots = orig
+    eq(plan, nil, "a failed watch build does not publish")
+    eq(P._buildRows, nil, "build rows flag is cleared after an error")
+    eq(P._demandDeferStore, nil, "demand defer flag is cleared after an error")
+    eq(P._demandNeedScratch, nil, "demand scratch is cleared after an error")
+end
+
 testSameOutput()
 testCoveredReserve()
 testWarmHave()
 testResinInflation()
+testSkillPointKeepsCacheKey()
+testBuildFlagsClearOnError()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

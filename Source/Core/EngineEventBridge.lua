@@ -91,11 +91,10 @@ end
 
 function Bridge.OnInventoryUpdated(updatedSlots)
     -- Stock DataUtils.ReloadItems sticks itemsDirty; mirror so force reads see it.
+    -- Stock EASystem_Utils already reloads items. Keep the dirty flag so a
+    -- later read still sees the update; do not reload again here.
     if GameData and GameData.Player then
         GameData.Player.itemsDirty = true
-    end
-    if DataUtils and type(DataUtils.ReloadItems) == "function" then
-        pcall(DataUtils.ReloadItems)
     end
     Bridge._pendingMainSlots = Bridge._pendingMainSlots or {}
     Bridge._pendingMainSlotSet = Bridge._pendingMainSlotSet or {}
@@ -108,9 +107,6 @@ function Bridge.OnCraftingSlotUpdated(updatedSlots)
     -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here→main.
     if GameData and GameData.Player then
         GameData.Player.craftingItemsDirty = true
-    end
-    if DataUtils and type(DataUtils.ReloadCraftingItems) == "function" then
-        pcall(DataUtils.ReloadCraftingItems)
     end
     Bridge._pendingCraftSlots = Bridge._pendingCraftSlots or {}
     Bridge._pendingCraftSlotSet = Bridge._pendingCraftSlotSet or {}
@@ -130,9 +126,6 @@ end
 function Bridge.OnCraftingInventoryUpdated()
     if GameData and GameData.Player then
         GameData.Player.craftingItemsDirty = true
-    end
-    if DataUtils and type(DataUtils.ReloadCraftingItems) == "function" then
-        pcall(DataUtils.ReloadCraftingItems)
     end
     local Inv = StockPiler.Inventory
     if Inv and Inv.ForceFullRefresh then

@@ -724,6 +724,9 @@ function SM.InvalidatePlantSeedIndex()
     SM._plantRefineSeeds = nil
     SM._plantSeedIndexGrows = nil
     SM._plantSeedIndexRefines = nil
+    SM._seedUidsForPlant = nil
+    SM._seedUidsForPlantGen = nil
+    SM._seedUidsForPlantIdx = nil
 end
 
 function SM.GetHarvestSeedUidsForPlant(plantUid)
@@ -750,6 +753,23 @@ function SM.GetSeedUidsForPlant(plantUid)
     if plantUid <= 0 then
         return out
     end
+    local know = 0
+    if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
+        know = tonumber(StockPiler.Knowledge.GetGen()) or 0
+    end
+    EnsurePlantSeedIndex()
+    local idx = tostring(SM._plantSeedIndexGen)
+    if SM._seedUidsForPlantGen ~= know or SM._seedUidsForPlantIdx ~= idx
+        or type(SM._seedUidsForPlant) ~= "table"
+    then
+        SM._seedUidsForPlant = {}
+        SM._seedUidsForPlantGen = know
+        SM._seedUidsForPlantIdx = idx
+    end
+    local cached = SM._seedUidsForPlant[plantUid]
+    if type(cached) == "table" then
+        return CopyUidList(cached)
+    end
     local seen = {}
     local function addSeed(seedUid)
         seedUid = tonumber(seedUid) or 0
@@ -771,7 +791,8 @@ function SM.GetSeedUidsForPlant(plantUid)
         -- Keep a recorded primary seed even when its sample row is still empty.
         addSeed(entry.seedUid)
     end
-    return out
+    SM._seedUidsForPlant[plantUid] = out
+    return CopyUidList(out)
 end
 
 function SM.HarvestProducts(seedUid)
@@ -1621,14 +1642,21 @@ function SM.IsGrowableSpec(spec)
     end
     local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
     local role = tostring(spec.role or "")
-    local cacheKey = tostring(uid) .. ":" .. role
-    if uid > 0 and _growableCache[cacheKey] ~= nil then
+    local cacheKey
+    if uid > 0 then
+        cacheKey = tostring(uid) .. ":" .. role
+    else
+        local productKey = SpecProductCacheKey(spec)
+        if productKey == "" then
+            return IsGrowableSpecUncached(spec) == true
+        end
+        cacheKey = "s:" .. productKey .. ":" .. role
+    end
+    if _growableCache[cacheKey] ~= nil then
         return _growableCache[cacheKey] == true
     end
     local growable = IsGrowableSpecUncached(spec) == true
-    if uid > 0 then
-        _growableCache[cacheKey] = growable
-    end
+    _growableCache[cacheKey] = growable
     return growable
 end
 

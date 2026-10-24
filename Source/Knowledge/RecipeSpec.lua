@@ -2937,6 +2937,59 @@ end
 --- Drop dangling / dominated alternate fingerprints on potions.
 --- Removes keys missing from recipes, and role-subset keys of a richer sibling.
 --- Never drop fingerprints still referenced by any character's watch.
+--- Store a shared recipe row and register the potion. Returns "imported" or "failed".
+function RS.ImportSharedRecipe(uid, slots, meta)
+    uid = tonumber(uid) or 0
+    meta = type(meta) == "table" and meta or {}
+    if uid <= 0 or type(slots) ~= "table" or #slots < 1 or not RS.RecipeSpecKey then
+        return "failed"
+    end
+    local rk = tostring(RS.RecipeSpecKey(slots) or "")
+    if rk == "" then
+        return "failed"
+    end
+    local Know = StockPiler.Knowledge
+    local recipes = Know and Know.Recipes and Know.Recipes() or nil
+    if type(recipes) ~= "table" then
+        return "failed"
+    end
+    if type(recipes[rk]) ~= "table" then
+        recipes[rk] = {
+            recipeSpecKey = rk,
+            slots = slots,
+            outcomes = {},
+            brewAttempts = 0,
+            brewSuccesses = 0,
+            brewCrits = 0,
+            brewSuperCrits = 0,
+            brewFailures = 0,
+            brewVolatiles = 0,
+            yieldProductSum = 0,
+            yieldSamples = 0,
+            crafts = 0,
+            outputUid = uid,
+            activeOutcomeUid = uid,
+            sharedImport = true,
+            unverified = true,
+        }
+        if RS.SlimRecipeForStorage then
+            pcall(RS.SlimRecipeForStorage, recipes[rk])
+        end
+    end
+    if RS.RegisterKnownPotion then
+        local out = meta.out
+        if type(out) ~= "table" then
+            out = { uniqueID = uid }
+        end
+        local quality = meta.quality or "good"
+        if quality == "failed" then
+            quality = "good"
+        end
+        RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
+    end
+    return "imported"
+end
+
 function RS.ScrubSubsetPotionRecipeKeys()
     local potions = PotionsTable()
     local recipes = RecipesTable()

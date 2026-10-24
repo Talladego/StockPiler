@@ -264,6 +264,53 @@ local function UpdateSortHeaders()
     )
 end
 
+local function CommitPlantRows(rows)
+    SortRows(rows)
+    StockPilerTabPlants.listData = rows
+    local order = {}
+    local structureKey = tostring(#rows)
+    for i = 1, #rows do
+        order[i] = i
+        local row = rows[i]
+        local id = type(row) == "table" and (row.plantKey or row.id or row.plantUid) or ""
+        structureKey = structureKey .. "|" .. tostring(id)
+    end
+    StockPilerTabPlants.displayOrder = order
+    StockPilerTabPlants._listStructureKey = structureKey
+end
+
+local function PlantPasses(row, nameFilter, effectFilter, levelFilter)
+    if nameFilter ~= "" then
+        local nm = string.lower(ToNarrow(row.name))
+        if string.find(nm, nameFilter, 1, true) == nil then
+            return false
+        end
+    end
+    if effectFilter ~= "" and tostring(row.effectKey or "") ~= effectFilter then
+        return false
+    end
+    if levelFilter > 0 and (tonumber(row.levelNum) or 0) ~= levelFilter then
+        return false
+    end
+    return true
+end
+
+local function PlantListCacheKey()
+    local know = 0
+    local watch = 0
+    local snap = 0
+    if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
+        know = tonumber(StockPiler.Knowledge.GetGen()) or 0
+    end
+    if StockPiler.Watch and StockPiler.Watch.GetGen then
+        watch = tonumber(StockPiler.Watch.GetGen()) or 0
+    end
+    if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
+        snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
+    end
+    return tostring(know) .. ":" .. tostring(watch) .. ":" .. tostring(snap)
+end
+
 local function BuildVisibleList()
     local s = GetSettings()
     if type(s) ~= "table" then
@@ -273,11 +320,26 @@ local function BuildVisibleList()
     local effectFilter = s.plantEffectFilter or ""
     local levelFilter = tonumber(s.plantLevelFilter) or 0
     local rows = {}
+    local cacheKey = PlantListCacheKey()
+    if StockPilerTabPlants._builtKey == cacheKey
+        and type(StockPilerTabPlants._builtRows) == "table"
+    then
+        local built = StockPilerTabPlants._builtRows
+        for i = 1, #built do
+            local row = built[i]
+            if PlantPasses(row, nameFilter, effectFilter, levelFilter) then
+                rows[#rows + 1] = row
+            end
+        end
+        CommitPlantRows(rows)
+        return
+    end
 
     if StockPiler.Inventory and StockPiler.Inventory.RefreshAllIfNeeded then
         StockPiler.Inventory.RefreshAllIfNeeded()
     end
 
+    local builtRows = {}
     local Catalog = StockPiler.Catalog
     local plants = Catalog and Catalog.ListPlantEntries and Catalog.ListPlantEntries() or {}
 
@@ -292,20 +354,7 @@ local function BuildVisibleList()
             have = Catalog.PlantHave(plant.plantUid)
         end
         local effectKey = plant.effectKey
-        local include = true
-        if nameFilter ~= "" then
-            local nm = string.lower(ToNarrow(plant.name))
-            if string.find(nm, nameFilter, 1, true) == nil then
-                include = false
-            end
-        end
-        if include and effectFilter ~= "" and tostring(effectKey or "") ~= effectFilter then
-            include = false
-        end
-        if include and levelFilter > 0 and (tonumber(plant.apoLevel) or 0) ~= levelFilter then
-            include = false
-        end
-        if include then
+        do
             local powerNum = tonumber(plant.power) or 0
             local stabilityNum = tonumber(plant.stability) or 0
             local durationNum = tonumber(plant.duration) or 0
@@ -351,21 +400,20 @@ local function BuildVisibleList()
                 nameB = nameB,
                 kind = "plant",
             }
+            builtRows[#builtRows + 1] = rows[#rows]
         end
     end
 
-    SortRows(rows)
-    StockPilerTabPlants.listData = rows
-    local order = {}
-    local structureKey = tostring(#rows)
-    for i = 1, #rows do
-        order[i] = i
-        local row = rows[i]
-        local id = type(row) == "table" and (row.plantKey or row.id or row.plantUid) or ""
-        structureKey = structureKey .. "|" .. tostring(id)
+    StockPilerTabPlants._builtRows = builtRows
+    StockPilerTabPlants._builtKey = cacheKey
+    local visible = {}
+    for i = 1, #builtRows do
+        local row = builtRows[i]
+        if PlantPasses(row, nameFilter, effectFilter, levelFilter) then
+            visible[#visible + 1] = row
+        end
     end
-    StockPilerTabPlants.displayOrder = order
-    StockPilerTabPlants._listStructureKey = structureKey
+    CommitPlantRows(visible)
 end
 
 function StockPilerTabPlants.Initialize()

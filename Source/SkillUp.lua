@@ -2843,6 +2843,14 @@ end
 --- TargetMaxSkill uses this so Cultivation stays on Apo's tier while a vial
 --- is still buyable. Do not call ShouldApoBuyContainer: it needs an exact-tier
 --- main and loops back through ShouldApoBrew.
+function SkillUp.SetNoVendorContainer(noContainer)
+    if noContainer == true then
+        SkillUp._apoNoVendorContainer = true
+    else
+        SkillUp._apoNoVendorContainer = nil
+    end
+end
+
 function SkillUp.ApoVialObtainable()
     local Watch = StockPiler.Watch
     if not (Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true) then

@@ -1435,36 +1435,6 @@ function RL.ImportKnownPotion(fields)
         return "known"
     end
 
-    local Know = StockPiler.Knowledge
-    local recipes = Know and Know.Recipes and Know.Recipes() or nil
-    if type(recipes) ~= "table" then
-        return "failed"
-    end
-
-    if type(recipes[rk]) ~= "table" then
-        recipes[rk] = {
-            recipeSpecKey = rk,
-            slots = slots,
-            outcomes = {},
-            brewAttempts = 0,
-            brewSuccesses = 0,
-            brewCrits = 0,
-            brewSuperCrits = 0,
-            brewFailures = 0,
-            brewVolatiles = 0,
-            yieldProductSum = 0,
-            yieldSamples = 0,
-            crafts = 0,
-            outputUid = uid,
-            activeOutcomeUid = uid,
-            sharedImport = true,
-            unverified = true,
-        }
-        if RS and RS.SlimRecipeForStorage then
-            pcall(RS.SlimRecipeForStorage, recipes[rk])
-        end
-    end
-
     local out = { uniqueID = uid }
     if fields.name ~= nil and ToNarrow(fields.name) ~= "" then
         out.name = ToW(fields.name)
@@ -1496,6 +1466,43 @@ function RL.ImportKnownPotion(fields)
     end
     if quality == "failed" then
         quality = "good"
+    end
+    if RS.ImportSharedRecipe then
+        local imported = RS.ImportSharedRecipe(uid, slots, { out = out, quality = quality })
+        if imported ~= "imported" then
+            return imported == "known" and "known" or "failed"
+        end
+        AfterPotionImport()
+        return "imported"
+    end
+
+    local Know = StockPiler.Knowledge
+    local recipes = Know and Know.Recipes and Know.Recipes() or nil
+    if type(recipes) ~= "table" then
+        return "failed"
+    end
+    if type(recipes[rk]) ~= "table" then
+        recipes[rk] = {
+            recipeSpecKey = rk,
+            slots = slots,
+            outcomes = {},
+            brewAttempts = 0,
+            brewSuccesses = 0,
+            brewCrits = 0,
+            brewSuperCrits = 0,
+            brewFailures = 0,
+            brewVolatiles = 0,
+            yieldProductSum = 0,
+            yieldSamples = 0,
+            crafts = 0,
+            outputUid = uid,
+            activeOutcomeUid = uid,
+            sharedImport = true,
+            unverified = true,
+        }
+        if RS.SlimRecipeForStorage then
+            pcall(RS.SlimRecipeForStorage, recipes[rk])
+        end
     end
     RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
     AfterPotionImport()

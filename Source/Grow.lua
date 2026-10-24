@@ -1075,7 +1075,7 @@ local function CollectPlantWatchOrder(RS)
                             elseif RS.RecipeOutputYield then
                                 yield = tonumber(RS.RecipeOutputYield(recipe, outUid)) or 1
                             else
-                                yield = tonumber(recipe.recipeYield) or 5
+                                yield = tonumber(recipe.recipeYield) or 1
                             end
                             if yield < 1 then
                                 yield = 1

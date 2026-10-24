@@ -76,8 +76,14 @@ function PS.GetOrBuild(refresh)
 
     if not wantRefresh then
         if Sch and Sch.EnqueuePlanRebuild and type(PS._plan) == "table" then
-            -- Stale with key mismatch: nudge only; do not Build here.
-            if PS._cacheKey == nil and Sch.EnqueuePlanRebuild then
+            -- Stale key (missing or no longer the planner key): nudge only.
+            local staleKey = PS._cacheKey == nil
+            if staleKey ~= true and StockPiler.Planner
+                and StockPiler.Planner.CacheKeyFromGens
+            then
+                staleKey = PS._cacheKey ~= StockPiler.Planner.CacheKeyFromGens()
+            end
+            if staleKey and Sch.EnqueuePlanRebuild then
                 Sch.EnqueuePlanRebuild({ nudge = true })
             end
         elseif Sch and Sch.EnqueuePlanRebuild then

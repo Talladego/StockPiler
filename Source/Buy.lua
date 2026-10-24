@@ -557,9 +557,6 @@ local function AccountConfirmedBuy(pending, liveMoney)
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ reason = "autobuy-spent" })
     end
-    if StockPilerTabWatch and StockPilerTabWatch.RefreshAutoBuyMoneyUi then
-        StockPilerTabWatch.RefreshAutoBuyMoneyUi()
-    end
     AddVisitAcquired(key, qty, pending.uid, pending.bagBefore)
     if type(pending.job) == "table" and type(pending.item) == "table" then
         NoteFillProgress(pending.job, pending.item, qty, unitCost)
@@ -1014,10 +1011,6 @@ local function WakeBrewAfterBuyFill(reason)
     end
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "buy-fill" })
-    end
-    -- Do not wait for store-close / coalesced flush - visit often stays open.
-    if StockPilerTabWatch and StockPilerTabWatch.UpdateRows then
-        StockPilerTabWatch.UpdateRows({ keepVisible = true })
     end
     LogBuy("wake-brew-after-fill reason=" .. reason)
 end
@@ -1545,8 +1538,11 @@ function Buy.IssueOne(opId)
     local nowGate = NowSec()
     local nextBuyAfter = tonumber(Buy._nextBuyAfter) or 0
     if nextBuyAfter > 0 and nowGate > 0 and nowGate < nextBuyAfter then
-        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
-            StockPiler.Scheduler.WakeAutoBuy()
+        local wait = nextBuyAfter - nowGate
+        if wait <= (tonumber(Buy.POST_BUY_GAP_SEC) or 0.35) then
+            if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+                StockPiler.Scheduler.WakeAutoBuy()
+            end
         end
         return done(true)
     end
@@ -1563,7 +1559,11 @@ function Buy.IssueOne(opId)
         -- After a successful fill, stop the visit so Orch does not re-IssueOne
         -- every tick (was spamming idle-no-jobs while the store stayed open).
         if (tonumber(Buy._visitBought) or 0) > 0 and Buy._visitStopReason == nil then
-            local meta = StockPiler.Planner and StockPiler.Planner._vendorBuyJobsMeta
+            local Planner = StockPiler.Planner
+            local meta = Planner and Planner.GetVendorBuyMeta and Planner.GetVendorBuyMeta()
+            if type(meta) ~= "table" and Planner then
+                meta = Planner._vendorBuyJobsMeta
+            end
             if type(meta) == "table" then
                 LogBuy(string.format(
                     "idle-no-jobs source=%s maxBottleGap=%s focusWatches=%s",
@@ -1589,24 +1589,62 @@ function Buy.IssueOne(opId)
     local reserveBlock = false
     local budgetBlock = false
 
+    -- Every remaining job is on a no-spend cooldown or an open late confirm.
+    -- Skip the store walk until the soonest of those waits ends.
+    local allCooling = #jobs > 0
+    local soonestCool = nil
+    local nowCool = NowSec()
+    for i = 1, #jobs do
+        local job = jobs[i]
+        local uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+        if uid <= 0 then
+            allCooling = false
+            break
+        end
+        local untilT = tonumber(Buy._noSpendCooldownUntil[uid]) or 0
+        local cooling = untilT > nowCool and nowCool > 0
+        if IsUidOnCooldown(uid) then
+            cooling = true
+        end
+        local late = OpenLateQtyForUid(uid) > 0
+        if not cooling and not late then
+            allCooling = false
+            break
+        end
+        if cooling and untilT > nowCool and (soonestCool == nil or untilT < soonestCool) then
+            soonestCool = untilT
+        end
+    end
+    if allCooling then
+        if soonestCool ~= nil then
+            local cur = tonumber(Buy._nextBuyAfter) or 0
+            if soonestCool > cur then
+                Buy._nextBuyAfter = soonestCool
+            end
+        end
+        return done(true)
+    end
+
     local matched = 0
     local zeroCost = 0
     local noMatch = 0
     local cooldownBlocked = false
+    local containerJob = false
     local containerMatched = false
     for i = 1, #jobs do
         local job = jobs[i]
         local item, unitCost = Buy.FindStoreMatch(job)
         unitCost = tonumber(unitCost) or 0
         if job.skillUp == true and tostring(job.role or "") == "container" then
-            local SU = StockPiler.SkillUp
+            containerJob = true
             if type(item) == "table" then
                 containerMatched = true
-                if SU then
-                    SU._apoNoVendorContainer = nil
-                end
-            elseif containerMatched ~= true and SU then
-                SU._apoNoVendorContainer = true
+            end
+            local SU = StockPiler.SkillUp
+            if SU and SU.SetNoVendorContainer then
+                SU.SetNoVendorContainer(containerMatched ~= true)
+            elseif SU then
+                SU._apoNoVendorContainer = (containerMatched ~= true) and true or nil
             end
         end
         if type(item) ~= "table" then
@@ -1714,6 +1752,19 @@ function Buy.IssueOne(opId)
         end
     end
 
+    if containerJob then
+        local SU = StockPiler.SkillUp
+        if SU and SU.SetNoVendorContainer then
+            SU.SetNoVendorContainer(containerMatched ~= true)
+        elseif SU then
+            if containerMatched == true then
+                SU._apoNoVendorContainer = nil
+            else
+                SU._apoNoVendorContainer = true
+            end
+        end
+    end
+
     if reserveBlock then
         ChatVisitStop("reserve")
         ArmPlanAfterBuyFill("reserve")
@@ -1726,8 +1777,11 @@ function Buy.IssueOne(opId)
     end
     -- Jobs remain but uid is on short no-spend cooldown - keep buying phase alive.
     if cooldownBlocked and Buy._visitStopReason == nil then
-        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
-            StockPiler.Scheduler.WakeAutoBuy()
+        local wait = (tonumber(Buy._nextBuyAfter) or 0) - NowSec()
+        if wait <= (tonumber(Buy.POST_BUY_GAP_SEC) or 0.35) then
+            if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+                StockPiler.Scheduler.WakeAutoBuy()
+            end
         end
         return done(true)
     end

@@ -167,7 +167,13 @@ local function LivePotionHave(rowOrSession)
     if Inv.IsReady and Inv.IsReady() ~= true then
         return nil
     end
-    if Inv._snapPending == true then
+    local snapPending = false
+    if Inv.IsSnapshotPending then
+        snapPending = Inv.IsSnapshotPending() == true
+    else
+        snapPending = Inv._snapPending == true
+    end
+    if snapPending then
         return nil
     end
     if Inv.CountByUid then
@@ -757,8 +763,21 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
     end
 
     if BA and BA.IterateSlots and (BA.FetchForce or BA.FetchLight) then
-        -- Force-refresh during load: stale craft indexes make AddCraftingItem no-op.
-        local bags = BA.FetchForce and BA.FetchForce() or BA.FetchLight()
+        -- One bag snapshot per job phase and frame. A rejected add clears it
+        -- so the retry still force-fetches.
+        local phase = tostring(Brew._job and Brew._job.phase or "")
+        local frame = tonumber(StockPiler.FrameCounter) or 0
+        local snapKey = phase .. ":" .. tostring(frame)
+        local bags
+        if type(Brew._bagSnap) == "table" and Brew._bagSnapKey == snapKey then
+            bags = Brew._bagSnap
+        else
+            bags = BA.FetchForce and BA.FetchForce() or BA.FetchLight()
+            if type(bags) == "table" then
+                Brew._bagSnap = bags
+                Brew._bagSnapKey = snapKey
+            end
+        end
         local craftBagType = "craft"
         -- Pass 1: craft bag
         for i = 1, #bags do
@@ -837,6 +856,13 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         return fallbackSlot, fallbackItem, fallbackType, fallbackUid
     end
     return bestSlot, bestItem, bestType, bestUid
+end
+
+Brew.FindCraftingBagItemBySpec = FindCraftingBagItemBySpec
+
+function Brew.InvalidateBagSnapshot()
+    Brew._bagSnap = nil
+    Brew._bagSnapKey = nil
 end
 
 --- Auto holds that pause Ready brew (plant/refine/harvest). Seed buffer is per-watch
@@ -990,8 +1016,6 @@ local function ForceBrewUiRefresh(opts)
     end
     if StockPilerWindow and StockPilerWindow.SyncActionReadiness then
         StockPilerWindow.SyncActionReadiness({ immediate = true })
-        StockPilerWindow._footerRefreshPending = false
-        StockPilerWindow._footerSyncAllowDeferred = false
     elseif StockPiler.Macro and StockPiler.Macro.RefreshMacroButtonAppearance then
         local canHarvest = StockPiler.Grow and StockPiler.Grow.CanHarvestNow
             and StockPiler.Grow.CanHarvestNow() == true
@@ -1747,6 +1771,7 @@ function Brew.OnCraftServerReject()
         if Brew._rejectedCraftUids[uid] ~= true then
             Brew._rejectedCraftUids[uid] = true
             newly = true
+            Brew.InvalidateBagSnapshot()
             LogBrew("craft chat rejected main uid=" .. tostring(uid))
         end
     end
