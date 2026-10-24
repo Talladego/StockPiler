@@ -2121,6 +2121,50 @@ local function StampBottleGap(row)
     )
 end
 
+local function AutoGrowWantsDemand()
+    local Watch = StockPiler.Watch
+    local Caps = StockPiler.TradeSkillCaps
+    local master = false
+    if Watch and Watch.IsAutoGrowMasterEnabled then
+        master = Watch.IsAutoGrowMasterEnabled() == true
+    elseif Watch and Watch.IsAutoGrowEnabled then
+        master = Watch.IsAutoGrowEnabled() == true
+    end
+    if master ~= true then
+        return false
+    end
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        return false
+    end
+    return true
+end
+
+--- Ask FrameWork to refill _demandCache. If that queue is not available,
+--- mark the plan due so the next build warms demand instead of leaving it nil.
+local function ScheduleDemandPrewarm(reason)
+    if AutoGrowWantsDemand() ~= true then
+        return
+    end
+    Planner._demandPrewarmDue = true
+    reason = reason or "focus-demand"
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.RequestDemandPrewarm then
+        Sch.RequestDemandPrewarm(reason)
+    elseif Sch and Sch.RequestCachePrewarm then
+        Sch.RequestCachePrewarm(reason)
+    end
+    local FW = StockPiler.FrameWork
+    if FW and FW.IsActive and FW.IsActive("prewarm-demand") == true then
+        return
+    end
+    if Sch and Sch._pendingPrewarmAfterQuiet == true then
+        return
+    end
+    if not (FW and FW.EnqueueDemand) and Sch then
+        Sch._planDue = true
+    end
+end
+
 local function InvalidateFocusCaches()
     Planner._autoGrowFocusCache = nil
     Planner._autoGrowFocusKey = nil
@@ -2133,6 +2177,13 @@ local function InvalidateFocusCaches()
     Planner._craftBagFull = nil
     Planner._craftBagFullSnap = nil
     Planner._craftBagFreeCached = nil
+    -- Stocked potion rows clear demand without a plan rebuild. Prewarm it back
+    -- so potion lift is not stuck on a nil cache (plant_stock does not wait).
+    ScheduleDemandPrewarm("focus-demand")
+end
+
+function Planner.InvalidateFocusCaches()
+    InvalidateFocusCaches()
 end
 
 ----------------------------------------------------------------
@@ -5218,6 +5269,13 @@ end
 
 function Planner.BuildBalancedSpecDemand(opts)
     return BuildBalancedSpecDemand(opts)
+end
+
+--- FrameWork demand prewarm. cacheOnly cannot fill a nil cache, so this
+--- runs the real build and stores _demandCache.
+function Planner.WarmDemand()
+    Planner._demandPrewarmDue = nil
+    return BuildBalancedSpecDemand()
 end
 
 --- True once when a quiet/orch hold served the previous have or demand counts.

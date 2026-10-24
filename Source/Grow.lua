@@ -1619,6 +1619,9 @@ function Grow.PickPlantCandidate()
         end
         return job
     end
+    -- Early nils (settling, idle plan, refine-first) are real "no job" answers.
+    -- Only a cold potion-demand cache must stay uncached.
+    Grow._plantDemandCold = false
     ClampSeedCommitsToBag()
     local Sch = StockPiler.Scheduler
     if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
@@ -1675,18 +1678,14 @@ function Grow.PickPlantCandidate()
         and RS.BuildBalancedSpecDemand({ cacheOnly = true })
         or nil
     if type(demand) ~= "table" then
+        -- Cold _demandCache is not "nothing to plant". Skip only the potion
+        -- lift loop and still run buffer, Upgrade Seed, plant_stock, SkillUp.
+        Grow._plantDemandCold = true
         local SchHold = StockPiler.Scheduler
         if SchHold and SchHold.RequestCachePrewarm then
             SchHold.RequestCachePrewarm("pick-plant-cold")
         end
-        -- Watch demand is cold (no potion watches / prewarm not finished).
-        -- SkillUp idle planting must not wait on that cache.
-        local skillJob = TrySkillUpPlantJob()
-        if type(skillJob) == "table" then
-            return done(skillJob)
-        end
-        -- Reuse last probed job until prewarm finishes (nil if never probed).
-        return done(Grow._cachedPlantJob)
+        demand = nil
     end
     local watches = CollectPlantWatchOrder(RS)
     local maxGap = 0
@@ -1697,25 +1696,27 @@ function Grow.PickPlantCandidate()
         end
     end
     local needsRefine = false
-    for i = 1, #watches do
-        local watch = watches[i]
-        local job, why = PickCraftableLiftJobForWatch(watch, SM, RS, demand)
-        if type(job) == "table" then
-            LogPlantPick(job)
-            return done(job)
+    if Grow._plantDemandCold ~= true then
+        for i = 1, #watches do
+            local watch = watches[i]
+            local job, why = PickCraftableLiftJobForWatch(watch, SM, RS, demand)
+            if type(job) == "table" then
+                LogPlantPick(job)
+                return done(job)
+            end
+            if why == "refine-first" then
+                -- Focus watch has plants to convert - idle plots until refine, do not fill
+                -- lower-gap watches while those seeds are pending.
+                needsRefine = true
+                break
+            end
+            -- no-seed / non-growable -> fall back to next watch (lower bottleGap OK).
+            -- Bottle-gap order already preferred focus; empty plots should not idle when
+            -- another watch has plantable seeds.
         end
-        if why == "refine-first" then
-            -- Focus watch has plants to convert - idle plots until refine, do not fill
-            -- lower-gap watches while those seeds are pending.
-            needsRefine = true
-            break
+        if needsRefine then
+            return done(nil)
         end
-        -- no-seed / non-growable -> fall back to next watch (lower bottleGap OK).
-        -- Bottle-gap order already preferred focus; empty plots should not idle when
-        -- another watch has plantable seeds.
-    end
-    if needsRefine then
-        return done(nil)
     end
 
     -- Upgrade Seed: climb lower family rungs toward short watch mats (before buffer /
@@ -1826,7 +1827,14 @@ function Grow.GetPlantJob()
         local nilPlan = StockPiler.PlanSnapshot and StockPiler.PlanSnapshot.Get
             and StockPiler.PlanSnapshot.Get()
         local nilGen = type(nilPlan) == "table" and tonumber(nilPlan.planGen) or 0
-        if Grow._plantNilPlanGen == nilGen then
+        -- A nil cached while demand was warm must not hide plant_stock once
+        -- InvalidateFocusCaches drops _demandCache. Re-probe until it warms.
+        local demandColdNow = false
+        local RSNow = StockPiler.RecipeSpec
+        if RSNow and RSNow.BuildBalancedSpecDemand then
+            demandColdNow = type(RSNow.BuildBalancedSpecDemand({ cacheOnly = true })) ~= "table"
+        end
+        if demandColdNow ~= true and Grow._plantNilPlanGen == nilGen then
             -- A stuck climb with an empty plot retries even while fill-blocked.
             -- A garden already growing the short watch keeps the nil.
             local retryShort = ShortClimbRetryDue()
@@ -1847,8 +1855,17 @@ function Grow.GetPlantJob()
     -- PickPlantCandidate already ends on SkillUp. Do not replay it here:
     -- refine-first and Upgrade Seed holds return nil on purpose.
     local job = Grow.PickPlantCandidate()
-    Grow.MarkPlantJobProbed(job)
     Grow._plantPickFrame = tonumber(StockPiler.FrameCounter) or 0
+    if job == nil and Grow._plantDemandCold == true then
+        -- Do not pin this nil to planGen. Potion lift must be picked on the
+        -- next call once _demandCache is a table, with no plan rebuild.
+        Grow._cachedPlantJob = nil
+        Grow._plantNilPlanGen = nil
+        Grow._plantJobProbed = false
+        Grow._plantQueueDirty = false
+        return nil
+    end
+    Grow.MarkPlantJobProbed(job)
     return job
 end
 

@@ -4,7 +4,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.2
 
-- Cleaner /stp help command list.
+- Fixes broken window title, chat, and tooltip text in 1.1.1.
+- Cleaner `/stp help` command list.
 - Bug fixes.
 - Performance improvements.
 
