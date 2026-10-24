@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.0.0"
+StockPiler.Version = L"1.1.0"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -73,9 +73,93 @@ end
 local function PrintHelp()
     Print(T("boot.help.header"))
     Print(T("boot.help.open"))
-    Print(T("boot.help.tabs"))
     Print(T("boot.help.chat"))
-    Print(T("boot.help.harvest"))
+    Print(T("boot.help.button"))
+    Print(T("boot.help.link"))
+end
+
+--- Settings only (prefs / watches / toggles). Leaves learned Account data alone.
+local function ResetAllSettings()
+    local P = StockPiler.Persistence
+    if not (P and P.ResetSettingsToDefaults) then
+        return
+    end
+    P.ResetSettingsToDefaults()
+    local s = P.EnsureSettings and P.EnsureSettings() or StockPiler.Settings
+    if StockPiler.Debug then
+        StockPiler.Debug.Enabled = type(s) == "table" and s.debugEnabled == true
+        StockPiler.Debug.EventTrace = type(s) == "table" and s.eventTrace == true
+        StockPiler.Debug.ChatMode = (type(s) == "table" and s.chatMode) or "on"
+    end
+    local Macro = StockPiler.Macro
+    if Macro and Macro.SetCraftMacroEnabled then
+        local on = type(s) ~= "table" or s.craftMacroEnabled ~= false
+        Macro.SetCraftMacroEnabled(on)
+    end
+    local CraftButton = StockPiler.CraftButton
+    if CraftButton and CraftButton.ResetToDefaults then
+        CraftButton.ResetToDefaults()
+    end
+    -- Same sync as Watch toggles: bump gen, clear plant queue, rebuild plan.
+    if StockPilerTabWatch and StockPilerTabWatch.AfterWatchSettingsChanged then
+        pcall(StockPilerTabWatch.AfterWatchSettingsChanged)
+    else
+        if StockPiler.Watch and StockPiler.Watch.BumpGen then
+            pcall(StockPiler.Watch.BumpGen)
+        end
+        if StockPiler.PlanSnapshot and StockPiler.PlanSnapshot.Invalidate then
+            pcall(StockPiler.PlanSnapshot.Invalidate)
+        end
+        if StockPiler.Grow and StockPiler.Grow.InvalidatePlantQueue then
+            pcall(StockPiler.Grow.InvalidatePlantQueue, { reason = "settings-reset" })
+        end
+        local Sch = StockPiler.Scheduler
+        if Sch and Sch.EnqueuePlanRebuild then
+            pcall(Sch.EnqueuePlanRebuild, { urgent = true })
+        end
+        if StockPiler.Ui and StockPiler.Ui.MarkWatchUiDirty then
+            pcall(StockPiler.Ui.MarkWatchUiDirty)
+        end
+    end
+    if StockPiler.Ui and StockPiler.Ui.RequestFooterRefresh then
+        pcall(StockPiler.Ui.RequestFooterRefresh)
+    end
+    if StockPilerTabWatch then
+        StockPilerTabWatch._skillGatesKey = nil
+        if StockPilerTabWatch.RefreshHudButtonUi then
+            pcall(StockPilerTabWatch.RefreshHudButtonUi)
+        elseif StockPilerTabWatch.RefreshSkillGates then
+            pcall(StockPilerTabWatch.RefreshSkillGates)
+        end
+    end
+    Print(T("boot.settings_reset"))
+end
+
+local function SetCraftButtonScale(raw)
+    local CraftButton = StockPiler.CraftButton
+    if not CraftButton or not CraftButton.SetScale then
+        return
+    end
+    local function scaleToken(n)
+        return towstring(string.format("%.2f", tonumber(n) or 1.0))
+    end
+    if raw == nil or raw == "" then
+        local scale = CraftButton.GetScale and CraftButton.GetScale() or 1.0
+        Print(T("boot.button", { scale = scaleToken(scale) }))
+        Print(T("boot.button_usage"))
+        return
+    end
+    local text = tostring(raw)
+    local asPercent = string.find(text, "%", 1, true) ~= nil
+    text = string.gsub(text, "%%", "")
+    local ok, scale, clamped = CraftButton.SetScale(text, asPercent)
+    if ok and clamped then
+        Print(T("boot.button_clamped", { scale = scaleToken(scale) }))
+    elseif ok then
+        Print(T("boot.button", { scale = scaleToken(scale) }))
+    else
+        Print(T("boot.button_usage"))
+    end
 end
 
 local function DumpMem(emit)
@@ -283,22 +367,8 @@ function StockPiler.OnSlash(input)
         PrintHelp()
         return
     end
-    if lower == "potions" then
-        if StockPiler.Ui and StockPiler.Ui.ShowWindow then
-            StockPiler.Ui.ShowWindow(1)
-        end
-        return
-    end
-    if lower == "plants" then
-        if StockPiler.Ui and StockPiler.Ui.ShowWindow then
-            StockPiler.Ui.ShowWindow(2)
-        end
-        return
-    end
-    if lower == "watch" then
-        if StockPiler.Ui and StockPiler.Ui.ShowWindow then
-            StockPiler.Ui.ShowWindow(3)
-        end
+    if lower == "reset" then
+        ResetAllSettings()
         return
     end
     if lower == "debug" then
@@ -330,6 +400,68 @@ function StockPiler.OnSlash(input)
     if lower == "chat off" then
         SetChatMode("off")
         return
+    end
+    if lower == "button" then
+        SetCraftButtonScale(nil)
+        return
+    end
+    if lower == "button reset" then
+        local CraftButton = StockPiler.CraftButton
+        if CraftButton and CraftButton.ResetToDefaults then
+            CraftButton.ResetToDefaults()
+            Print(T("boot.button_reset"))
+        end
+        return
+    end
+    if lower == "button timer" then
+        local CraftButton = StockPiler.CraftButton
+        if CraftButton and CraftButton.ToggleShowTimer then
+            local on = CraftButton.ToggleShowTimer()
+            Print(T("boot.button_timer", {
+                state = on and T("boot.button_timer_on") or T("boot.button_timer_off"),
+            }))
+        end
+        return
+    end
+    do
+        local timerArg = string.match(lower, "^button%s+timer%s+(.+)$")
+        if timerArg then
+            timerArg = string.gsub(timerArg, "^%s+", "")
+            timerArg = string.gsub(timerArg, "%s+$", "")
+            local CraftButton = StockPiler.CraftButton
+            if not (CraftButton and CraftButton.SetShowTimer) then
+                return
+            end
+            local on = nil
+            if timerArg == "on" or timerArg == "center" or timerArg == "centred" then
+                on = true
+            elseif timerArg == "off" then
+                on = false
+            end
+            if on == nil then
+                Print(T("boot.button_timer_usage"))
+                return
+            end
+            CraftButton.SetShowTimer(on)
+            Print(T("boot.button_timer", {
+                state = on and T("boot.button_timer_on") or T("boot.button_timer_off"),
+            }))
+            return
+        end
+    end
+    do
+        local buttonArg = string.match(lower, "^button%s+(.+)$")
+        if buttonArg then
+            buttonArg = string.gsub(buttonArg, "^scale%s+", "")
+            -- "button reset" / "button timer …" are handled above; do not treat as scale.
+            if buttonArg == "reset" or buttonArg == "timer"
+                or string.match(buttonArg, "^timer%s")
+            then
+                return
+            end
+            SetCraftButtonScale(buttonArg)
+            return
+        end
     end
     if lower == "dumpall" then
         DumpAll()
@@ -491,16 +623,6 @@ function StockPiler.OnSlash(input)
         Print(T("boot.audit_dumped"))
         return
     end
-    if lower == "harvest" then
-        local B = StockPiler.EventBus
-        local E = StockPiler.Events
-        if B and E and E.CMD_HARVEST then
-            B.Fire(E.CMD_HARVEST, {})
-        elseif StockPiler.Grow and StockPiler.Grow.PrepareHarvestPlot then
-            StockPiler.Grow.PrepareHarvestPlot(true)
-        end
-        return
-    end
     if lower == "perf" or string.sub(lower, 1, 5) == "perf " then
         if StockPiler.Perf and StockPiler.Perf.PrintSummary then
             StockPiler.Perf.PrintSummary()
@@ -508,6 +630,32 @@ function StockPiler.OnSlash(input)
             Print(T("boot.help.perf"))
         end
         return
+    end
+    if lower == "link" then
+        local RL = StockPiler.RecipeLink
+        if not RL then
+            Print(T("link.empty"))
+            return
+        end
+        local key = RL._lastShareKey
+        if key and RL.ShareWatchKey then
+            RL.ShareWatchKey(key)
+        else
+            Print(T("boot.link_usage"))
+        end
+        return
+    end
+    do
+        local applyArg = string.match(text, "^[Aa][Pp][Pp][Ll][Yy]%s+(.+)$")
+        if applyArg then
+            local RL = StockPiler.RecipeLink
+            if not (RL and RL.OpenApply) then
+                Print(T("link.bad_payload"))
+                return
+            end
+            RL.OpenApply(applyArg)
+            return
+        end
     end
     Print(T("boot.unknown_cmd"))
 end
@@ -557,6 +705,18 @@ function StockPiler.Initialize()
     end
     if StockPiler.Macro and StockPiler.Macro.Initialize then
         StockPiler.Macro.Initialize()
+    end
+    if StockPiler.CraftButton and StockPiler.CraftButton.Initialize then
+        StockPiler.CraftButton.Initialize()
+    end
+    -- Optional WarBoard board chip (no-op if WarBoard is not installed).
+    if StockPiler.WarBoardBridge and StockPiler.WarBoardBridge.Initialize then
+        pcall(StockPiler.WarBoardBridge.Initialize)
+    end
+    -- Pre-create DefaultTooltip extra rows so craft/macro tips are not clipped
+    -- on first hover (LabelGetTextDimensions is 0 on brand-new rows).
+    if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.WarmRows then
+        StockPiler.RecipeTooltip.WarmRows()
     end
     if StockPiler.EngineEventBridge and StockPiler.EngineEventBridge.Register then
         StockPiler.EngineEventBridge.Register()
@@ -626,6 +786,10 @@ function StockPiler.Initialize()
     if StockPiler.Debug and StockPiler.Debug.InstallChatLinkHook then
         StockPiler.Debug.InstallChatLinkHook()
     end
+    -- Chain after Debug so StockPiler: recipe links are handled first.
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.Initialize then
+        StockPiler.RecipeLink.Initialize()
+    end
     if LibSlash and LibSlash.RegisterWSlashCmd then
         LibSlash.RegisterWSlashCmd("stp", StockPiler.OnSlash)
         LibSlash.RegisterWSlashCmd("stockpiler", StockPiler.OnSlash)
@@ -655,8 +819,14 @@ function StockPiler.Initialize()
 end
 
 function StockPiler.Shutdown()
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.Shutdown then
+        StockPiler.RecipeLink.Shutdown()
+    end
     if StockPiler.Debug and StockPiler.Debug.UninstallChatLinkHook then
         StockPiler.Debug.UninstallChatLinkHook()
+    end
+    if StockPiler.CraftButton and StockPiler.CraftButton.Shutdown then
+        StockPiler.CraftButton.Shutdown()
     end
     if StockPiler.Macro and StockPiler.Macro.Shutdown then
         StockPiler.Macro.Shutdown()

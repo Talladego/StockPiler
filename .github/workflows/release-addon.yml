@@ -1,9 +1,10 @@
 # Build an installable StockPiler zip (not full repo source) and publish it.
-# - Push to main, or a manual run of main → moving "latest" prerelease (one zip),
-#   a vX.Y.Z release, and an upload to the Return of Reckoning addon site when that version is new
+# - Push to main, or a manual run of main → a vX.Y.Z release,
+#   and an upload to the Return of Reckoning addon site when that version is new
 # - A manual run from another branch only packs the zip
 # - Tag v* → versioned GitHub Release
 # Version tags older than the newest 10 are deleted.
+# A leftover "latest" prerelease and tag are removed on the next main publish.
 name: Release addon zip
 
 on:
@@ -91,7 +92,7 @@ jobs:
           CHANGELOG: ${{ steps.changelog.outputs.changelog_path }}
         run: bash scripts/publish-ror.sh
 
-      - name: Publish latest zip and keep 10 version tags
+      - name: Publish versioned release and keep 10 version tags
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -102,13 +103,6 @@ jobs:
           set -euo pipefail
           tag="v${VERSION}"
           version_notes=$(cat "$RELEASE_NOTES")
-          notes=$(printf '%s\n' \
-            "Installable addon zip (not the full git tree)." \
-            "" \
-            "Unzip into \`Interface/AddOns/\` so you get \`Interface/AddOns/StockPiler/\`." \
-            "" \
-            "- Version: ${VERSION}" \
-            "- Commit: ${GITHUB_SHA}")
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" "$ZIP" \
               --target "$GITHUB_SHA" \
@@ -116,12 +110,10 @@ jobs:
               --latest \
               --notes "$version_notes"
           fi
+          # Drop the old moving prerelease. --cleanup-tag removes its tag when
+          # the release still exists; the push covers a tag left behind alone.
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest "$ZIP" \
-            --target "$GITHUB_SHA" \
-            --title "Latest build" \
-            --prerelease \
-            --notes "$notes"
+          git push origin :refs/tags/latest 2>/dev/null || true
           gh release list --limit 100 --json tagName,publishedAt \
             --jq '[.[] | select(.tagName | startswith("v"))] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
             | while IFS= read -r old; do

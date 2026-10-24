@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler" version="1.0.0" date="2026-10-18">
+    <UiMod name="StockPiler" version="1.1.0" date="2026-10-24">
         <Author name="Talladego" email="" />
         <Description text="Stock potions and plants. Grow, buy, and brew toward the amounts you set." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -17,6 +17,7 @@
             <Dependency name="EA_CraftingSystem" />
             <Dependency name="LibSlash" optional="true" />
             <Dependency name="LibPerf" optional="true" />
+            <Dependency name="WarBoard" optional="true" />
         </Dependencies>
 
         <Files>
@@ -67,10 +68,17 @@
             <File name="Source/View/BrewChrome.lua" />
             <File name="Source/View/BrewTooltip.lua" />
             <File name="Source/View/CraftTooltip.lua" />
+            <File name="Source/View/CraftButton.xml" />
+            <File name="Source/View/CraftButton.lua" />
             <File name="Source/View/Catalog.lua" />
             <File name="Source/View/ViewList.lua" />
             <File name="Source/View/RecipeTooltip.lua" />
+            <File name="Source/View/RecipeLink.lua" />
+            <File name="Source/View/RecipeShare.xml" />
+            <File name="Source/View/RecipeShare.lua" />
             <File name="Source/View/Ui.lua" />
+            <File name="Source/View/WarBoardBridge.xml" />
+            <File name="Source/View/WarBoardBridge.lua" />
             <File name="Source/View/StockPilerTemplates.xml" />
             <File name="Source/View/StockPilerTabPotions.xml" />
             <File name="Source/View/StockPilerTabPlants.xml" />
@@ -86,6 +94,7 @@
 
         <OnInitialize>
             <CreateWindow name="StockPilerWindow" show="false" />
+            <CreateWindow name="StockPilerRecipeShareWindow" show="false" />
             <CallFunction name="StockPiler.Initialize" />
         </OnInitialize>
 

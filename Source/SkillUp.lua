@@ -45,6 +45,7 @@
 StockPiler = StockPiler or {}
 StockPiler.SkillUp = StockPiler.SkillUp or {}
 local SkillUp = StockPiler.SkillUp
+local TOr
 
 SkillUp.CULT_MAX = 200
 SkillUp.APO_MAX = 200
@@ -3772,7 +3773,7 @@ function SkillUp.BuildApoBrewRow(opts)
     end
     local tier = SkillUp.ApoTargetTier()
     local mainUid = parts and parts.main and parts.main.uid or 0
-    local name = L"Skill up Apo"
+    local name = TOr("watch.skillup_apo", L"Skill up Apo")
     if parts and parts.main and type(parts.main.item) == "table" and parts.main.item.name ~= nil then
         name = parts.main.item.name
     end
@@ -4251,7 +4252,7 @@ end
 -- Ephemeral Watch-tab status rows (never SavedVariables watches)
 ----------------------------------------------------------------
 
-local function TOr(key, fallback)
+TOr = function(key, fallback)
     local Locale = StockPiler.Locale
     if Locale and Locale.ResolveTemplate then
         local s = Locale.ResolveTemplate(key)
@@ -4604,7 +4605,7 @@ local function BuildCultWatchStatusRow()
             craftable = 0,
             craftableText = L"",
             statusKey = "skill_blip",
-            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills…"),
+            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills..."),
             statusLines = {
                 TOr("skillup.watch.cult_tip", L"Addon-controlled Cultivating Skill up (not a saved watch)."),
             },
@@ -4807,7 +4808,7 @@ local function BuildApoWatchStatusRow()
             craftableText = L"",
             craftableSafe = false,
             statusKey = "skill_blip",
-            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills…"),
+            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills..."),
             statusLines = {
                 TOr("skillup.watch.apo_tip", L"Addon-controlled Apothecary Skill up (not a saved watch)."),
             },

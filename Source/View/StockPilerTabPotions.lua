@@ -557,14 +557,26 @@ local function SetIconTexture(iconWin, iconNum)
 end
 
 local function RowDataFromActiveChild()
-    local rowWindow = WindowGetParent(SystemData.ActiveWindow.name)
-    local rowIndex = WindowGetId(rowWindow)
-    local dataIndex = ListBoxGetDataIndex("SPTabPotionsList", rowIndex)
-    local listData = StockPilerTabPotions.listData
-    if type(listData) ~= "table" or dataIndex == nil then
-        return nil
+    local win = SystemData.ActiveWindow and SystemData.ActiveWindow.name
+    for _ = 1, 6 do
+        if win == nil or win == "" then
+            break
+        end
+        local rowIndex = WindowGetId(win)
+        if rowIndex and rowIndex > 0 and DoesWindowExist("SPTabPotionsList") then
+            local dataIndex = ListBoxGetDataIndex("SPTabPotionsList", rowIndex)
+            local listData = StockPilerTabPotions.listData
+            if type(listData) == "table" and dataIndex ~= nil and listData[dataIndex] then
+                return listData[dataIndex]
+            end
+        end
+        if type(WindowGetParent) == "function" then
+            win = WindowGetParent(win)
+        else
+            break
+        end
     end
-    return listData[dataIndex]
+    return nil
 end
 
 local function AfterWatchToggle(opts)
@@ -921,4 +933,23 @@ end
 function StockPilerTabPotions.OnMouseOverForget()
     StockPiler.ViewList.OnRowChildMouseOver()
     StockPiler.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("potions.forget_tip"))
+end
+
+--- Shift+left-click row / icon / name inserts the chat link. An ordinary click does not.
+function StockPilerTabPotions.OnLinkClick(flags)
+    local data = RowDataFromActiveChild()
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.ShareRowIfShift then
+        StockPiler.RecipeLink.ShareRowIfShift(data, flags)
+    end
+end
+
+--- Right-click row / icon / name: Link in chat (recipe share).
+function StockPilerTabPotions.OnRowRightClick()
+    local data = RowDataFromActiveChild()
+    if not data then
+        return
+    end
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.ShowContextMenuForRow then
+        StockPiler.RecipeLink.ShowContextMenuForRow(data)
+    end
 end

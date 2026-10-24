@@ -303,6 +303,26 @@ local function SlimSlotsForStorage(slots)
                 entry.spec.isRefinable = spec.isRefinable == true
             end
         end
+        local keptName = slot and slot.name
+        if (keptName == nil or ToNarrow(keptName) == "") and type(spec) == "table" then
+            keptName = spec.name
+        end
+        local keptIcon = tonumber(slot and slot.iconNum) or 0
+        if keptIcon <= 0 and type(spec) == "table" then
+            keptIcon = tonumber(spec.iconNum) or 0
+        end
+        if keptName ~= nil and ToNarrow(keptName) ~= "" then
+            entry.name = keptName
+            if type(entry.spec) == "table" then
+                entry.spec.name = keptName
+            end
+        end
+        if keptIcon > 0 then
+            entry.iconNum = keptIcon
+            if type(entry.spec) == "table" then
+                entry.spec.iconNum = keptIcon
+            end
+        end
         slim[#slim + 1] = entry
     end
     return slim
@@ -894,6 +914,59 @@ local function OutputQuality(out)
         return "potent"
     end
     return "good"
+end
+
+--- Classify a brew/link output name as good / potent / volatile (or failed).
+function RS.OutputQuality(out)
+    return OutputQuality(out)
+end
+
+local function ReadTierFromOut(out)
+    if type(out) ~= "table" then
+        return nil, nil
+    end
+    local sample = type(out.itemData) == "table" and out.itemData or out
+    local rarity = tonumber(out.rarity)
+    if rarity == nil then
+        rarity = tonumber(sample.rarity)
+    end
+    local iLevel = tonumber(out.iLevel) or tonumber(out.level)
+    if iLevel == nil or iLevel <= 0 then
+        iLevel = tonumber(sample.iLevel) or tonumber(sample.level) or 0
+    end
+    if iLevel <= 0 then
+        iLevel = nil
+    end
+    return rarity, iLevel
+end
+
+--- Stamp rarity / iLevel on a potion row. linkImport fills gaps only on existing rows.
+local function ApplyPotionTierFields(potion, out, opts)
+    if type(potion) ~= "table" then
+        return
+    end
+    opts = type(opts) == "table" and opts or {}
+    local rarity, iLevel = ReadTierFromOut(out)
+    local linkImport = opts.linkImport == true
+    local isNew = opts.isNew == true
+    if rarity ~= nil then
+        if linkImport then
+            if isNew or (tonumber(potion.rarity) or 0) <= 0 then
+                potion.rarity = rarity
+            end
+        else
+            potion.rarity = rarity
+        end
+    end
+    if iLevel ~= nil then
+        if linkImport then
+            if isNew or (tonumber(potion.iLevel) or 0) <= 0 then
+                potion.iLevel = iLevel
+            end
+        else
+            potion.iLevel = iLevel
+        end
+    end
 end
 
 --- Bag deltas are noisy (double craft, missed stack). Multiplier does not
@@ -1936,6 +2009,54 @@ function RS.MigrateFractionalRecipeYields()
     return true
 end
 
+--- One-shot: copy rarity / iLevel from Account.items onto potion rows that lack them.
+--- Does not invent values or rewrite recipes/outcomes. Latch: potionTierMigrateV1.
+function RS.MigratePotionTierFromItems()
+    local acct = StockPiler.Account
+    if type(acct) ~= "table" then
+        return false
+    end
+    if acct.potionTierMigrateV1 == true then
+        return false
+    end
+    local potions = PotionsTable()
+    if type(potions) ~= "table" then
+        acct.potionTierMigrateV1 = true
+        return false
+    end
+    local stamped = 0
+    local Items = StockPiler.Items
+    for _, potion in pairs(potions) do
+        if type(potion) == "table" then
+            local uid = tonumber(potion.outputUid) or 0
+            local needRarity = (tonumber(potion.rarity) or 0) <= 0
+            local needLevel = (tonumber(potion.iLevel) or 0) <= 0
+            if uid > 0 and (needRarity or needLevel) then
+                local learned = Items and Items.AsItemData and Items.AsItemData(uid) or nil
+                if type(learned) ~= "table" and Items and Items.GetByUid then
+                    learned = Items.GetByUid(uid)
+                end
+                if type(learned) == "table" then
+                    if needRarity and (tonumber(learned.rarity) or 0) > 0 then
+                        potion.rarity = tonumber(learned.rarity)
+                        stamped = stamped + 1
+                    end
+                    local learnedLvl = tonumber(learned.iLevel) or tonumber(learned.level) or 0
+                    if needLevel and learnedLvl > 0 then
+                        potion.iLevel = learnedLvl
+                        stamped = stamped + 1
+                    end
+                end
+            end
+        end
+    end
+    acct.potionTierMigrateV1 = true
+    if stamped > 0 and StockPiler.Knowledge and StockPiler.Knowledge.Touch then
+        StockPiler.Knowledge.Touch("potion-tier-migrate-v1")
+    end
+    return stamped > 0
+end
+
 --- Fraction of fingerprint brews that produced this potion uid.
 --- Returns nil when sample size is below OUTCOME_RATE_MIN_ATTEMPTS.
 function RS.OutcomeSuccessRate(recipe, potionUid)
@@ -2700,15 +2821,27 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
             existing.skillUpOrigin = true
         end
     end
-    existing.name = (out and out.name) or existing.name
-    existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
-    existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
+    -- Chat-link imports must not rename a potion, switch its active recipe,
+    -- drop a weaker key, or write the shared item cache.
+    local linkImport = opts.linkImport == true
+    if linkImport then
+        if isNew then
+            existing.name = (out and out.name) or existing.name
+            existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
+            existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
+        end
+    else
+        existing.name = (out and out.name) or existing.name
+        existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
+        existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
+    end
+    ApplyPotionTierFields(existing, out, { linkImport = linkImport, isNew = isNew })
     if existing.linimentClass ~= true then
         if RS.IsLinimentClass({ name = existing.name, uid = outputUid }) then
             existing.linimentClass = true
         end
     end
-    if StockPiler.Items and StockPiler.Items.StoreItem then
+    if not linkImport and StockPiler.Items and StockPiler.Items.StoreItem then
         StockPiler.Items.StoreItem(
             (out and type(out.itemData) == "table") and out.itemData or out or { uniqueID = outputUid },
             "potion"
@@ -2717,6 +2850,29 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
     recipeSpecKey = tostring(recipeSpecKey or "")
     local recipeKeyAdded = false
     local replacedWeaker = false
+    if linkImport and quality ~= "failed" and recipeSpecKey ~= "" then
+        local keys = CollectPotionRecipeKeyList(existing)
+        local seen = false
+        for i = 1, #keys do
+            if keys[i] == recipeSpecKey then
+                seen = true
+                break
+            end
+        end
+        if not seen then
+            keys[#keys + 1] = recipeSpecKey
+            existing.recipeKeys = keys
+            recipeKeyAdded = true
+        end
+        local active = tostring(existing.activeRecipeKey or existing.activeRecipeSpecKey or "")
+        if active == "" then
+            existing.activeRecipeKey = recipeSpecKey
+            existing.activeRecipeSpecKey = recipeSpecKey
+            existing.recipeSpecKey = recipeSpecKey
+        end
+        potions[potionKey] = existing
+        return existing, isNew, recipeKeyAdded, false
+    end
     if quality ~= "failed" and recipeSpecKey ~= "" then
         local keys = CollectPotionRecipeKeyList(existing)
         -- Incomplete board snapshots (missing mid/trailing slots) are subsets of the
@@ -2767,6 +2923,17 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
     return existing, isNew, recipeKeyAdded, replacedWeaker == true
 end
 
+--- An unverified chat import must not win a subset scrub over a recipe the player brewed.
+local function RecipeCanDominate(recipe)
+    if type(recipe) ~= "table" then
+        return false
+    end
+    if recipe.sharedImport == true or recipe.unverified == true then
+        return false
+    end
+    return true
+end
+
 --- Drop dangling / dominated alternate fingerprints on potions.
 --- Removes keys missing from recipes, and role-subset keys of a richer sibling.
 --- Never drop fingerprints still referenced by any character's watch.
@@ -2797,6 +2964,7 @@ function RS.ScrubSubsetPotionRecipeKeys()
                             local b = tostring(keys[j] or "")
                             if a ~= b
                                 and type(recipes[b]) == "table"
+                                and RecipeCanDominate(recipes[b])
                                 and IsWeakerFingerprint(a, b)
                             then
                                 drop = true
@@ -2855,6 +3023,7 @@ function RS.ScrubOrphanSubsetRecipes()
                 local b = allKeys[j]
                 if a ~= b
                     and type(recipes[b]) == "table"
+                    and RecipeCanDominate(recipes[b])
                     and IsWeakerFingerprint(a, b)
                     and RecipeOutcomesOverlap(recipes[a], recipes[b])
                 then
@@ -3123,6 +3292,9 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     else
         recipe.brewSuccesses = (tonumber(recipe.brewSuccesses) or 0) + 1
         recipe.crafts = (tonumber(recipe.crafts) or 0) + 1
+        -- A real craft replaces the unverified chat-import marker.
+        recipe.sharedImport = nil
+        recipe.unverified = nil
         local primaryQty = 0
         local skillUpOpts = opts.skillUpOrigin == true and { skillUpOrigin = true } or nil
         local learnName = nil
@@ -3273,6 +3445,17 @@ function RS.FoldAlternateRecipeKeys()
     return folded
 end
 
+--- A merged recipe the player has already brewed is no longer an unverified import.
+local function ClearImportMarkersIfBrewed(recipe)
+    if type(recipe) ~= "table" then
+        return
+    end
+    if (tonumber(recipe.brewSuccesses) or 0) > 0 then
+        recipe.sharedImport = nil
+        recipe.unverified = nil
+    end
+end
+
 --- One-time: rebuild recipe keys from MS.Key fingerprints; merge uid-bound duplicates;
 --- relink potions + character watches. Retired: MigrateFingerprints no longer calls this.
 function RS.MigrateRecipeFingerprintsV2()
@@ -3337,6 +3520,7 @@ function RS.MigrateRecipeFingerprintsV2()
                     dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
                         / (tonumber(dest.yieldSamples) or 1)
                 end
+                ClearImportMarkersIfBrewed(dest)
             end
         end
     end
@@ -3462,6 +3646,7 @@ local function MergeRecipeStats(dest, recipe)
         dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
             / (tonumber(dest.yieldSamples) or 1)
     end
+    ClearImportMarkersIfBrewed(dest)
 end
 
 --- Session-only. Account._repairQuarantine is not on the shutdown allow-list,

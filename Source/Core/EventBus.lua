@@ -8,6 +8,8 @@ StockPiler.EventBus = StockPiler.EventBus or {}
 local Bus = StockPiler.EventBus
 local subs = {}
 local nextToken = 0
+-- Immutable handler lists. Rebuilt only when that event's subscriptions change.
+local snapByEvent = {}
 
 StockPiler.Events = StockPiler.Events or {}
 local Edef = StockPiler.Events
@@ -18,7 +20,6 @@ Edef.GARDEN_SNAPSHOT = Edef.GARDEN_SNAPSHOT or "sp.garden.snapshot"
 Edef.PLAN_INVALIDATED = Edef.PLAN_INVALIDATED or "sp.plan.invalidated"
 Edef.PLAN_UPDATED = Edef.PLAN_UPDATED or "sp.plan.updated"
 Edef.PHASE_CHANGED = Edef.PHASE_CHANGED or "sp.phase.changed"
-Edef.CMD_HARVEST = Edef.CMD_HARVEST or "sp.cmd.harvest"
 Edef.SESSION_LOADED = Edef.SESSION_LOADED or "sp.session.loaded"
 Edef.KNOWLEDGE_UPDATED = Edef.KNOWLEDGE_UPDATED or "sp.knowledge.updated"
 Edef.REFINE_OUTSTANDING = Edef.REFINE_OUTSTANDING or "sp.refine.outstanding"
@@ -31,6 +32,8 @@ Edef.CRAFT_READY_CHANGED = Edef.CRAFT_READY_CHANGED or "sp.craft.ready"
 Edef.FOOTER_DIRTY = Edef.FOOTER_DIRTY or "sp.footer.dirty"
 Edef.WATCH_UI_DIRTY = Edef.WATCH_UI_DIRTY or "sp.watch.ui.dirty"
 Edef.BREW_SESSION_CHANGED = Edef.BREW_SESSION_CHANGED or "sp.brew.session"
+-- Dual Craft macro / HUD actually started harvest or brew.
+Edef.CRAFT_PERFORMED = Edef.CRAFT_PERFORMED or "sp.craft.performed"
 
 --- Domain modules publish footer readiness via EventBus (View owns flush).
 function Bus.FireFooterDirty(payload)
@@ -56,6 +59,14 @@ function Bus.FireBrewSessionChanged(payload)
     end
 end
 
+--- Craft action actually fired (macro or HUD). payload: { mode, source }.
+function Bus.FireCraftPerformed(payload)
+    local E = StockPiler.Events
+    if E and E.CRAFT_PERFORMED then
+        Bus.Fire(E.CRAFT_PERFORMED, type(payload) == "table" and payload or {})
+    end
+end
+
 function Bus.Subscribe(eventName, fn)
     eventName = tostring(eventName or "")
     if eventName == "" or type(fn) ~= "function" then
@@ -75,6 +86,7 @@ function Bus.Subscribe(eventName, fn)
     nextToken = nextToken + 1
     local token = nextToken
     list[#list + 1] = { token = token, fn = fn }
+    snapByEvent[eventName] = nil
     return token
 end
 
@@ -92,6 +104,7 @@ function Bus.Unsubscribe(token)
                     if #list == 0 then
                         subs[eventName] = nil
                     end
+                    snapByEvent[eventName] = nil
                     return true
                 end
             end
@@ -124,13 +137,17 @@ function Bus.Fire(eventName, payload)
     if n <= 0 then
         return
     end
-    local handlers = {}
-    for i = 1, n do
-        local entry = list[i]
-        local fn = type(entry) == "table" and entry.fn or entry
-        if type(fn) == "function" then
-            handlers[#handlers + 1] = fn
+    local handlers = snapByEvent[eventName]
+    if handlers == nil then
+        handlers = {}
+        for i = 1, n do
+            local entry = list[i]
+            local fn = type(entry) == "table" and entry.fn or entry
+            if type(fn) == "function" then
+                handlers[#handlers + 1] = fn
+            end
         end
+        snapByEvent[eventName] = handlers
     end
     for i = 1, #handlers do
         if StockPiler.Debug and StockPiler.Debug.TryCallQuiet then

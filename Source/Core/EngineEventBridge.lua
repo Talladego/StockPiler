@@ -13,6 +13,10 @@ local Bridge = StockPiler.EngineEventBridge
 Bridge._registered = false
 Bridge._host = "StockPilerWindow"
 Bridge._handlers = Bridge._handlers or {}
+-- Nil used to look like "loading already finished" to the craft-unplaced warn.
+-- /reload still reaches OnLoadingEnd through MaybeCatchUpLoadingEnd when the
+-- LOADING_END event fired before this bridge registered.
+Bridge._loadingEndSeen = false
 
 StockPiler.FrameCounter = tonumber(StockPiler.FrameCounter) or 0
 
@@ -489,6 +493,10 @@ function Bridge.OnLoadingEnd()
     local E = StockPiler.Events
     if E and E.SESSION_LOADED then
         BusFire(E.SESSION_LOADED, { reason = "loading-end" })
+    end
+    -- Hotbars may be empty until this event. Warn only once buttons exist.
+    if StockPiler.Macro and StockPiler.Macro.WarnIfCraftUnplaced then
+        pcall(StockPiler.Macro.WarnIfCraftUnplaced)
     end
 end
 

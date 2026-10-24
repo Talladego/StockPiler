@@ -127,7 +127,7 @@ function Know.ValidateAndRepairSavedData()
             end
             if #keys > n then
                 StockPiler.Debug.LogAlways(
-                    string.format("validate| %s … +%d more (session RecipeSpec._repairQuarantine)", label, #keys - n)
+                    string.format("validate| %s ... +%d more (session RecipeSpec._repairQuarantine)", label, #keys - n)
                 )
             end
         end
@@ -146,6 +146,9 @@ function Know.MigrateFingerprints()
     end
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigrateFractionalRecipeYields then
         StockPiler.RecipeSpec.MigrateFractionalRecipeYields()
+    end
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigratePotionTierFromItems then
+        StockPiler.RecipeSpec.MigratePotionTierFromItems()
     end
     Know.ValidateAndRepairSavedData()
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigratePotionEffectKeys then

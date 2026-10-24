@@ -48,6 +48,7 @@ local ACCOUNT_ALLOWED = {
     recipeFingerprintMigrateV3 = true,
     recipeFingerprintMigrateV4 = true,
     recipeYieldIntegerMigrateV1 = true,
+    potionTierMigrateV1 = true,
     plantEffectFromSeedMigrateV2 = true,
 }
 for i = 1, #ACCOUNT_TABLES do
@@ -90,6 +91,16 @@ StockPiler.DefaultSettings = {
     eventTrace = false,
     -- on | quiet | off. on keeps stall/ready lines; quiet is changes and harvest/brew.
     chatMode = "on",
+    -- Craft button display scale (0.50–2.0). Default 1.0. /stp button / Watch chip.
+    craftButtonScale = 1.0,
+    -- Floating craft button: centered grow countdown. Default on.
+    craftButtonShowTimer = true,
+    -- Floating craft HUD visible (Watch tab: HUD Button). Default on.
+    craftButtonVisible = true,
+    -- Create/maintain StockPiler Craft macro (Watch: Craft Macro). Default on.
+    -- Player places it on a hotbar; disable clears bars + deletes the macro.
+    craftMacroEnabled = true,
+    -- Lock lives in LayoutEditor.Settings[window].locked (Shift+LMB on HUD / HUD Editor).
     language = 0,
     selectedTab = 1,
     potionNameFilter = "",
@@ -274,6 +285,43 @@ function P.EnsureSettings()
     if s.chatMode ~= "on" and s.chatMode ~= "quiet" and s.chatMode ~= "off" then
         s.chatMode = "on"
     end
+    do
+        -- Migrate former craftBadgeScale key.
+        if s.craftButtonScale == nil and s.craftBadgeScale ~= nil then
+            s.craftButtonScale = s.craftBadgeScale
+        end
+        s.craftBadgeScale = nil
+        local scale = tonumber(s.craftButtonScale)
+        if scale == nil then
+            scale = 1.0
+        end
+        if scale < 0.5 then
+            scale = 0.5
+        elseif scale > 2 then
+            scale = 2
+        end
+        s.craftButtonScale = scale
+    end
+    -- Migrate brief craftMacroTimerCenter key (was wrongly applied to macros).
+    if s.craftButtonShowTimer == nil and s.craftMacroTimerCenter ~= nil then
+        s.craftButtonShowTimer = s.craftMacroTimerCenter == true
+    end
+    s.craftMacroTimerCenter = nil
+    if s.craftButtonShowTimer == nil then
+        s.craftButtonShowTimer = true
+    end
+    s.craftButtonShowTimer = s.craftButtonShowTimer == true
+    if s.craftButtonVisible == nil then
+        s.craftButtonVisible = true
+    end
+    s.craftButtonVisible = s.craftButtonVisible ~= false
+    if s.craftMacroEnabled == nil then
+        s.craftMacroEnabled = true
+    end
+    s.craftMacroEnabled = s.craftMacroEnabled ~= false
+    -- Legacy lock flag. Do not copy it into Layout Editor: upgrades stay unlocked
+    -- until the player locks the button (Shift+click or the editor).
+    s.craftButtonLockPosition = nil
     if StockPiler.Debug then
         StockPiler.Debug.Enabled = s.debugEnabled == true
         StockPiler.Debug.EventTrace = s.eventTrace == true
@@ -329,16 +377,31 @@ function P.EnsureCharacterBucketShape(char)
         char.plantWatches = {}
     end
     char.watchPriorityTiersMigrated = char.watchPriorityTiersMigrated == true
-    local retired = {}
+    local retired = nil
     for k in pairs(char) do
         if defaults[k] == nil then
+            if retired == nil then
+                retired = {}
+            end
             retired[#retired + 1] = k
         end
     end
-    for i = 1, #retired do
-        char[retired[i]] = nil
+    if retired ~= nil then
+        for i = 1, #retired do
+            char[retired[i]] = nil
+        end
     end
     return char
+end
+
+-- Character tables already passed through EnsureCharacterBucketShape.
+-- Keyed by table identity so a replaced bucket is shaped again.
+local shapedBuckets = setmetatable({}, { __mode = "k" })
+
+function P.InvalidateCharacterBucket(row)
+    if type(row) == "table" then
+        shapedBuckets[row] = nil
+    end
 end
 
 function P.GetCharacterBucket(create)
@@ -353,7 +416,82 @@ function P.GetCharacterBucket(create)
         row = P.CopyTable(StockPiler.DefaultCharacterSettings)
         settings.characters[key] = row
     end
-    return P.EnsureCharacterBucketShape(row), key
+    if shapedBuckets[row] == true then
+        return row, key
+    end
+    row = P.EnsureCharacterBucketShape(row)
+    shapedBuckets[row] = true
+    return row, key
+end
+
+-- Window controls only. Slash-only prefs (debug, chat, event trace, language)
+-- and schema versions stay. Watches include each row's checked/enabled state.
+local UI_GLOBAL_KEYS = {
+    "craftButtonScale",
+    "craftButtonShowTimer",
+    "craftButtonVisible",
+    "craftMacroEnabled",
+    "selectedTab",
+    "potionNameFilter",
+    "potionEffectFilter",
+    "potionSortColumn",
+    "potionSortAscending",
+    "watchSortColumn",
+    "watchSortAscending",
+    "plantSortColumn",
+    "plantSortAscending",
+    "plantNameFilter",
+    "plantEffectFilter",
+    "plantLevelFilter",
+}
+
+-- Watch-tab toggles and the two watch lists. Not stats, spend history, or
+-- hidden planner flags (see the comment on ResetSettingsToDefaults).
+local UI_CHARACTER_KEYS = {
+    "watches",
+    "plantWatches",
+    "autoGrowEnabled",
+    "autoGrowAdditives",
+    "autoBuyEnabled",
+    "autoBrewEnabled",
+    "autoBuyReserveGold",
+    "autoBuyBudgetGold",
+    "growSeedBufferMin",
+    "growSeedBufferEnabled",
+    "watchOptimisticOutcomeEstimate",
+    "skillUpCultEnabled",
+    "skillUpApoEnabled",
+    "upgradeSeedsEnabled",
+}
+
+--- Reset settings the window shows, plus watches (checked state included).
+--- Does not replace the settings table.
+--- Preserves Account (items, grows, refines, recipes, potions, skillUpRates
+--- and migrate latches), other characters, and on this character:
+--- lastCultSkill, lastApoSkill, autoBuySpentBrass, watchPriorityTiersMigrated,
+--- autoGrowPauseCombat, brewPreferNonGrowableFirst, brewMacroEnabled,
+--- brewRespectGrowReserve.
+--- Also preserves debugEnabled, eventTrace, chatMode, and language.
+function P.ResetSettingsToDefaults()
+    local s = P.EnsureSettings()
+    local defaults = StockPiler.DefaultSettings
+    for i = 1, #UI_GLOBAL_KEYS do
+        local key = UI_GLOBAL_KEYS[i]
+        s[key] = P.CopyTable(defaults[key])
+    end
+    s.craftButtonLockPosition = nil
+    s.craftBadgeScale = nil
+    s.craftMacroTimerCenter = nil
+    local char = P.GetCharacterBucket(true)
+    local cdef = StockPiler.DefaultCharacterSettings
+    if type(char) == "table" and type(cdef) == "table" then
+        for i = 1, #UI_CHARACTER_KEYS do
+            local key = UI_CHARACTER_KEYS[i]
+            char[key] = P.CopyTable(cdef[key])
+        end
+        P.InvalidateCharacterBucket(char)
+    end
+    return P.EnsureSettings()
 end
 
 function P.EnsureAccount()

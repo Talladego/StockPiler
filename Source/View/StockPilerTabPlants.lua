@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPilerTabPlants -- known harvested plants (watch / filters / forget)
+-- StockPilerTabPlants -- known plants (watch / filters / forget)
 ----------------------------------------------------------------
 
 StockPilerTabPlants = {}

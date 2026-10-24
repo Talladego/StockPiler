@@ -1,12 +1,11 @@
 ----------------------------------------------------------------
 -- Craft macro harvest countdown.
--- Stock stack-count label (ActionButton m_Windows[7] / Action…Count),
--- the same slot WarTriage, EZGuard, and GCDsaver write.
--- Harvest icon: growing countdown, or the ready plot's seed icon.
--- Brew icon: the ready potion's icon, or the matching empty flask when
--- that potion has no catalog icon yet.
--- Growing: whole seconds plus "s" (longest string "999s").
--- User wait (buy vials/mats, garden idle): pet_stay.dds (icon 33).
+-- Growing: stock Action…Cooldown wipe + Action…CooldownTimer text ("149s"),
+-- same centered timer slot abilities use (m_Windows[3]).
+-- Ready plant / brew icons: Action…Count (m_Windows[7]), lower-right.
+-- Floating-button optional timer: /stp button timer (CraftButton).
+-- User wait (buy vials/mats, garden idle): 75% red tint on Craft macro + HUD
+-- (stock ability-block red blended 75% toward DefaultColor.RED from white).
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
@@ -19,14 +18,30 @@ local LABEL_WIDTH = 58
 local LABEL_HEIGHT = 20
 local STOCK_LABEL_WIDTH = 45
 local STACK_COUNT_TEXT = 7
--- eatemplate_icons: <Icon id="33" texture="Textures/pet_stay.dds" />
-local STAY_ICON = 33
+-- ea_actionbars actionbutton.lua window indices
+local COOLDOWN = 2
+local COOLDOWN_TIMER = 3
+local ACTION_BUTTON_BASE_ICON = 0
+-- Match floating CraftButton grow wipe (black @ 50%).
+local CD_TINT = { r = 0, g = 0, b = 0, a = 0.5 }
+-- Stock DefaultTimerFrame cooldown label color.
+local CD_TIMER_COLOR = { r = 243, g = 243, b = 16 }
+-- User-block tint: 75% blend white → DefaultColor.RED (206,44,44).
+Timer.BLOCK_TINT = { r = 218, g = 97, b = 97 }
+Timer.CLEAR_TINT = { r = 255, g = 255, b = 255 }
 
 Timer._acc = 0
 Timer._hooked = false
 Timer._orgUpdateInventory = nil
+Timer._cdHooked = false
+Timer._orgUpdateCooldownAnimation = nil
+Timer._cdMax = 0
+Timer._cdRemain = nil
+Timer._cdArmed = false
 
 local fitted = {}
+-- Cooldown window names already armed for the current grow cycle.
+local growCdArmed = {}
 
 local function StageNum(key, fallback)
     local stages = GameData and GameData.CultivationStage
@@ -65,9 +80,17 @@ local function HarvestIconMode()
     return (Macro._craftIconMode or "harvest") ~= "brew"
 end
 
+-- Filled on the first plot read during a refresh. Forward-declared.
+local FillPlotSnap
+
 --- Smallest totalTimer among planted plots that are still growing.
 --- Nil when nothing is growing. Live cultivator read, same as the Craft tip.
 function Timer.ShortestSeconds()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        FillPlotSnap(snap)
+        return snap.shortest
+    end
     local CA = StockPiler.CultivatorAdapter
     if not (CA and CA.GetPlotInfo) then
         return nil
@@ -133,22 +156,170 @@ local function SeedIconNum(plot)
     return icon
 end
 
---- Icon of a plot that is already grown. Nil while every planted plot is still growing.
-function Timer.ReadySeedIcon()
+local function PlantIconNum(plot)
+    local plantUid = tonumber(plot.plantUid) or 0
+    if plantUid <= 0 then
+        local SM = StockPiler.SeedMap
+        local seedUid = tonumber(plot.seedUid) or 0
+        if seedUid > 0 and SM and SM.PrimaryPlantForSeed then
+            plantUid = tonumber(SM.PrimaryPlantForSeed(seedUid)) or 0
+        end
+    end
+    if plantUid <= 0 then
+        return 0
+    end
+    local Items = StockPiler.Items
+    local Inv = StockPiler.Inventory
+    local item = nil
+    if Inv and Inv.GetSample then
+        item = Inv.GetSample(plantUid)
+    end
+    if type(item) ~= "table" and Items and Items.GetByUid then
+        item = Items.GetByUid(plantUid)
+    end
+    if type(item) ~= "table" and Items and Items.Get then
+        item = Items.Get(plantUid)
+    end
+    if type(item) == "table" then
+        return tonumber(item.iconNum) or 0
+    end
+    return 0
+end
+
+--- True when this plot can be harvested now (or the timer already hit 0 and
+--- stage has not flipped to GROWN yet). Used to stop grow CD as soon as the
+--- first plot is ready — do not re-arm for still-growing siblings.
+local function IsPlotHarvestReady(plot)
+    if type(plot) ~= "table" then
+        return false
+    end
+    local seedUid = tonumber(plot.seedUid) or 0
+    if seedUid <= 0 then
+        return false
+    end
+    local stage = tonumber(plot.stage) or 0
+    local empty = StageNum("EMPTY", 0)
     local grown = StageNum("GROWN", 4)
     local harvestable = StageNum("HARVESTABLE", grown)
+    local harvesting = StageNum("HARVESTING", 5)
+    if stage == empty or stage == 255 or stage == harvesting then
+        return false
+    end
+    if stage == grown or stage == harvestable then
+        return true
+    end
+    -- Cultivator often leaves stage mid-grow for a beat after totalTimer hits 0.
+    local total = tonumber(plot.totalTimer) or 0
+    return total <= 0
+end
+
+--- One cultivator walk for every plot-derived refresh field.
+FillPlotSnap = function(snap)
+    if type(snap) ~= "table" or snap._plotsFilled == true then
+        return
+    end
+    snap._plotsFilled = true
+    local shortest = nil
+    local harvestReady = false
+    local plantIcon = nil
+    local seedIcon = nil
     local empty = StageNum("EMPTY", 0)
+    local grown = StageNum("GROWN", 4)
+    local harvestable = StageNum("HARVESTABLE", grown)
+    local harvesting = StageNum("HARVESTING", 5)
+    EachPlot(function(plot)
+        local stage = tonumber(plot.stage) or 0
+        local seedUid = tonumber(plot.seedUid) or 0
+        local total = tonumber(plot.totalTimer) or 0
+        if seedUid > 0 and stage ~= empty and stage ~= 255
+            and stage ~= grown and stage ~= harvestable and stage ~= harvesting
+            and total > 0
+        then
+            if shortest == nil or total < shortest then
+                shortest = total
+            end
+        end
+        if IsPlotHarvestReady(plot) then
+            harvestReady = true
+            if seedIcon == nil then
+                local n = SeedIconNum(plot)
+                if n > 0 then
+                    seedIcon = n
+                end
+            end
+            if plantIcon == nil then
+                local n = PlantIconNum(plot)
+                if n <= 0 then
+                    n = SeedIconNum(plot)
+                end
+                if n > 0 then
+                    plantIcon = n
+                end
+            end
+        end
+    end)
+    snap.shortest = shortest
+    snap.harvestReady = harvestReady
+    snap.plantIcon = plantIcon
+    snap.seedIcon = seedIcon
+end
+
+--- Any planted plot ready to harvest (stage or timer).
+function Timer.HasHarvestReady()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        FillPlotSnap(snap)
+        return snap.harvestReady == true
+    end
+    local ready = false
+    EachPlot(function(plot)
+        if ready ~= true and IsPlotHarvestReady(plot) then
+            ready = true
+        end
+    end)
+    return ready
+end
+
+--- Icon of a plot that is already grown. Nil while every planted plot is still growing.
+--- Seed art fallback for overlays.
+function Timer.ReadySeedIcon()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        FillPlotSnap(snap)
+        return snap.seedIcon
+    end
     local icon = nil
     EachPlot(function(plot)
         if icon ~= nil then
             return
         end
-        local stage = tonumber(plot.stage) or 0
-        local seedUid = tonumber(plot.seedUid) or 0
-        if seedUid > 0 and stage ~= empty and stage ~= 255
-            and (stage == grown or stage == harvestable)
-        then
+        if IsPlotHarvestReady(plot) then
             local n = SeedIconNum(plot)
+            if n > 0 then
+                icon = n
+            end
+        end
+    end)
+    return icon
+end
+
+--- Grown plant product icon. Falls back to seed icon when the plant art is unknown.
+function Timer.ReadyPlantIcon()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        FillPlotSnap(snap)
+        return snap.plantIcon
+    end
+    local icon = nil
+    EachPlot(function(plot)
+        if icon ~= nil then
+            return
+        end
+        if IsPlotHarvestReady(plot) then
+            local n = PlantIconNum(plot)
+            if n <= 0 then
+                n = SeedIconNum(plot)
+            end
             if n > 0 then
                 icon = n
             end
@@ -209,6 +380,10 @@ end
 --- Icon of the potion Brew would perform. Falls back to the matching flask
 --- when the potion has no catalog icon yet.
 function Timer.ReadyPotionIcon()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" and snap._potionFilled == true then
+        return snap.potionIcon
+    end
     local Brew = StockPiler.Brew
     if not (Brew and Brew.PickReadyWatch) then
         return nil
@@ -233,7 +408,12 @@ function Timer.ReadyPotionIcon()
         icon = ContainerIconForRow(row)
     end
     if icon <= 0 then
-        return nil
+        icon = nil
+    end
+    snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        snap._potionFilled = true
+        snap.potionIcon = icon
     end
     return icon
 end
@@ -351,7 +531,7 @@ local function PlanUserBuyInfo()
     return nil
 end
 
---- Why the Craft overlay is on stay. Nil when not waiting on the player.
+--- Why Craft is user-blocked (red tint). Nil when not waiting on the player.
 --- key is a USER_STALL reason; text/name are optional plan-row hints.
 function Timer.UserStayInfo()
     if HasActiveWork() == true then
@@ -398,7 +578,57 @@ end
 --- True when SP is waiting on the player (vendor / buy) and AutoGrow has
 --- nothing left to plant, harvest, refine, or buy on an open store.
 function Timer.NeedsUserStay()
-    return Timer.UserStayInfo() ~= nil
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" and snap._userStayFilled == true then
+        return snap.userStay == true
+    end
+    local stay = Timer.UserStayInfo() ~= nil
+    snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        snap._userStayFilled = true
+        snap.userStay = stay
+    end
+    return stay
+end
+
+--- Verified Craft macro id for the current synchronous Refresh, or nil outside one.
+--- Zero means the refresh checked and found no owned macro.
+function Timer.SnapCraftMacroId()
+    local snap = Timer._refreshSnap
+    if type(snap) ~= "table" then
+        return nil
+    end
+    return tonumber(snap.craftId) or 0
+end
+
+--- 75% red tint on an action-button base icon (or false to leave unchanged).
+function Timer.ApplyActionIconBlockTint(button, blocked)
+    local icon = button and button.m_Windows and button.m_Windows[ACTION_BUTTON_BASE_ICON]
+    if not (icon and type(icon.SetTintColor) == "function") then
+        return false
+    end
+    if blocked == true then
+        local t = Timer.BLOCK_TINT
+        icon:SetTintColor(t.r, t.g, t.b)
+        return true
+    end
+    return false
+end
+
+--- 75% red tint on a named window (floating Craft HUD icon).
+function Timer.ApplyWindowBlockTint(windowName, blocked)
+    if type(windowName) ~= "string" or windowName == "" then
+        return false
+    end
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(windowName) then
+        return false
+    end
+    if type(WindowSetTintColor) ~= "function" then
+        return false
+    end
+    local t = (blocked == true) and Timer.BLOCK_TINT or Timer.CLEAR_TINT
+    WindowSetTintColor(windowName, t.r, t.g, t.b)
+    return true
 end
 
 local function LocaleHit(key)
@@ -486,6 +716,203 @@ local function RestoreLabel(label, button)
     end
 end
 
+local function CooldownFrame(button)
+    return button and button.m_Windows and button.m_Windows[COOLDOWN]
+end
+
+local function CooldownTimerFrame(button)
+    return button and button.m_Windows and button.m_Windows[COOLDOWN_TIMER]
+end
+
+-- One row per cooldown-timer window. Created the first time that window paints,
+-- then reused so the per-frame hook does not allocate.
+local cdPaint = {}
+
+local function WholeSecond(remain)
+    local n = math.floor((tonumber(remain) or 0) + 0.5)
+    if n < 0 then
+        n = 0
+    end
+    if n > DISPLAY_CAP then
+        n = DISPLAY_CAP
+    end
+    return n
+end
+
+local function CooldownPaintState(timer)
+    local name = timer.GetName and timer:GetName() or nil
+    if name == nil or name == "" then
+        return nil
+    end
+    local state = cdPaint[name]
+    if state == nil then
+        state = { sec = false, colored = false }
+        cdPaint[name] = state
+    end
+    return state
+end
+
+local function PaintCooldownTimer(button, remain)
+    local timer = CooldownTimerFrame(button)
+    if type(timer) ~= "table" then
+        return
+    end
+    local state = CooldownPaintState(timer)
+    remain = tonumber(remain)
+    if remain == nil or remain <= 0 then
+        if state == nil or state.sec ~= false then
+            if timer.SetText then
+                timer:SetText(L"")
+            end
+            if state then
+                state.sec = false
+                state.colored = false
+            end
+        end
+        if timer.Show then
+            timer:Show(false)
+        end
+        return
+    end
+    if state == nil or state.colored ~= true then
+        if timer.SetTextColor then
+            timer:SetTextColor(CD_TIMER_COLOR.r, CD_TIMER_COLOR.g, CD_TIMER_COLOR.b)
+        end
+        if state then
+            state.colored = true
+        end
+    end
+    local sec = WholeSecond(remain)
+    if state == nil or state.sec ~= sec then
+        if timer.SetText then
+            timer:SetText(Timer.Format(remain))
+        end
+        if state then
+            state.sec = sec
+        end
+    end
+    if timer.Show then
+        timer:Show(true)
+    end
+end
+
+local function ClearGrowCooldownOnButton(button)
+    local cd = CooldownFrame(button)
+    if type(cd) ~= "table" then
+        PaintCooldownTimer(button, nil)
+        return
+    end
+    local name = cd.GetName and cd:GetName() or nil
+    if name and name ~= "" then
+        growCdArmed[name] = nil
+        if type(CooldownDisplaySetCooldown) == "function" then
+            pcall(CooldownDisplaySetCooldown, name, 0, 0)
+        end
+    end
+    if cd.Show then
+        cd:Show(false)
+    end
+    PaintCooldownTimer(button, nil)
+end
+
+local function StyleGrowCooldown(cd, button)
+    if type(cd) ~= "table" then
+        return
+    end
+    if cd.SetTintColor then
+        cd:SetTintColor(CD_TINT.r, CD_TINT.g, CD_TINT.b)
+    elseif cd.SetTint then
+        cd:SetTint(CD_TINT)
+    end
+    if cd.SetAlpha then
+        cd:SetAlpha(CD_TINT.a)
+    end
+end
+
+--- Arm square wipe once per grow cycle (and per craft slot); re-arm on timer jump.
+--- Stock ActionButton.UpdateCooldownAnimation hides Action…Cooldown whenever
+--- GetHotbarCooldown is 0 (macros never have one). The cooldown hook below
+--- keeps Show(true) while Timer._cdArmed; arm-once still avoids SetCooldown flicker.
+local function UpdateGrowCooldown(button, remain)
+    remain = tonumber(remain)
+    if remain == nil or remain <= 0 then
+        ClearGrowCooldownOnButton(button)
+        return
+    end
+    local cd = CooldownFrame(button)
+    if type(cd) ~= "table" or type(CooldownDisplaySetCooldown) ~= "function" then
+        return
+    end
+    local name = cd.GetName and cd:GetName() or nil
+    if name == nil or name == "" then
+        return
+    end
+    local prev = Timer._cdRemain
+    local cycleRearm = Timer._cdArmed ~= true
+        or (tonumber(Timer._cdMax) or 0) <= 0
+        or remain > (tonumber(Timer._cdMax) or 0)
+        or (prev ~= nil and remain > prev + 0.7)
+    if cycleRearm then
+        Timer._cdMax = remain
+        Timer._cdRemain = remain
+        Timer._cdArmed = true
+        growCdArmed = {}
+    else
+        Timer._cdRemain = remain
+    end
+    if cycleRearm or growCdArmed[name] ~= true then
+        StyleGrowCooldown(cd, button)
+        if cd.Show then
+            cd:Show(true)
+        end
+        pcall(CooldownDisplaySetCooldown, name, remain, Timer._cdMax)
+        growCdArmed[name] = true
+    elseif cd.Show then
+        -- Hook usually owns visibility; re-assert after inventory/icon passes.
+        cd:Show(true)
+    end
+    PaintCooldownTimer(button, remain)
+end
+
+--- Stock UpdateCooldownAnimation: if m_Cooldown<=0 and the frame is showing, it
+--- Hide()s every tick. Grow wipe uses the same window with no hotbar CD, so
+--- skip that path while craft grow is armed. Keep CooldownTimer text visible.
+local function installCooldownHook()
+    if Timer._cdHooked == true then
+        return
+    end
+    if not ActionButton or type(ActionButton.UpdateCooldownAnimation) ~= "function" then
+        return
+    end
+    Timer._orgUpdateCooldownAnimation = ActionButton.UpdateCooldownAnimation
+    ActionButton.UpdateCooldownAnimation = function(self, timeElapsed, updateCooldown)
+        -- Match the cached craft macro id. Refresh / UpdateCraftMacro re-scan
+        -- it about once a second. Do not call GetMacrosData from this hook.
+        if Timer._cdArmed == true and self then
+            local actions = GameData and GameData.PlayerActions
+            local doMacro = actions and actions.DO_MACRO
+            local macro = StockPiler.Macro
+            local craftId = macro and tonumber(macro.CraftMacroId) or 0
+            if doMacro ~= nil and craftId > 0
+                and self.m_ActionType == doMacro
+                and tonumber(self.m_ActionId) == craftId
+            then
+                local remain = tonumber(Timer._cdRemain)
+                if remain ~= nil and remain > 0 then
+                    local cd = CooldownFrame(self)
+                    if type(cd) == "table" and cd.Show then
+                        cd:Show(true)
+                    end
+                    PaintCooldownTimer(self, remain)
+                    return
+                end
+            end
+        end
+        return Timer._orgUpdateCooldownAnimation(self, timeElapsed, updateCooldown)
+    end
+    Timer._cdHooked = true
+end
+
 function Timer.Paint(button)
     local label = LabelOf(button)
     if not label then
@@ -496,32 +923,43 @@ function Timer.Paint(button)
         if LabelName(label, button) ~= nil and fitted[LabelName(label, button)] == true then
             RestoreLabel(label, button)
         end
+        ClearGrowCooldownOnButton(button)
         return
     end
-    local readyIcon = nil
-    local stay = false
-    local text = nil
+    local overlayText = nil
+    local growSeconds = nil
     if HarvestIconMode() ~= true then
         -- Brew icon is up: potion overlay only. Do not keep the harvest countdown.
-        readyIcon = Timer.ReadyPotionIcon()
+        local readyIcon = Timer.ReadyPotionIcon()
         if readyIcon ~= nil then
-            text = IconMarkup(readyIcon)
+            overlayText = IconMarkup(readyIcon)
         end
     else
-        readyIcon = Timer.ReadySeedIcon()
-        if readyIcon ~= nil then
-            text = IconMarkup(readyIcon)
-        else
-            local seconds = Timer.ShortestSeconds()
-            if seconds ~= nil then
-                text = Timer.Format(seconds)
-            elseif Timer.NeedsUserStay() == true then
-                stay = true
-                text = IconMarkup(STAY_ICON)
+        -- As soon as any plot is harvest-ready: plant icon, no grow wipe.
+        -- Do not keep animating sibling plots that are still ticking.
+        if Timer.HasHarvestReady() == true then
+            local readyIcon = Timer.ReadyPlantIcon() or Timer.ReadySeedIcon()
+            if readyIcon ~= nil then
+                overlayText = IconMarkup(readyIcon)
             end
+        else
+            growSeconds = Timer.ShortestSeconds()
         end
     end
-    if text == nil or text == L"" then
+    UpdateGrowCooldown(button, growSeconds)
+    if growSeconds == nil and Timer._cdArmed == true then
+        Timer._cdMax = 0
+        Timer._cdRemain = nil
+        Timer._cdArmed = false
+        growCdArmed = {}
+    end
+    -- User block: 75% red tint on enabled icon (harvest or brew latch). Re-apply
+    -- each paint so stock UpdateEnabledState cannot leave grey/white on top.
+    if Timer.NeedsUserStay() == true then
+        Timer.ApplyActionIconBlockTint(button, true)
+    end
+    -- Grow seconds live on CooldownTimer (centered). Count overlay is icons only.
+    if overlayText == nil or overlayText == L"" then
         if label.SetText then
             label:SetText(L"")
         end
@@ -532,14 +970,10 @@ function Timer.Paint(button)
     end
     FitLabel(label, button)
     if label.SetTextColor then
-        if readyIcon ~= nil or stay == true then
-            label:SetTextColor(255, 255, 255)
-        else
-            label:SetTextColor(255, 255, 0)
-        end
+        label:SetTextColor(255, 255, 255)
     end
     if label.SetText then
-        label:SetText(text)
+        label:SetText(overlayText)
     end
     if label.Show then
         label:Show(true)
@@ -562,16 +996,60 @@ local function EachActionButton(fn)
     end
 end
 
-function Timer.Refresh()
+local function RefreshBody()
     local Macro = StockPiler.Macro
-    if not (Macro and Macro.IsCraftMacroButton) then
+    local craftId = 0
+    if Macro and Macro.GetCraftMacroId then
+        craftId = tonumber(Macro.GetCraftMacroId()) or 0
+    end
+    -- No owned Craft macro: skip plot scans and the hotbar walk.
+    if craftId == 0 then
+        local CB = StockPiler.CraftButton
+        if CB and CB.TickGrowVisuals then
+            CB.TickGrowVisuals()
+        end
         return
     end
-    EachActionButton(function(button)
-        if Macro.IsCraftMacroButton(button) then
-            Timer.Paint(button)
+    -- Plot, potion, and user-stay fields fill on the first read.
+    Timer._refreshSnap = { craftId = craftId }
+    if Macro and Macro.IsCraftMacroButton then
+        EachActionButton(function(button)
+            if Macro.IsCraftMacroButton(button) then
+                Timer.Paint(button)
+            end
+        end)
+    end
+    -- Floating craft button: grow pie + lit harvest while plots tick.
+    local CB = StockPiler.CraftButton
+    if CB and CB.TickGrowVisuals then
+        CB.TickGrowVisuals()
+    end
+    -- Harvest/Brew readiness never flips when plots start growing, so the
+    -- appearance key would leave Craft on the disabled texture until the
+    -- player re-places the slot. Retint when grow/ready activity changes.
+    if Macro and Macro.AlignCraftEnable then
+        local growLit = Timer.HasHarvestReady() == true
+            or (Timer.ShortestSeconds() ~= nil)
+        local userStay = Timer.NeedsUserStay() == true
+        if Timer._macroGrowLit ~= growLit or Timer._macroUserStay ~= userStay then
+            Timer._macroGrowLit = growLit
+            Timer._macroUserStay = userStay
+            pcall(
+                Macro.AlignCraftEnable,
+                Macro._commitCanHarvest == true,
+                Macro._commitCanBrew == true
+            )
         end
-    end)
+    end
+end
+
+function Timer.Refresh()
+    Timer._refreshSnap = nil
+    local ok, err = pcall(RefreshBody)
+    Timer._refreshSnap = nil
+    if ok ~= true and StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
+        StockPiler.Debug.ReportProtectedCallFailure("CraftHarvestTimer.Refresh", err, true)
+    end
 end
 
 function Timer.OnUpdate(timeElapsed)
@@ -590,6 +1068,7 @@ function Timer.Install()
     if not ActionButton or type(ActionButton.UpdateInventory) ~= "function" then
         return
     end
+    installCooldownHook()
     local org = ActionButton.UpdateInventory
     Timer._orgUpdateInventory = org
     ActionButton.UpdateInventory = function(self)
@@ -646,13 +1125,23 @@ function Timer.Shutdown()
     if Timer._hooked == true and ActionButton and Timer._orgUpdateInventory then
         ActionButton.UpdateInventory = Timer._orgUpdateInventory
     end
+    if Timer._cdHooked == true and ActionButton and Timer._orgUpdateCooldownAnimation then
+        ActionButton.UpdateCooldownAnimation = Timer._orgUpdateCooldownAnimation
+    end
     Timer._hooked = false
     Timer._orgUpdateInventory = nil
+    Timer._cdHooked = false
+    Timer._orgUpdateCooldownAnimation = nil
     Timer._acc = 0
+    Timer._cdMax = 0
+    Timer._cdRemain = nil
+    Timer._cdArmed = false
+    growCdArmed = {}
     EachActionButton(function(button)
         local label = LabelOf(button)
         if label and fitted[LabelName(label, button) or ""] == true then
             RestoreLabel(label, button)
         end
+        ClearGrowCooldownOnButton(button)
     end)
 end

@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <Windows>
+        <Window name="StockPilerRecipeShareWindow" movable="true" layer="secondary" savesettings="false" show="false">
+            <Size><AbsPoint x="500" y="430" /></Size>
+            <Anchors>
+                <Anchor point="center" relativePoint="center" />
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="StockPiler.RecipeShare.OnInitialize" />
+                <EventHandler event="OnHidden" function="StockPiler.RecipeShare.OnHidden" />
+                <EventHandler event="OnKeyEscape" function="StockPiler.RecipeShare.OnClose" />
+            </EventHandlers>
+            <Windows>
+                <Window name="$parentFrame" inherits="EA_Window_DefaultFrame">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" />
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" />
+                    </Anchors>
+                </Window>
+
+                <Label name="$parentTitleText" font="font_default_sub_heading" maxchars="64" textalign="center" handleinput="false" wordwrap="false" textAutoFitMinScale="0.75">
+                    <Size><AbsPoint x="400" y="24" /></Size>
+                    <Anchors>
+                        <Anchor point="top" relativePoint="top" relativeTo="$parent">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Button name="$parentCloseButton" inherits="EA_Button_DefaultWindowClose">
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright" relativeTo="$parent">
+                            <AbsPoint x="-6" y="6" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPiler.RecipeShare.OnClose" />
+                    </EventHandlers>
+                </Button>
+
+                <Label name="$parentPotionName" font="font_default_sub_heading" maxchars="128" textalign="leftcenter" handleinput="false" wordwrap="false" textAutoFitMinScale="0.65">
+                    <Size><AbsPoint x="452" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="24" y="48" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentStatus" font="font_chat_text" maxchars="160" textalign="leftcenter" handleinput="false" wordwrap="false" textAutoFitMinScale="0.7">
+                    <Size><AbsPoint x="452" y="22" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPotionName">
+                            <AbsPoint x="0" y="4" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentHint" font="font_chat_text" maxchars="160" textalign="leftcenter" handleinput="false" wordwrap="false" textAutoFitMinScale="0.7">
+                    <Size><AbsPoint x="452" y="22" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentStatus">
+                            <AbsPoint x="0" y="2" />
+                        </Anchor>
+                    </Anchors>
+                    <Color r="190" g="190" b="190" a="255" />
+                </Label>
+
+                <Label name="$parentIngredientsHeading" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="false" wordwrap="false">
+                    <Size><AbsPoint x="452" y="22" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHint">
+                            <AbsPoint x="0" y="10" />
+                        </Anchor>
+                    </Anchors>
+                    <Color r="230" g="200" b="120" a="255" />
+                </Label>
+
+                <DynamicImage name="$parentIngredient1Icon" handleinput="true" texturescale="0.5">
+                    <Size><AbsPoint x="28" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentIngredientsHeading">
+                            <AbsPoint x="0" y="6" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </DynamicImage>
+                <Label name="$parentIngredient1" font="font_chat_text" maxchars="128" textalign="leftcenter" handleinput="true" wordwrap="false" textAutoFitMinScale="0.65">
+                    <Size><AbsPoint x="416" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentIngredient1Icon">
+                            <AbsPoint x="8" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </Label>
+
+                <DynamicImage name="$parentIngredient2Icon" handleinput="true" texturescale="0.5">
+                    <Size><AbsPoint x="28" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentIngredient1Icon">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </DynamicImage>
+                <Label name="$parentIngredient2" font="font_chat_text" maxchars="128" textalign="leftcenter" handleinput="true" wordwrap="false" textAutoFitMinScale="0.65">
+                    <Size><AbsPoint x="416" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentIngredient2Icon">
+                            <AbsPoint x="8" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </Label>
+
+                <DynamicImage name="$parentIngredient3Icon" handleinput="true" texturescale="0.5">
+                    <Size><AbsPoint x="28" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentIngredient2Icon">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </DynamicImage>
+                <Label name="$parentIngredient3" font="font_chat_text" maxchars="128" textalign="leftcenter" handleinput="true" wordwrap="false" textAutoFitMinScale="0.65">
+                    <Size><AbsPoint x="416" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentIngredient3Icon">
+                            <AbsPoint x="8" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </Label>
+
+                <DynamicImage name="$parentIngredient4Icon" handleinput="true" texturescale="0.5">
+                    <Size><AbsPoint x="28" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentIngredient3Icon">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </DynamicImage>
+                <Label name="$parentIngredient4" font="font_chat_text" maxchars="128" textalign="leftcenter" handleinput="true" wordwrap="false" textAutoFitMinScale="0.65">
+                    <Size><AbsPoint x="416" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentIngredient4Icon">
+                            <AbsPoint x="8" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </Label>
+
+                <DynamicImage name="$parentIngredient5Icon" handleinput="true" texturescale="0.5">
+                    <Size><AbsPoint x="28" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentIngredient4Icon">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </DynamicImage>
+                <Label name="$parentIngredient5" font="font_chat_text" maxchars="128" textalign="leftcenter" handleinput="true" wordwrap="false" textAutoFitMinScale="0.65">
+                    <Size><AbsPoint x="416" y="28" /></Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentIngredient5Icon">
+                            <AbsPoint x="8" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler.RecipeShare.OnMouseOverIngredient" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler.RecipeShare.OnMouseOverEndIngredient" />
+                    </EventHandlers>
+                </Label>
+
+                <Window name="$parentButtonBackground" inherits="EA_Window_DefaultButtonBottomFrame" layer="background">
+                    <Size><AbsPoint x="0" y="75" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parent" />
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" />
+                    </Anchors>
+                </Window>
+
+                <Button name="$parentCancel" inherits="EA_Button_DefaultResizeable">
+                    <Size><AbsPoint x="180" y="39" /></Size>
+                    <Anchors>
+                        <Anchor point="bottom" relativePoint="bottomleft" relativeTo="$parentButtonBackground">
+                            <AbsPoint x="6" y="-18" />
+                        </Anchor>
+                    </Anchors>
+                    <TextOffset x="0" y="0" />
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPiler.RecipeShare.OnClose" />
+                    </EventHandlers>
+                </Button>
+
+                <Button name="$parentLearn" inherits="EA_Button_DefaultResizeable">
+                    <Size><AbsPoint x="180" y="39" /></Size>
+                    <Anchors>
+                        <Anchor point="bottom" relativePoint="bottomright" relativeTo="$parentButtonBackground">
+                            <AbsPoint x="-6" y="-18" />
+                        </Anchor>
+                    </Anchors>
+                    <TextOffset x="0" y="0" />
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPiler.RecipeShare.OnLearn" />
+                    </EventHandlers>
+                </Button>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>

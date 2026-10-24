@@ -113,7 +113,7 @@ function D.ReportProtectedCallFailure(context, err, quiet)
             end
             if first and _chatErrOnce ~= true then
                 _chatErrOnce = true
-                D.Reply(L"An error was logged once. /stp debug for details.")
+                D.Reply((StockPiler.T and StockPiler.T("boot.err_logged_once")) or L"An error was logged once. /stp debug for details.")
             end
             return
         end
@@ -123,7 +123,7 @@ function D.ReportProtectedCallFailure(context, err, quiet)
         end
         if first and _chatErrOnce ~= true then
             _chatErrOnce = true
-            D.Reply(L"An error was logged once. /stp debug for details.")
+            D.Reply((StockPiler.T and StockPiler.T("boot.err_logged_once")) or L"An error was logged once. /stp debug for details.")
         end
     end)
     _reporting = false

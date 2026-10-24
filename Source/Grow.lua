@@ -607,6 +607,10 @@ local function PickPlantStockCandidate(SM)
                                 seed = seed or { uniqueID = seedUid }
                             end
                             if seedUid > 0 and CanUseSeedUid(seedUid) then
+                                -- Optimistic off: inflate plantings by harvest success rate.
+                                if SM.PlantingsForExpectedPlants then
+                                    need = tonumber(SM.PlantingsForExpectedPlants(seedUid, need)) or need
+                                end
                                 -- Plant watches plant buffer seeds toward the plant
                                 -- target, then Refine tops the seed buffer back up.
                                 -- Do not hold the buffer cushion here (0.3.142 Upgrade
@@ -1192,7 +1196,11 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
                 local ground = CountSeedPlotCredit(seedUid)
                 -- Pending plots are not always in Garden yet; after ReleaseSeedReservation
                 -- _seedCommitted is 0 - still count _pendingPlant or we overfill one role.
+                -- Optimistic off: in-ground seeds count at harvest success rate.
                 local have = bag + ground
+                if SM.EffectivePlantCredit then
+                    have = tonumber(SM.EffectivePlantCredit(seedUid, bag, ground)) or have
+                end
                 local craftsHave = math.floor(have / perCraft)
                 if craftsHave < 0 then
                     craftsHave = 0
@@ -1353,6 +1361,11 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
     end
 
     local craftsShort = math.max(1, bestNeed)
+    -- Optimistic off: plant enough seeds that expected successes cover the short.
+    if SM.PlantingsForExpectedPlants then
+        craftsShort = tonumber(SM.PlantingsForExpectedPlants(best.seedUid, craftsShort))
+            or craftsShort
+    end
     return {
         spec = best.spec,
         specKey = best.specKey,

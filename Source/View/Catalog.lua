@@ -46,42 +46,37 @@ local function ListEntriesFromKnowledge()
                         seen[recipeKey] = true
                         local recipe = type(recipes) == "table" and recipes[recipeKey] or nil
                         if type(recipe) == "table" then
-                            local include = true
-                            if type(recipe.outcomes) == "table" and next(recipe.outcomes) ~= nil then
-                                if recipe.outcomes[tostring(uid)] == nil then
-                                    include = false
-                                end
+                            -- Membership is potion.recipeKeys. Outcomes are brew samples and
+                            -- may only exist for a sibling product that shares this fingerprint
+                            -- (link relearn after Forget must still list the restored potion).
+                            if RS and RS.HydrateRecipeSlots then
+                                RS.HydrateRecipeSlots(recipe)
                             end
-                            if include then
-                                if RS and RS.HydrateRecipeSlots then
-                                    RS.HydrateRecipeSlots(recipe)
-                                end
-                                local prKey = RS and RS.PotionRecipeKey and RS.PotionRecipeKey(uid, recipeKey)
-                                    or ("uid:" .. tostring(uid) .. "|rk:" .. recipeKey)
-                                local stats = { power = 0, stability = 0, multiplier = 0, superCrit = 0, yield = 0 }
-                                if RS and RS.RecipeFingerprintStats then
-                                    stats = RS.RecipeFingerprintStats(recipe, uid) or stats
-                                end
-                                out[#out + 1] = {
-                                    potionRecipeKey = prKey,
-                                    potionKey = potion.potionKey or (RS and RS.PotionKeyFromUid and RS.PotionKeyFromUid(uid)),
-                                    outputUid = uid,
-                                    recipeSpecKey = recipeKey,
-                                    name = potion.name,
-                                    iconNum = tonumber(potion.iconNum) or 0,
-                                    effectKey = potion.effectKey,
-                                    recipeLabel = potion.recipeLabel or L"",
-                                    power = tonumber(stats.power) or 0,
-                                    stability = tonumber(stats.stability) or 0,
-                                    multiplier = tonumber(stats.multiplier) or 0,
-                                    superCrit = tonumber(stats.superCrit) or 0,
-                                    yield = tonumber(stats.yield) or 0,
-                                    skillUpOrigin = potion.skillUpOrigin == true
-                                        or (type(recipe) == "table" and recipe.skillUpOrigin == true),
-                                    potion = potion,
-                                    recipe = recipe,
-                                }
+                            local prKey = RS and RS.PotionRecipeKey and RS.PotionRecipeKey(uid, recipeKey)
+                                or ("uid:" .. tostring(uid) .. "|rk:" .. recipeKey)
+                            local stats = { power = 0, stability = 0, multiplier = 0, superCrit = 0, yield = 0 }
+                            if RS and RS.RecipeFingerprintStats then
+                                stats = RS.RecipeFingerprintStats(recipe, uid) or stats
                             end
+                            out[#out + 1] = {
+                                potionRecipeKey = prKey,
+                                potionKey = potion.potionKey or (RS and RS.PotionKeyFromUid and RS.PotionKeyFromUid(uid)),
+                                outputUid = uid,
+                                recipeSpecKey = recipeKey,
+                                name = potion.name,
+                                iconNum = tonumber(potion.iconNum) or 0,
+                                effectKey = potion.effectKey,
+                                recipeLabel = potion.recipeLabel or L"",
+                                power = tonumber(stats.power) or 0,
+                                stability = tonumber(stats.stability) or 0,
+                                multiplier = tonumber(stats.multiplier) or 0,
+                                superCrit = tonumber(stats.superCrit) or 0,
+                                yield = tonumber(stats.yield) or 0,
+                                skillUpOrigin = potion.skillUpOrigin == true
+                                    or (type(recipe) == "table" and recipe.skillUpOrigin == true),
+                                potion = potion,
+                                recipe = recipe,
+                            }
                         end
                     end
                 end
@@ -177,7 +172,7 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
 end
 
 ----------------------------------------------------------------
--- Plants catalog (harvested refinable apo materials)
+-- Plants catalog (refinable plants learned by harvest or by refining)
 ----------------------------------------------------------------
 
 local function PlantBonusValue(bonuses, ref)
@@ -397,7 +392,8 @@ local function BuildPlantRecipeIndex()
     return byUid
 end
 
---- Harvested plants that refine back to a seed (excludes resin / one-way byproducts).
+--- Plants that refine back to a seed (excludes resin / one-way byproducts).
+--- Harvest products and refine-learned plants both belong on Known plants.
 function Catalog.ListPlantEntries()
     local out = {}
     local seen = {}
@@ -798,6 +794,7 @@ function Catalog.ListPlantEntries()
             end
         end
     end
+    -- A plant refined before it was ever harvested is only in Refines.
     local refines = Know and Know.Refines and Know.Refines() or nil
     if type(refines) == "table" then
         for plantUidStr, bucket in pairs(refines) do

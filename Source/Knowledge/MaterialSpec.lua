@@ -1323,7 +1323,7 @@ function MS.FormatBonusLine(ref, value)
                 [2] = T("material.bonus.power"),
                 [3] = T("material.bonus.duration"),
                 [4] = T("material.bonus.multiplier"),
-                [12] = T("material.bonus.supercrit"),
+                [12] = T("material.bonus.critical"),
                 [13] = T("material.bonus.fail"),
                 [14] = T("material.bonus.supercrit"),
             }

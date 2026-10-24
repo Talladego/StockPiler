@@ -756,11 +756,50 @@ local function EnrichFromLearned(uid, item)
     return item
 end
 
+--- Overlay rarity/iLevel/name/icon from Account.potions when Items/bags are thin.
+local function EnrichFromKnownPotion(uid, item)
+    local RS = StockPiler.RecipeSpec
+    local potion = nil
+    if RS and RS.GetPotion then
+        potion = RS.GetPotion(uid)
+    end
+    if type(potion) ~= "table" then
+        return item
+    end
+    if type(item) ~= "table" then
+        item = {
+            uniqueID = uid,
+            name = potion.name,
+            iconNum = tonumber(potion.iconNum) or 0,
+            rarity = tonumber(potion.rarity),
+            iLevel = tonumber(potion.iLevel) or 0,
+            itemSet = 0,
+        }
+        return item
+    end
+    if (tonumber(item.rarity) or 0) <= 0 and (tonumber(potion.rarity) or 0) > 0 then
+        item.rarity = potion.rarity
+    end
+    if (tonumber(item.iLevel) or 0) <= 0 and (tonumber(potion.iLevel) or 0) > 0 then
+        item.iLevel = potion.iLevel
+    end
+    if (item.name == nil or item.name == L"") and potion.name ~= nil then
+        item.name = potion.name
+    end
+    if (tonumber(item.iconNum) or 0) <= 0 and (tonumber(potion.iconNum) or 0) > 0 then
+        item.iconNum = potion.iconNum
+    end
+    if item.itemSet == nil and item.rarity ~= nil then
+        item.itemSet = 0
+    end
+    return item
+end
+
 function Inv.ItemDataHasUseBonus(itemData)
     return ItemDataHasUseBonus(itemData)
 end
 
---- Prefer bag/sample with Use-bonus; enrich rarity/iLevel from learned Items.
+--- Prefer bag/sample with Use-bonus; enrich rarity/iLevel from Items then Known Potions.
 function Inv.ResolvePotionItemData(potionKey, uid, existing)
     uid = tonumber(uid) or 0
     if uid <= 0 and type(potionKey) == "string" then
@@ -787,9 +826,12 @@ function Inv.ResolvePotionItemData(potionKey, uid, existing)
     end
     if type(best) == "table" then
         best = EnrichFromLearned(uid, best)
+        best = EnrichFromKnownPotion(uid, best)
         if (tonumber(best.uniqueID) or 0) <= 0 then
             best.uniqueID = uid
         end
+    else
+        best = EnrichFromKnownPotion(uid, nil)
     end
     return best or existing
 end
