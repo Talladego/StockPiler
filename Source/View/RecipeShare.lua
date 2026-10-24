@@ -269,12 +269,12 @@ function RS.DescribeSlot(slot, fields)
                 if summary == nil then
                     summary = ToW(piece)
                 else
-                    summary = summary .. towstring(" | ") .. ToW(piece)
+                    summary = summary .. T("share.bonus_sep") .. ToW(piece)
                 end
             end
         end
         if summary ~= nil then
-            label = ToW(base) .. towstring(" | ") .. summary
+            label = ToW(base) .. T("share.bonus_sep") .. summary
         end
     end
     return {

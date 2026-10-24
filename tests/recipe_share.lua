@@ -260,7 +260,8 @@ check(string.find(tostring(described.tip), "material.bonus.stability", 1, true) 
 check(string.find(tostring(described.tip), "77", 1, true) ~= nil
     or string.find(tostring(described.tip), "share.effect", 1, true) ~= nil, "effect is listed")
 local rowLabel = labels[WIN .. "Ingredient1"] or ""
-check(string.find(rowLabel, " | ", 1, true) ~= nil, "ingredient row shows a bonus summary")
+check(string.find(rowLabel, "share.bonus_sep", 1, true) ~= nil
+    or string.find(rowLabel, " | ", 1, true) ~= nil, "ingredient row shows a bonus summary")
 check(string.find(rowLabel, "material.bonus.flat_plus", 1, true) ~= nil, "positive flat bonuses use FormatBonusLine")
 check(string.find(rowLabel, "material.bonus.pct_plus", 1, true) ~= nil, "percent bonuses use FormatBonusLine")
 check(string.find(rowLabel, "material.bonus.critical", 1, true) ~= nil, "critical chance is named critical")

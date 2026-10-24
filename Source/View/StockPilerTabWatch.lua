@@ -2695,14 +2695,14 @@ local function TipTradeSkill(skillId)
     end
     local Caps = StockPiler.TradeSkillCaps
     local level = Caps and Caps.Level and Caps.Level(skillId) or 0
-    local label = L"Trade skill"
+    local label = T("watch.trade_skill_fallback")
     if skillId == (Caps and Caps.CultivationId and Caps.CultivationId() or 3) then
         label = T("watch.skillup_cult")
     elseif skillId == (Caps and Caps.ApothecaryId and Caps.ApothecaryId() or 4) then
         label = T("watch.skillup_apo")
     end
     if level > 0 then
-        Tip(towstring(string.format("%s\nSkill Level: %d", tostring(label), level)))
+        Tip(T("watch.trade_skill_level", { name = label, level = level }))
     else
         Tip(label)
     end
@@ -3393,7 +3393,7 @@ function StockPilerTabWatch.OnMouseOverAutoBuy()
                 if type(job) == "table" then
                     count = tonumber(job.deficit) or tonumber(job.need) or 0
                 end
-                text = text .. L"\n" .. BuyJobName(job) .. L"  x" .. towstring(tostring(count))
+                text = text .. L"\n" .. T("tip.watch.autobuy_line", { name = BuyJobName(job), count = count })
             end
             if #shown > limit then
                 text = text .. L"\n" .. T("tip.watch.autobuy_more", { count = #shown - limit })
