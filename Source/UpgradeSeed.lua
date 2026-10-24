@@ -1559,17 +1559,45 @@ function US.PickPlantJob()
             end
             return (tonumber(a.short) or 0) > (tonumber(b.short) or 0)
         end)
+        local function VendorOpen()
+            local VA = StockPiler.VendorAdapter
+            return VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+        end
+        local function SiblingCanPlantNow(t2, index)
+            if type(t2) ~= "table" then
+                return false
+            end
+            if type(t2.ladder) ~= "table" or type(t2.ladder.rungs) ~= "table" or #t2.ladder.rungs == 0 then
+                return false
+            end
+            for ci = 1, #plantCandidates do
+                if (tonumber(plantCandidates[ci].targetIndex) or 0) == index then
+                    return true
+                end
+            end
+            local plantable = TargetPlantableCount(t2)
+            if (tonumber(plantable) or 0) >= 1 then
+                return true
+            end
+            -- need_buy holds a climb only while a vendor can actually sell the seed.
+            if VendorOpen() then
+                return true
+            end
+            return false
+        end
         local function SiblingBehind(cand)
             for i = 1, #targets do
                 if i ~= (tonumber(cand.targetIndex) or 0) then
                     local t2 = targets[i]
-                    local owned2 = US.PickBestOwnedSeed({
-                        ladder = t2.ladder,
-                        climbCap = US.ClimbCap(t2.needReq),
-                    })
-                    local req2 = type(owned2) == "table" and (tonumber(owned2.skillReq) or 0) or 0
-                    if req2 < (tonumber(cand.ownedReq) or 0) then
-                        return true
+                    if SiblingCanPlantNow(t2, i) then
+                        local owned2 = US.PickBestOwnedSeed({
+                            ladder = t2.ladder,
+                            climbCap = US.ClimbCap(t2.needReq),
+                        })
+                        local req2 = type(owned2) == "table" and (tonumber(owned2.skillReq) or 0) or 0
+                        if req2 < (tonumber(cand.ownedReq) or 0) then
+                            return true
+                        end
                     end
                 end
             end

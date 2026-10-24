@@ -518,6 +518,16 @@ function Button.SetLocked(on)
     return Button.IsLocked()
 end
 
+function Button.IsWindowShowing()
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(WIN) then
+        return false
+    end
+    if type(WindowGetShowing) == "function" then
+        return WindowGetShowing(WIN) == true
+    end
+    return true
+end
+
 function Button.ApplyVisibility()
     if not DoesWindowExist(WIN) then
         return
@@ -875,6 +885,10 @@ function Button.TickGrowVisuals(opts)
     if not DoesWindowExist(WIN) then
         return
     end
+    -- Hidden HUD has nothing to paint. ApplyVisibility calls SyncAppearance after show.
+    if type(WindowGetShowing) == "function" and WindowGetShowing(WIN) ~= true then
+        return
+    end
     opts = type(opts) == "table" and opts or {}
     local Macro = StockPiler.Macro
     local snap = opts.snap
@@ -1039,6 +1053,9 @@ end
 
 function Button.SyncAppearance(opts)
     if not DoesWindowExist(WIN) then
+        return
+    end
+    if type(WindowGetShowing) == "function" and WindowGetShowing(WIN) ~= true then
         return
     end
     opts = type(opts) == "table" and opts or {}

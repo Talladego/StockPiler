@@ -1051,25 +1051,41 @@ function Sch.OnUpdate(timeElapsed)
     local now = Now()
     local pollSec = tonumber(Sch.POLL_SEC) or 0.25
     local pollDue = now <= 0 or (now - (tonumber(Sch._pollAt) or 0) >= pollSec)
+    local function Quiet(name, fn)
+        local Util = StockPiler.Util
+        if Util and Util.TryCallQuiet then
+            Util.TryCallQuiet(name, fn)
+            return
+        end
+        pcall(fn)
+    end
     if pollDue then
         Sch._pollAt = now
-        if StockPiler.Buy and StockPiler.Buy.PollStorePresence then
-            StockPiler.Buy.PollStorePresence()
-        end
-        if StockPiler.Grow and StockPiler.Grow.ExpireStalePending then
-            StockPiler.Grow.ExpireStalePending()
-        end
+        Quiet("buy-poll", function()
+            if StockPiler.Buy and StockPiler.Buy.PollStorePresence then
+                StockPiler.Buy.PollStorePresence()
+            end
+        end)
+        Quiet("grow-expire", function()
+            if StockPiler.Grow and StockPiler.Grow.ExpireStalePending then
+                StockPiler.Grow.ExpireStalePending()
+            end
+        end)
     end
     local Brew = StockPiler.Brew
     if Brew and Brew.OnUpdate then
         local loadJob = Brew.IsLoadJobActive and Brew.IsLoadJobActive() == true
         if loadJob then
-            Brew.OnUpdate(timeElapsed)
+            Quiet("brew-update", function()
+                Brew.OnUpdate(timeElapsed)
+            end)
         else
             local brewDue = now <= 0 or (now - (tonumber(Sch._brewLightAt) or 0) >= pollSec)
             if brewDue then
                 Sch._brewLightAt = now
-                Brew.OnUpdate(timeElapsed)
+                Quiet("brew-update", function()
+                    Brew.OnUpdate(timeElapsed)
+                end)
             end
         end
     end
@@ -1149,7 +1165,9 @@ function Sch.OnUpdate(timeElapsed)
             end
             Sch._armedPlantDue = false
             if ranTick and tickOk ~= true then
-                error(tickErr or "Orchestrator.Tick failed", 0)
+                if StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
+                    StockPiler.Debug.ReportProtectedCallFailure("Orchestrator.Tick", tickErr, true)
+                end
             end
         end
     end

@@ -242,7 +242,7 @@ end
 
 --- Best usable additive of this cultType in the crafting bag.
 --- @return bestSlot, bestItem, backpackType
-function AD.FindBestInCraftBag(cultType)
+function AD.FindBestInCraftBag(cultType, opts)
     cultType = tonumber(cultType) or 0
     if cultType <= 0 then
         return 0, nil, nil
@@ -272,6 +272,8 @@ function AD.FindBestInCraftBag(cultType)
         return 0, nil, nil
     end
 
+    opts = type(opts) == "table" and opts or {}
+    local cheap = opts.policy == "cheap"
     local skill = AD.PlayerCultivationSkill()
     local bestSlot = 0
     local bestItem = nil
@@ -288,7 +290,8 @@ function AD.FindBestInCraftBag(cultType)
                 if usable then
                     local iLevel = tonumber(item.iLevel) or tonumber(item.level) or 0
                     local score = AD.Score(info, req, iLevel)
-                    if bestScore == nil or score > bestScore then
+                    local better = bestScore == nil or (cheap and score < bestScore) or (not cheap and score > bestScore)
+                    if better then
                         bestScore = score
                         bestSlot = tonumber(slot) or 0
                         bestItem = item
@@ -334,11 +337,21 @@ end
 
 --- True when a plot needs an additive AND bags have one we can apply now.
 --- Use this for AutoGrow wake/work so grow-wait does not 1s-tick CollectIntents.
-function AD.CanApplyCurrentStage()
+function AD.CanApplyCurrentStage(opts)
     if AD.IsEnabled() ~= true then
         return false
     end
-    local pick = AD.PickNext({})
+    opts = type(opts) == "table" and opts or {}
+    local pending = opts.pendingAdditive
+    if pending == nil and StockPiler.Grow then
+        pending = StockPiler.Grow._pendingAdditive
+    end
+    local pick = AD.PickNext({
+        pendingAdditive = pending,
+        cursor = opts.cursor,
+        stalled = opts.stalled or (StockPiler.Grow and StockPiler.Grow._additiveStall),
+        plotReason = opts.plotReason or (StockPiler.Grow and StockPiler.Grow._plotReason),
+    })
     return type(pick) == "table" and (tonumber(pick.plotNum) or 0) > 0
 end
 
@@ -364,10 +377,14 @@ function AD.PickNext(opts)
         start = 1
     end
     local pending = opts.pendingAdditive
+    local stalled = opts.stalled
+    local reasons = opts.plotReason
     for i = 0, n - 1 do
         local plotNum = ((start - 1 + i) % n) + 1
         if type(pending) == "table" and (tonumber(pending[plotNum]) or 0) > 0 then
             -- Skip plots with an in-flight additive apply.
+        elseif type(stalled) == "table" and stalled[plotNum] == true then
+            -- Retry cap reached for this plot.
         else
             local plot = plots[plotNum]
             if type(plot) ~= "table" and Garden and Garden.GetPlot then
@@ -377,7 +394,12 @@ function AD.PickNext(opts)
                 local stage = tonumber(plot.stage) or 0
                 local cultType = AD.CultTypeForStage(stage)
                 if cultType > 0 and not AD.PlotHasAdditive(plot, cultType) then
-                    local slot, item, backpackType = AD.FindBestInCraftBag(cultType)
+                    local reason = type(reasons) == "table" and tostring(reasons[plotNum] or "") or ""
+                    local policy = nil
+                    if reason == "skill_up" or reason == "surplus" then
+                        policy = "cheap"
+                    end
+                    local slot, item, backpackType = AD.FindBestInCraftBag(cultType, { policy = policy })
                     if (tonumber(slot) or 0) > 0 and type(item) == "table" then
                         local info = AD.Classify(item)
                         return {

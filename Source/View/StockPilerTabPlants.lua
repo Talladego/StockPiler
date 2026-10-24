@@ -744,10 +744,8 @@ function StockPilerTabPlants.OnMouseOverForget()
     StockPiler.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("tip.plants.forget"))
 end
 
-function StockPilerTabPlants.ConfirmForgetPlant()
-    local uid = tonumber(StockPilerTabPlants._pendingForgetUid) or 0
-    StockPilerTabPlants._pendingForgetUid = nil
-    StockPilerTabPlants._pendingForgetLabel = nil
+function StockPilerTabPlants.ConfirmForgetPlant(uid)
+    uid = tonumber(uid) or 0
     if uid <= 0 then
         return
     end
@@ -778,10 +776,10 @@ function StockPilerTabPlants.OnForgetRow()
         return
     end
     local name = ToNarrow(data.name)
-    StockPilerTabPlants._pendingForgetUid = uid
-    StockPilerTabPlants._pendingForgetLabel = name
     StockPiler.ViewList.ConfirmTwoButton(
         T("plants.forget_confirm", { name = towstring(name) }),
-        StockPilerTabPlants.ConfirmForgetPlant
+        function()
+            StockPilerTabPlants.ConfirmForgetPlant(uid)
+        end
     )
 end

@@ -12,6 +12,8 @@ Grow.PENDING_TTL_SEC = 10
 Grow.PENDING_EMPTY_GRACE_SEC = 5.0
 Grow.UNCONFIRMED_PLANT_COOLDOWN_SEC = 6.0
 Grow.UNCONFIRMED_GARDEN_QUIET_SEC = 8.0
+Grow.UNCONFIRMED_PLANT_MAX_ATTEMPTS = 4
+Grow.ADDITIVE_MAX_ATTEMPTS = 3
 Grow.POST_HARVEST_PLANT_DELAY_SEC = 0.75
 Grow.HARVEST_FORCE_DEBOUNCE_SEC = 1.5
 Grow.HARVEST_OP_LOCK_SEC = 1.0
@@ -22,10 +24,15 @@ Grow._pendingSeedUid = Grow._pendingSeedUid or {}
 -- True while _seedCommitted still counts this plot's in-flight plant.
 Grow._pendingSeedHeld = Grow._pendingSeedHeld or {}
 Grow._seedCommitted = Grow._seedCommitted or {}
-Grow._wavePlantedBySeed = Grow._wavePlantedBySeed or {}
 Grow._plantFailCooldownUntil = Grow._plantFailCooldownUntil or {}
+Grow._plantFailAttempts = Grow._plantFailAttempts or {}
+Grow._plantStallReason = Grow._plantStallReason or {}
+Grow._plotQuietUntil = Grow._plotQuietUntil or {}
+Grow._plotReason = Grow._plotReason or {}
 Grow._pendingAdditive = Grow._pendingAdditive or {}
 Grow._pendingAdditiveAt = Grow._pendingAdditiveAt or {}
+Grow._additiveAttempts = Grow._additiveAttempts or {}
+Grow._additiveStall = Grow._additiveStall or {}
 Grow._fillCursor = Grow._fillCursor or 1
 Grow._additiveCursor = Grow._additiveCursor or 1
 Grow._lastPlantedSeedUid = 0
@@ -657,13 +664,11 @@ local function ClearPendingPlot(plotNum, opts)
     if plotNum <= 0 then
         return
     end
-    if opts.rollbackCommit == true and Grow._pendingSeedHeld[plotNum] == true then
+        if opts.rollbackCommit == true and Grow._pendingSeedHeld[plotNum] == true then
         local seedUid = tonumber(Grow._pendingSeedUid[plotNum]) or 0
         if seedUid > 0 then
             local n = (tonumber(Grow._seedCommitted[seedUid]) or 0) - 1
             Grow._seedCommitted[seedUid] = n > 0 and n or nil
-            local w = (tonumber(Grow._wavePlantedBySeed[seedUid]) or 0) - 1
-            Grow._wavePlantedBySeed[seedUid] = w > 0 and w or nil
         end
     end
     Grow._pendingSeedHeld[plotNum] = nil
@@ -674,7 +679,6 @@ end
 
 --- After PlantSeed succeeds: bag is truth - drop seed bag reservation but keep plot
 --- reserved until soil confirms so FindNextEmptyPlot cannot double-plant.
---- Keep _wavePlantedBySeed until rollback/force clear (do not drop it with bag commit).
 local function ReleaseSeedReservation(plotNum)
     plotNum = tonumber(plotNum) or 0
     if plotNum <= 0 or Grow._pendingSeedHeld[plotNum] ~= true then
@@ -806,6 +810,26 @@ function Grow.CountEmptyPlots()
     return n
 end
 
+function Grow.PlotPlantBlocked(plotNum)
+    plotNum = tonumber(plotNum) or 0
+    if plotNum <= 0 then
+        return false
+    end
+    if Grow._plantStallReason[plotNum] ~= nil then
+        return true
+    end
+    local now = NowSec()
+    local untilT = tonumber(Grow._plantFailCooldownUntil[plotNum]) or 0
+    if untilT > 0 and now > 0 and now < untilT then
+        return true
+    end
+    local quiet = tonumber(Grow._plotQuietUntil[plotNum]) or 0
+    if quiet > 0 and now > 0 and now < quiet then
+        return true
+    end
+    return false
+end
+
 function Grow.FindNextEmptyPlot()
     local CA = StockPiler.CultivatorAdapter
     local maxPlots = CA and CA.NumPlots and CA.NumPlots() or 4
@@ -817,7 +841,9 @@ function Grow.FindNextEmptyPlot()
         local plotNum = ((start - 1 + i) % maxPlots) + 1
         local row = StockPiler.Garden and StockPiler.Garden.GetPlot and StockPiler.Garden.GetPlot(plotNum)
         if not IsPlotLocked(row, plotNum) and IsPlotEmptyRow(row) then
-            if (tonumber(Grow._pendingPlant[plotNum]) or 0) <= 0 then
+            if (tonumber(Grow._pendingPlant[plotNum]) or 0) <= 0
+                and Grow.PlotPlantBlocked(plotNum) ~= true
+            then
                 Grow._fillCursor = plotNum + 1
                 return plotNum
             end
@@ -909,7 +935,6 @@ function Grow.InvalidatePlantQueue(opts)
     -- here forced CollectUpgradeTargets on the next empty pick (1s no-job hitch).
     if opts.force == true then
         Grow._seedCommitted = {}
-        Grow._wavePlantedBySeed = {}
         if opts.keepCommitForceCleared ~= true then
             Grow._commitForceCleared = false
         end
@@ -2000,7 +2025,7 @@ function Grow.IssuePlantOne(opId)
     Grow._pendingSeedUid[plotNum] = seedUid
     Grow._pendingSeedHeld[plotNum] = true
     Grow._seedCommitted[seedUid] = (tonumber(Grow._seedCommitted[seedUid]) or 0) + 1
-    Grow._wavePlantedBySeed[seedUid] = (tonumber(Grow._wavePlantedBySeed[seedUid]) or 0) + 1
+    Grow._plotReason[plotNum] = tostring(job.plantReason or "potion_stock")
 
     local CC = StockPiler.CraftChatAdapter
     if CC and CC.StashSoilPending then
@@ -2051,15 +2076,7 @@ function Grow.IssuePlantOne(opId)
         tostring(job.plantReason or ""),
         tostring(opId or "?")
     ))
-    -- Arm Cult skill-up attempt only when Cult is skilling (not pure Apo-assist grows).
-    if tostring(job.plantReason or "") == "skill_up" then
-        local SkillUp = StockPiler.SkillUp
-        if SkillUp and SkillUp.NoteCultAttempt
-            and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
-        then
-            SkillUp.NoteCultAttempt({ seedUid = seedUid })
-        end
-    end
+    -- Skill-up attempts are counted when the plot confirms the seed, not on send.
     return done(true)
 end
 
@@ -2103,7 +2120,10 @@ function Grow.NeedsCurrentStageAdditive()
         return false
     end
     if AD.CanApplyCurrentStage then
-        return AD.CanApplyCurrentStage() == true
+        return AD.CanApplyCurrentStage({
+            pendingAdditive = Grow._pendingAdditive,
+            cursor = Grow._additiveCursor,
+        }) == true
     end
     if AD.NeedsCurrentStage then
         return AD.NeedsCurrentStage() == true
@@ -2111,7 +2131,39 @@ function Grow.NeedsCurrentStageAdditive()
     return Grow._additiveDirty == true
 end
 
+local function ExpirePendingAdditives()
+    local AD = StockPiler.Additives
+    local CA = StockPiler.CultivatorAdapter
+    local now = NowSec()
+    local ttl = tonumber(Grow.PENDING_TTL_SEC) or 10
+    local maxAdds = tonumber(Grow.ADDITIVE_MAX_ATTEMPTS) or 3
+    for plotNum, at in pairs(Grow._pendingAdditiveAt) do
+        at = tonumber(at) or 0
+        if at > 0 and (now - at) >= ttl then
+            local live = nil
+            if CA and CA.ReadPlot then
+                live = CA.ReadPlot(plotNum)
+            end
+            local filled = false
+            if type(live) == "table" and AD and AD.PlotHasAdditive and AD.CultTypeForStage then
+                local stage = tonumber(live.stage) or 0
+                local cultType = AD.CultTypeForStage(stage)
+                filled = cultType and AD.PlotHasAdditive(live, cultType) == true
+            end
+            if filled then
+                Grow._additiveAttempts[plotNum] = nil
+                Grow._additiveStall[plotNum] = nil
+            elseif (tonumber(Grow._additiveAttempts[plotNum]) or 0) >= maxAdds then
+                Grow._additiveStall[plotNum] = true
+            end
+            Grow.ClearPendingAdditive(plotNum)
+        end
+    end
+end
+
 function Grow.TryAdditive(opId)
+    -- A hidden in-flight apply must expire even when no plot currently looks due.
+    ExpirePendingAdditives()
     if Grow.NeedsCurrentStageAdditive() ~= true then
         return false
     end
@@ -2134,26 +2186,43 @@ function Grow.TryAdditive(opId)
     end
 
     local now = NowSec()
-    local ttl = tonumber(Grow.PENDING_TTL_SEC) or 10
-    for plotNum, at in pairs(Grow._pendingAdditiveAt) do
-        at = tonumber(at) or 0
-        if at > 0 and (now - at) >= ttl then
-            Grow.ClearPendingAdditive(plotNum)
-        end
-    end
+    local maxAdds = tonumber(Grow.ADDITIVE_MAX_ATTEMPTS) or 3
 
     local pick = AD.PickNext({
         cursor = Grow._additiveCursor,
         pendingAdditive = Grow._pendingAdditive,
+        stalled = Grow._additiveStall,
+        plotReason = Grow._plotReason,
     })
     local ok = false
     if type(pick) == "table" and (tonumber(pick.plotNum) or 0) > 0 and (tonumber(pick.slot) or 0) > 0 then
         local plotNum = tonumber(pick.plotNum) or 0
+        if (tonumber(Grow._additiveAttempts[plotNum]) or 0) >= maxAdds then
+            Grow._additiveStall[plotNum] = true
+            if Perf and Perf.End then
+                Perf.End("Grow.TryAdditive")
+            end
+            return false
+        end
+        if CA.ReadPlot then
+            local live = CA.ReadPlot(plotNum)
+            if type(live) == "table" and AD.PlotHasAdditive
+                and AD.PlotHasAdditive(live, pick.cultType) == true
+            then
+                Grow.ClearPendingAdditive(plotNum)
+                Grow._additiveAttempts[plotNum] = nil
+                if Perf and Perf.End then
+                    Perf.End("Grow.TryAdditive")
+                end
+                return false
+            end
+        end
         if CA.SetCurrentPlot then
             CA.SetCurrentPlot(plotNum)
         end
         Grow._pendingAdditive[plotNum] = (tonumber(Grow._pendingAdditive[plotNum]) or 0) + 1
         Grow._pendingAdditiveAt[plotNum] = now
+        Grow._additiveAttempts[plotNum] = (tonumber(Grow._additiveAttempts[plotNum]) or 0) + 1
         ok = CA.AddAdditive(plotNum, pick.slot, pick.backpackType) == true
         if ok then
             local n = CA.NumPlots and CA.NumPlots() or 4
@@ -2768,12 +2837,30 @@ function Grow.ExpireStalePending()
         at = tonumber(at) or 0
         if at > 0 and now > 0 and (now - at) > (ttl + grace) then
             ReleaseCommit(plotNum, false)
-            local untilT = now + (tonumber(Grow.UNCONFIRMED_PLANT_COOLDOWN_SEC) or 6)
-            Grow._plantFailCooldownUntil[plotNum] = untilT
-            local quiet = now + (tonumber(Grow.UNCONFIRMED_GARDEN_QUIET_SEC) or 8)
-            if quiet > (tonumber(Grow._plantQuietUntil) or 0) then
-                Grow._plantQuietUntil = quiet
+            local attempts = (tonumber(Grow._plantFailAttempts[plotNum]) or 0) + 1
+            Grow._plantFailAttempts[plotNum] = attempts
+            local base = tonumber(Grow.UNCONFIRMED_PLANT_COOLDOWN_SEC) or 6
+            local backoff = base * (2 ^ (attempts - 1))
+            local maxAttempts = tonumber(Grow.UNCONFIRMED_PLANT_MAX_ATTEMPTS) or 4
+            if attempts >= maxAttempts then
+                Grow._plantStallReason[plotNum] = "unconfirmed"
+                backoff = math.max(backoff, 3600)
+                if Grow._plantStallAnnounced ~= true then
+                    Grow._plantStallAnnounced = true
+                    local msg = nil
+                    if StockPiler.T then
+                        msg = StockPiler.T("grow.plant_stalled", { plot = tostring(plotNum) })
+                    end
+                    if msg ~= nil and StockPiler.Ui and StockPiler.Ui.Print then
+                        StockPiler.Ui.Print(msg)
+                    elseif msg ~= nil and StockPiler.Debug and StockPiler.Debug.Print then
+                        StockPiler.Debug.Print(msg)
+                    end
+                end
             end
+            Grow._plantFailCooldownUntil[plotNum] = now + backoff
+            -- Quiet this plot only. A rejected seed must not pause every plot.
+            Grow._plotQuietUntil[plotNum] = now + (tonumber(Grow.UNCONFIRMED_GARDEN_QUIET_SEC) or 8)
         end
     end
     local CC = StockPiler.CraftChatAdapter
@@ -2791,6 +2878,19 @@ function Grow.OnCultivationUpdated(plotNum)
     end
     if type(row) == "table" and not IsPlotEmptyRow(row) then
         if (tonumber(Grow._pendingPlant[plotNum]) or 0) > 0 then
+            if tostring(Grow._plotReason[plotNum] or "") == "skill_up" then
+                local SkillUp = StockPiler.SkillUp
+                if SkillUp and SkillUp.NoteCultAttempt
+                    and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
+                then
+                    local seedUid = tonumber(Grow._pendingSeedUid[plotNum]) or 0
+                    SkillUp.NoteCultAttempt({ seedUid = seedUid })
+                end
+            end
+            Grow._plantFailAttempts[plotNum] = nil
+            Grow._plantFailCooldownUntil[plotNum] = nil
+            Grow._plantStallReason[plotNum] = nil
+            Grow._plotQuietUntil[plotNum] = nil
             ReleaseCommit(plotNum, true)
         end
     elseif type(row) == "table" and IsPlotEmptyRow(row) then

@@ -880,15 +880,8 @@ function StockPilerTabPotions.OnMouseOverRecipe()
     end
 end
 
-function StockPilerTabPotions.ConfirmForgetRecipe()
-    local outputUid = StockPilerTabPotions._pendingForgetOutputUid
-    local recipeSpecKey = StockPilerTabPotions._pendingForgetRecipeKey
-    local potionKey = StockPilerTabPotions._pendingForgetKey
-    local label = StockPilerTabPotions._pendingForgetLabel or recipeSpecKey
-    StockPilerTabPotions._pendingForgetOutputUid = nil
-    StockPilerTabPotions._pendingForgetRecipeKey = nil
-    StockPilerTabPotions._pendingForgetKey = nil
-    StockPilerTabPotions._pendingForgetLabel = nil
+function StockPilerTabPotions.ConfirmForgetRecipe(outputUid, recipeSpecKey, potionKey, label)
+    label = label or recipeSpecKey
     local forgot = false
     if StockPiler.Catalog and StockPiler.Catalog.ForgetPotionRecipeLink then
         forgot = StockPiler.Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey) == true
@@ -919,14 +912,13 @@ function StockPilerTabPotions.OnForgetRow()
     end
     local outputUid = tonumber(data.uniqueID) or 0
     local recipeSpecKey = data.recipeSpecKey
+    local potionKey = data.potionRecipeKey or data.potionKey
     local label = data.name or T("ui.potion_fallback")
-    StockPilerTabPotions._pendingForgetOutputUid = outputUid
-    StockPilerTabPotions._pendingForgetRecipeKey = recipeSpecKey
-    StockPilerTabPotions._pendingForgetKey = data.potionRecipeKey or data.potionKey
-    StockPilerTabPotions._pendingForgetLabel = label
     StockPiler.ViewList.ConfirmTwoButton(
         T("potions.forget_confirm", { name = label }),
-        StockPilerTabPotions.ConfirmForgetRecipe
+        function()
+            StockPilerTabPotions.ConfirmForgetRecipe(outputUid, recipeSpecKey, potionKey, label)
+        end
     )
 end
 

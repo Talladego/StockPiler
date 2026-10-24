@@ -143,6 +143,10 @@ StockPiler.DefaultCharacterSettings = {
     plantWatches = {},
     -- false until Watch.MigratePriorityTiersIfNeeded assigns tiers.
     watchPriorityTiersMigrated = false,
+    -- SkillUp latches. Shaping must not drop these on the next login.
+    skillUpCultSeen = false,
+    skillUpApoSeen = false,
+    skillUpSeenBackfill = false,
 }
 
 StockPiler.DefaultAccount = {
@@ -377,18 +381,14 @@ function P.EnsureCharacterBucketShape(char)
         char.plantWatches = {}
     end
     char.watchPriorityTiersMigrated = char.watchPriorityTiersMigrated == true
-    local retired = nil
-    for k in pairs(char) do
-        if defaults[k] == nil then
-            if retired == nil then
-                retired = {}
-            end
-            retired[#retired + 1] = k
-        end
-    end
-    if retired ~= nil then
-        for i = 1, #retired do
-            char[retired[i]] = nil
+    char.skillUpCultSeen = char.skillUpCultSeen == true
+    char.skillUpApoSeen = char.skillUpApoSeen == true
+    char.skillUpSeenBackfill = char.skillUpSeenBackfill == true
+    -- Drop only keys we have retired. Other per-character fields stay saved.
+    local retiredKeys = StockPiler.RetiredCharacterSettingKeys
+    if type(retiredKeys) == "table" then
+        for i = 1, #retiredKeys do
+            char[retiredKeys[i]] = nil
         end
     end
     return char

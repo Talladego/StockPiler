@@ -421,23 +421,28 @@ local function WarmSpecHaveCache(specs)
             if MS and MS.ProductKey then
                 productKey = MS.ProductKey(item)
             end
+            local fastKey = nil
             if type(productKey) == "string" and productKey ~= "" and keyIndex[productKey] then
                 totals[productKey] = (totals[productKey] or 0) + qty
-                return
+                fastKey = productKey
             end
             for i = 1, #pending do
                 local entry = pending[i]
                 local match = false
-                if MS and MS.ProductMatches then
-                    match = MS.ProductMatches(item, entry.spec) == true
-                elseif MS and MS.Matches then
-                    match = MS.Matches(item, entry.spec) == true
+                if fastKey ~= nil and entry.key == fastKey then
+                    -- ProductKey already credited this spec. Still test the others.
                 else
-                    local uid = tonumber(item.uniqueID) or 0
-                    match = uid > 0 and uid == SpecBoundUid(entry.spec)
-                end
-                if match then
-                    totals[entry.key] = (totals[entry.key] or 0) + qty
+                    if MS and MS.ProductMatches then
+                        match = MS.ProductMatches(item, entry.spec) == true
+                    elseif MS and MS.Matches then
+                        match = MS.Matches(item, entry.spec) == true
+                    else
+                        local uid = tonumber(item.uniqueID) or 0
+                        match = uid > 0 and uid == SpecBoundUid(entry.spec)
+                    end
+                    if match then
+                        totals[entry.key] = (totals[entry.key] or 0) + qty
+                    end
                 end
             end
         end)
@@ -576,23 +581,28 @@ local function FinishWarmHaveSlice()
             if MS and MS.ProductKey then
                 productKey = MS.ProductKey(item)
             end
+            local fastKey = nil
             if type(productKey) == "string" and productKey ~= "" and keyIndex[productKey] then
                 totals[productKey] = (totals[productKey] or 0) + qty
-                return
+                fastKey = productKey
             end
             for i = 1, #pending do
                 local entry = pending[i]
                 local match = false
-                if MS and MS.ProductMatches then
-                    match = MS.ProductMatches(item, entry.spec) == true
-                elseif MS and MS.Matches then
-                    match = MS.Matches(item, entry.spec) == true
+                if fastKey ~= nil and entry.key == fastKey then
+                    -- ProductKey already credited this spec. Still test the others.
                 else
-                    local uid = tonumber(item.uniqueID) or 0
-                    match = uid > 0 and uid == SpecBoundUid(entry.spec)
-                end
-                if match then
-                    totals[entry.key] = (totals[entry.key] or 0) + qty
+                    if MS and MS.ProductMatches then
+                        match = MS.ProductMatches(item, entry.spec) == true
+                    elseif MS and MS.Matches then
+                        match = MS.Matches(item, entry.spec) == true
+                    else
+                        local uid = tonumber(item.uniqueID) or 0
+                        match = uid > 0 and uid == SpecBoundUid(entry.spec)
+                    end
+                    if match then
+                        totals[entry.key] = (totals[entry.key] or 0) + qty
+                    end
                 end
             end
         end)
@@ -980,6 +990,132 @@ local function PotionHave(resolved, potion, outputUid)
     return 0
 end
 
+local function WatchPriorityTier(watchKey, watch)
+    watch = ResolveWatchRow(watchKey, watch)
+    local Watch = StockPiler.Watch
+    if Watch and Watch.GetPriorityTier then
+        local tier = tonumber(Watch.GetPriorityTier(watchKey))
+        if tier ~= nil and tier > 0 then
+            return tier
+        end
+    end
+    if type(watch) == "table" and watch.priorityTier ~= nil then
+        return tonumber(watch.priorityTier) or 1
+    end
+    return 1
+end
+
+--- One output uid, one recipe: best priority (lowest tier), ties by watch key.
+--- maxTarget is the highest target in the group. winner.raw is the source row.
+local function GroupWatchesByOutputUid(entries)
+    local byUid = {}
+    local order = {}
+    local loose = {}
+    entries = type(entries) == "table" and entries or {}
+    for i = 1, #entries do
+        local entry = entries[i]
+        if type(entry) == "table" then
+            local uid = tonumber(entry.uid) or 0
+            if uid <= 0 then
+                loose[#loose + 1] = entry
+            else
+                local group = byUid[uid]
+                local tier = tonumber(entry.tier) or 1
+                local key = tostring(entry.key or "")
+                local target = tonumber(entry.target) or 0
+                if group == nil then
+                    group = {
+                        uid = uid,
+                        key = entry.key,
+                        tier = tier,
+                        maxTarget = target,
+                        have = tonumber(entry.have) or 0,
+                        recipe = entry.recipe,
+                        potion = entry.potion,
+                        stillNeeds = entry.stillNeeds == true,
+                        bottleGap = entry.bottleGap,
+                        winner = entry,
+                    }
+                    byUid[uid] = group
+                    order[#order + 1] = uid
+                else
+                    if target > group.maxTarget then
+                        group.maxTarget = target
+                    end
+                    local gkey = tostring(group.key or "")
+                    if tier < group.tier or (tier == group.tier and key < gkey) then
+                        group.tier = tier
+                        group.key = entry.key
+                        group.recipe = entry.recipe
+                        group.potion = entry.potion
+                        group.stillNeeds = entry.stillNeeds == true
+                        group.have = tonumber(entry.have) or group.have
+                        group.bottleGap = entry.bottleGap
+                        group.winner = entry
+                    end
+                end
+            end
+        end
+    end
+    local groups = {}
+    for i = 1, #order do
+        groups[#groups + 1] = byUid[order[i]]
+    end
+    for i = 1, #loose do
+        local entry = loose[i]
+        groups[#groups + 1] = {
+            uid = 0,
+            key = entry.key,
+            tier = tonumber(entry.tier) or 1,
+            maxTarget = tonumber(entry.target) or 0,
+            have = tonumber(entry.have) or 0,
+            recipe = entry.recipe,
+            potion = entry.potion,
+            stillNeeds = entry.stillNeeds == true,
+            bottleGap = entry.bottleGap,
+            winner = entry,
+        }
+    end
+    return groups
+end
+
+local function CollapseFocusCandidates(list)
+    local entries = {}
+    list = type(list) == "table" and list or {}
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" then
+            entries[#entries + 1] = {
+                key = row.potionKey,
+                tier = row.priorityTier,
+                target = row.target,
+                have = row.stock,
+                recipe = row.recipe,
+                uid = row.uniqueID,
+                bottleGap = row.bottleGap,
+                stillNeeds = true,
+                raw = row,
+            }
+        end
+    end
+    local groups = GroupWatchesByOutputUid(entries)
+    local out = {}
+    for i = 1, #groups do
+        local group = groups[i]
+        local row = group.winner and group.winner.raw or nil
+        if type(row) == "table" then
+            row.target = group.maxTarget
+            row.stock = group.have
+            row.recipe = group.recipe
+            row.priorityTier = group.tier
+            row.potionKey = tostring(group.key or row.potionKey or "")
+            row.bottleGap = BottleGap(group.maxTarget, group.have, row.craftable)
+            out[#out + 1] = row
+        end
+    end
+    return out
+end
+
 local function BuildBalancedSpecDemand(opts)
     opts = type(opts) == "table" and opts or {}
     local Watch = StockPiler.Watch
@@ -1021,14 +1157,16 @@ local function BuildBalancedSpecDemand(opts)
         PerfEnd("BuildBalancedSpecDemand")
         return demand
     end
-    local byUid = {}
-    local uidOrder = {}
+    local entries = {}
     for watchKey, watch in pairs(watches) do
         if WatchWantsAutoGrow(watchKey, watch) then
             local resolved = ResolveWatchPotion(watchKey)
             local potion = resolved and resolved.potion
             local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
             if type(potion) == "table" and type(recipe) == "table" then
+                if RS.HydrateRecipeSlots then
+                    RS.HydrateRecipeSlots(recipe)
+                end
                 local uid = tonumber(resolved and resolved.outputUid) or tonumber(potion.outputUid) or 0
                 local target = tonumber(watch.targetStock) or 0
                 local have = PotionHave(resolved, potion, uid)
@@ -1039,38 +1177,33 @@ local function BuildBalancedSpecDemand(opts)
                 if type(Planner._demandNeedScratch) == "table" then
                     Planner._demandNeedScratch[tostring(watchKey)] = stillNeeds
                 end
-                if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
-                    local group = byUid[uid]
-                    if group == nil then
-                        group = {
-                            uid = uid,
-                            have = have,
-                            maxTarget = target,
-                            primaryKey = watchKey,
-                            primaryRecipe = recipe,
-                            potion = potion,
-                            extras = 0,
-                        }
-                        byUid[uid] = group
-                        uidOrder[#uidOrder + 1] = uid
-                    else
-                        if target > group.maxTarget then
-                            group.maxTarget = target
-                        end
-                        group.extras = group.extras + 1
-                    end
+                if uid > 0 and deficit > 0 and target > 0 then
+                    entries[#entries + 1] = {
+                        key = watchKey,
+                        tier = WatchPriorityTier(watchKey, watch),
+                        target = target,
+                        have = have,
+                        recipe = recipe,
+                        potion = potion,
+                        uid = uid,
+                        stillNeeds = stillNeeds,
+                    }
                 end
             end
         end
     end
-    for i = 1, #uidOrder do
-        local group = byUid[uidOrder[i]]
-        local recipe = group.primaryRecipe
+    local groups = GroupWatchesByOutputUid(entries)
+    local convertPref = {}
+    for gi = 1, #groups do
+        local group = groups[gi]
+        local recipe = group.recipe
         local target = group.maxTarget
         local have = group.have
         local deficit = math.max(0, target - have)
         local craftsNeeded = CraftsNeededForDeficit(deficit, recipe, group.uid)
         local slots = recipe.slots or {}
+        local prefKey, prefRank = nil, 99
+        local byproductKeys = {}
         for j = 1, #slots do
             local slot = slots[j]
             local spec = ResolveSlotSpec(slot)
@@ -1079,6 +1212,8 @@ local function BuildBalancedSpecDemand(opts)
                 if specKey ~= nil then
                     local perCraft = EffectivePerCraft(slot, slots)
                     local absNeed = craftsNeeded * perCraft
+                    local role = slot.role or spec.role
+                    local byproduct = SpecIsHarvestByproduct(spec) == true
                     local row = demand[specKey]
                     if row == nil then
                         row = {
@@ -1087,24 +1222,51 @@ local function BuildBalancedSpecDemand(opts)
                             role = slot.role,
                             perCraft = perCraft,
                             absolute = 0,
+                            reserveAbsolute = 0,
                             watchNames = {},
                             watchDetails = {},
                         }
                         demand[specKey] = row
                     end
-                    row.absolute = row.absolute + absNeed
+                    row.reserveAbsolute = (tonumber(row.reserveAbsolute) or 0) + absNeed
+                    -- Grow targets only watches that still need planting.
+                    -- Byproduct rows keep the pooled claim so convert uses one deficit.
+                    -- Covered watches still reserve plants (Refine must not treat them as surplus).
+                    if byproduct or group.stillNeeds == true then
+                        row.absolute = (tonumber(row.absolute) or 0) + absNeed
+                    end
                     if perCraft > (row.perCraft or 0) then
                         row.perCraft = perCraft
                     end
-                    local watchName = group.potion.name or towstring(tostring(group.primaryKey))
+                    local watchName = (group.potion and group.potion.name) or towstring(tostring(group.key))
                     row.watchNames[#row.watchNames + 1] = watchName
                     row.watchDetails[#row.watchDetails + 1] = {
-                        potionKey = group.primaryKey,
+                        potionKey = group.key,
                         name = watchName,
                         have = have,
                         target = target,
                         deficit = deficit,
                     }
+                    if byproduct then
+                        byproductKeys[#byproductKeys + 1] = specKey
+                    elseif SpecIsGrowable(spec, role) then
+                        local rank = ByproductConvertRoleRank(role)
+                        if rank < prefRank then
+                            prefRank = rank
+                            prefKey = specKey
+                        end
+                    end
+                end
+            end
+        end
+        if prefKey ~= nil then
+            for b = 1, #byproductKeys do
+                local bpKey = byproductKeys[b]
+                local prev = convertPref[bpKey]
+                if prev == nil or prefRank < prev.rank
+                    or (prefRank == prev.rank and tostring(prefKey) < tostring(prev.plantKey))
+                then
+                    convertPref[bpKey] = { plantKey = prefKey, rank = prefRank }
                 end
             end
         end
@@ -1118,7 +1280,11 @@ local function BuildBalancedSpecDemand(opts)
         row.craftsHave = math.floor((tonumber(row.have) or 0) / pc)
         row.craftsNeeded = math.ceil((tonumber(row.absolute) or 0) / pc)
         row.craftsShort = math.max(0, row.craftsNeeded - row.craftsHave)
-        row.brewAbsolute = row.absolute
+        if row.reserveAbsolute == nil then
+            row.reserveAbsolute = tonumber(row.absolute) or 0
+        end
+        -- Refine surplus uses brewAbsolute, which includes covered watches.
+        row.brewAbsolute = tonumber(row.reserveAbsolute) or tonumber(row.absolute) or 0
         row.byproductConvertExtra = 0
         -- Resolve plant/seed uids once for Grow/Refine (fingerprint specs included).
         if type(row.spec) == "table" and SM then
@@ -1152,55 +1318,13 @@ local function BuildBalancedSpecDemand(opts)
         end
     end
 
-    -- Resin / byproducts are not plantable: grow extra same-recipe plants, then convert surplus.
-    for watchKey, watch in pairs(watches) do
-        if WatchWantsAutoGrow(watchKey, watch) then
-            local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
-            if type(recipe) == "table" then
-                if RS.HydrateRecipeSlots then
-                    RS.HydrateRecipeSlots(recipe)
-                end
-                local slots = recipe.slots or {}
-                local resolved = ResolveWatchPotion(watchKey)
-                local potion = resolved and resolved.potion
-                local target = tonumber(watch.targetStock) or 0
-                local outUid = potion and tonumber(potion.outputUid) or 0
-                local havePot = PotionHave(resolved, potion, outUid)
-                local deficitPot = math.max(0, target - havePot)
-                if deficitPot > 0 and target > 0 then
-                    local craftsNeeded = CraftsNeededForDeficit(deficitPot, recipe, outUid)
-                    local byproductItemsShort = 0
-                    local preferredKey = nil
-                    local preferredRank = 99
-                    for j = 1, #slots do
-                        local slot = slots[j]
-                        local spec = ResolveSlotSpec(slot)
-                        if type(spec) == "table" then
-                            local perCraft = EffectivePerCraft(slot, slots)
-                            local sk = SpecKey(spec)
-                            local row = sk and demand[sk] or nil
-                            local have = type(row) == "table" and (tonumber(row.have) or 0)
-                                or CountItemsMatchingSpec(spec)
-                            local need = craftsNeeded * perCraft
-                            local slotDef = math.max(0, need - have)
-                            if SpecIsHarvestByproduct(spec) then
-                                if slotDef > byproductItemsShort then
-                                    byproductItemsShort = slotDef
-                                end
-                            elseif SpecIsGrowable(spec, slot.role or spec.role) then
-                                local rank = ByproductConvertRoleRank(slot.role or spec.role)
-                                if rank < preferredRank and sk ~= nil then
-                                    preferredRank = rank
-                                    preferredKey = sk
-                                end
-                            end
-                        end
-                    end
-                    if byproductItemsShort > 0 and preferredKey ~= nil then
-                        InflateConvertGrowRow(demand[preferredKey], byproductItemsShort)
-                    end
-                end
-            end
+    -- One pooled byproduct deficit inflates the preferred plant row once.
+    for bpKey, pref in pairs(convertPref) do
+        local bp = demand[bpKey]
+        local short = type(bp) == "table" and (tonumber(bp.deficit) or 0) or 0
+        local plant = pref and demand[pref.plantKey] or nil
+        if short > 0 and type(plant) == "table" then
+            InflateConvertGrowRow(plant, short)
         end
     end
 
@@ -1377,6 +1501,9 @@ local function CollectFocus(mode, rowsOpt)
             end
         end
     end
+
+    -- Same output uid shares one stock target and the best-priority recipe.
+    candidates = CollapseFocusCandidates(candidates)
 
     -- Best priority tier among armed candidates that still need work, then
     -- bottle-gap water-fill within that band.
@@ -5152,18 +5279,41 @@ function Planner.CollectVendorBuyJobs(opts)
         if type(watches) ~= "table" then
             return
         end
+        local entries = {}
         for i = 1, #watches do
             local fw = watches[i]
-            local recipe = fw and fw.recipe
-            local deficit = math.max(0, (tonumber(fw and fw.target) or 0) - (tonumber(fw and fw.stock) or 0))
+            if type(fw) == "table" then
+                entries[#entries + 1] = {
+                    key = fw.potionKey,
+                    tier = fw.priorityTier,
+                    target = fw.target,
+                    have = fw.stock,
+                    recipe = fw.recipe,
+                    uid = fw.uniqueID,
+                    bottleGap = fw.bottleGap,
+                    stillNeeds = true,
+                    raw = fw,
+                }
+            end
+        end
+        local groups = GroupWatchesByOutputUid(entries)
+        for gi = 1, #groups do
+            local group = groups[gi]
+            local fw = group.winner and group.winner.raw or nil
+            local recipe = group.recipe
+            local deficit = math.max(0, (tonumber(group.maxTarget) or 0) - (tonumber(group.have) or 0))
             if type(recipe) == "table" and deficit > 0 then
                 local RS = RecipeSpec()
                 if RS and RS.HydrateRecipeSlots then
                     RS.HydrateRecipeSlots(recipe)
                 end
-                local outUid = tonumber(fw and fw.uniqueID) or tonumber(fw and fw.outputUid) or 0
+                local outUid = tonumber(group.uid) or 0
+                if outUid <= 0 then
+                    outUid = tonumber(fw and fw.uniqueID) or tonumber(fw and fw.outputUid) or 0
+                end
                 local craftsNeeded = CraftsNeededForDeficit(deficit, recipe, outUid)
                 local slots = recipe.slots or {}
+                local gap = (fw and fw.bottleGap) or group.bottleGap
                 for j = 1, #slots do
                     local slot = slots[j]
                     local spec = ResolveSlotSpec(slot)
@@ -5174,7 +5324,7 @@ function Planner.CollectVendorBuyJobs(opts)
                             spec,
                             slot.role or spec.role,
                             craftsNeeded * per,
-                            fw.bottleGap
+                            gap
                         )
                     end
                 end

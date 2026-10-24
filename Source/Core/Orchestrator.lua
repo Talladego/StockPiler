@@ -658,6 +658,15 @@ function Orch.DumpState(emit)
     end
     emit("=== StockPiler state ===")
     emit("phase=" .. Orch.GetPhase() .. " lastOpId=" .. tostring(Orch._lastOpId or 0))
+    local Bridge = StockPiler.EngineEventBridge
+    local streaks = Bridge and Bridge._stageFailStreak
+    if type(streaks) == "table" then
+        for name, n in pairs(streaks) do
+            if (tonumber(n) or 0) > 0 then
+                emit("stageFail " .. tostring(name) .. "=" .. tostring(n))
+            end
+        end
+    end
     emit("harvestActive=" .. tostring(Orch.IsHarvestActive() == true))
     emit("brewPhase=" .. tostring(Orch._brewPhase or "none"))
     emit("fillBlocked=" .. tostring(Orch._fillBlocked == true)

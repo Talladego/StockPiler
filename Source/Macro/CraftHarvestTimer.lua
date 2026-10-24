@@ -1025,23 +1025,46 @@ local function EachActionButton(fn)
     end
 end
 
+local function HudShowing()
+    local CB = StockPiler.CraftButton
+    if CB and CB.IsWindowShowing then
+        return CB.IsWindowShowing() == true
+    end
+    return false
+end
+
 local function RefreshBody()
     local Macro = StockPiler.Macro
     local craftId = 0
     if Macro and Macro.GetCraftMacroId then
         craftId = tonumber(Macro.GetCraftMacroId()) or 0
     end
+    local hud = HudShowing()
     -- No owned Craft macro: skip plot scans and the hotbar walk.
+    -- A hidden HUD has nothing to paint, so skip readiness work too.
     if craftId == 0 then
         local CB = StockPiler.CraftButton
-        if CB and CB.TickGrowVisuals then
+        if hud and CB and CB.TickGrowVisuals then
             CB.TickGrowVisuals()
         end
         return
     end
-    -- Plot, potion, and user-stay fields fill on the first read.
+    -- Arm the verified id before the hotbar walk so each button compares
+    -- against this refresh instead of reading the macro table again.
     Timer._refreshSnap = { craftId = craftId }
+    local ownedVisible = false
     if Macro and Macro.IsCraftMacroButton then
+        EachActionButton(function(button)
+            if Macro.IsCraftMacroButton(button) then
+                ownedVisible = true
+            end
+        end)
+    end
+    -- Neither a Craft copy on a bar nor the HUD is visible: skip plot reads.
+    if ownedVisible ~= true and hud ~= true then
+        return
+    end
+    if ownedVisible and Macro and Macro.IsCraftMacroButton then
         EachActionButton(function(button)
             if Macro.IsCraftMacroButton(button) then
                 Timer.Paint(button)
@@ -1050,13 +1073,13 @@ local function RefreshBody()
     end
     -- Floating craft button: grow pie + lit harvest while plots tick.
     local CB = StockPiler.CraftButton
-    if CB and CB.TickGrowVisuals then
+    if hud and CB and CB.TickGrowVisuals then
         CB.TickGrowVisuals()
     end
     -- Harvest/Brew readiness never flips when plots start growing, so the
     -- appearance key would leave Craft on the disabled texture until the
     -- player re-places the slot. Retint when grow/ready activity changes.
-    if Macro and Macro.AlignCraftEnable then
+    if ownedVisible and Macro and Macro.AlignCraftEnable then
         local growLit = Timer.HasHarvestReady() == true
             or (Timer.ShortestSeconds() ~= nil)
         local userStay = Timer.NeedsUserStay() == true

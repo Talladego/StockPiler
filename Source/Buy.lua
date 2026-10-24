@@ -27,6 +27,9 @@ Buy._visitMoneyBrass = 0
 Buy._visitBought = 0
 Buy._visitStopReason = nil
 Buy._visitAcquired = Buy._visitAcquired or {}
+-- Per confirmed buy: bag arrival clears that credit only (not every open credit).
+Buy._visitCreditLedger = Buy._visitCreditLedger or {}
+Buy._visitBagSeen = Buy._visitBagSeen or {}
 Buy._fillChatPending = Buy._fillChatPending or {}
 Buy._allowPlantBuys = false
 Buy._planArmedAfterFill = false
@@ -337,11 +340,88 @@ local function VisitAcquired(key)
     return tonumber(Buy._visitAcquired[key]) or 0
 end
 
-local function AddVisitAcquired(key, n)
+local function AddVisitAcquired(key, n, uid, bagAt)
     if key == nil then
         return
     end
-    Buy._visitAcquired[key] = VisitAcquired(key) + (tonumber(n) or 0)
+    n = tonumber(n) or 0
+    if n == 0 then
+        return
+    end
+    Buy._visitAcquired[key] = VisitAcquired(key) + n
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return
+    end
+    bagAt = tonumber(bagAt)
+    if bagAt == nil then
+        bagAt = BagCountUid(uid)
+    end
+    if Buy._visitBagSeen[uid] == nil then
+        Buy._visitBagSeen[uid] = bagAt
+    end
+    local ledger = Buy._visitCreditLedger
+    ledger[#ledger + 1] = { key = key, uid = uid, qty = n }
+end
+
+--- Drop visit credit only for buys whose items have actually reached the bag.
+local function SettleVisitAcquiredFromBags()
+    local ledger = Buy._visitCreditLedger
+    if type(ledger) ~= "table" or #ledger == 0 then
+        return
+    end
+    local seen = Buy._visitBagSeen
+    local byUid = {}
+    local uidOrder = {}
+    for i = 1, #ledger do
+        local entry = ledger[i]
+        local uid = tonumber(entry.uid) or 0
+        if byUid[uid] == nil then
+            byUid[uid] = {}
+            uidOrder[#uidOrder + 1] = uid
+        end
+        local list = byUid[uid]
+        list[#list + 1] = entry
+    end
+    local keep = {}
+    for i = 1, #uidOrder do
+        local uid = uidOrder[i]
+        local entries = byUid[uid]
+        local current = BagCountUid(uid)
+        local cursor = tonumber(seen[uid])
+        if cursor == nil then
+            cursor = current
+        end
+        local gain = current - cursor
+        if gain < 0 then
+            gain = 0
+            cursor = current
+        end
+        for j = 1, #entries do
+            local entry = entries[j]
+            local qty = tonumber(entry.qty) or 0
+            if gain > 0 and qty > 0 then
+                local take = gain
+                if take > qty then
+                    take = qty
+                end
+                gain = gain - take
+                qty = qty - take
+                local left = VisitAcquired(entry.key) - take
+                if left > 0 then
+                    Buy._visitAcquired[entry.key] = left
+                else
+                    Buy._visitAcquired[entry.key] = nil
+                end
+                entry.qty = qty
+            end
+            if (tonumber(entry.qty) or 0) > 0 then
+                keep[#keep + 1] = entry
+            end
+        end
+        seen[uid] = current
+    end
+    Buy._visitCreditLedger = keep
 end
 
 local function JobAcquireKey(job, item)
@@ -480,7 +560,7 @@ local function AccountConfirmedBuy(pending, liveMoney)
     if StockPilerTabWatch and StockPilerTabWatch.RefreshAutoBuyMoneyUi then
         StockPilerTabWatch.RefreshAutoBuyMoneyUi()
     end
-    AddVisitAcquired(key, qty)
+    AddVisitAcquired(key, qty, pending.uid, pending.bagBefore)
     if type(pending.job) == "table" and type(pending.item) == "table" then
         NoteFillProgress(pending.job, pending.item, qty, unitCost)
     elseif (tonumber(pending.uid) or 0) > 0 then
@@ -989,6 +1069,8 @@ local function ResetVisit()
     Buy._visitBought = 0
     Buy._visitStopReason = nil
     Buy._visitAcquired = {}
+    Buy._visitCreditLedger = {}
+    Buy._visitBagSeen = {}
     Buy._fillChatPending = {}
     Buy._planArmedAfterFill = false
     Buy._pendingBuy = nil
@@ -1757,9 +1839,9 @@ end
 function Buy.OnInventorySnapshot()
     -- Do not Flatten here; jobs rebuild on next Collect via snapGen key.
     Buy.InvalidateJobsCache()
-    -- Bag deficit is truth: drop optimistic visit-acquired while store is open.
+    -- Clear a credit only once that item's bag count has caught the buy.
     if Buy._storeWasOpen == true then
-        Buy._visitAcquired = {}
+        SettleVisitAcquiredFromBags()
     end
     local woke = false
     -- Inventory may confirm a pending buy via bag gain.

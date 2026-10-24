@@ -2091,6 +2091,13 @@ function SM.OnCraftChat(payload)
     local kind = tostring(payload.kind or "")
     local pending = NewestPendingHarvest()
     local CC = StockPiler.CraftChatAdapter
+    -- Apothecary uses the same failure line. Do not close a harvest on a brew.
+    if kind == "critical_failure" or kind == "critical_success" or kind == "special_moment" then
+        local Brew = StockPiler.Brew
+        if Brew and Brew.PerformedWithin and Brew.PerformedWithin(5) == true then
+            return
+        end
+    end
     if kind == "critical_failure" then
         if type(pending) == "table" then
             pending.chatCriticalFailure = true
