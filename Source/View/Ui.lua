@@ -365,7 +365,7 @@ end
 --- Mid-brew: do not queue ui-force-watch-recount. Pump skips that job until the
 --- session ends, and stamping the snap done before the paint used to drop the
 --- post-brew recount.
---- Hidden Watch: keep pending only — do not StartOnce a no-op each snapGen.
+--- Hidden Watch: keep pending only - do not StartOnce a no-op each snapGen.
 local function RequestForcedWatchRecount(_reason)
     local Inv = StockPiler.Inventory
     local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
@@ -455,7 +455,7 @@ local function FlushCatalogIfStructureDirty()
     return false
 end
 
---- Potions/Plants Have from L0 CountByUid — does not need Have-warm or plan rebuild.
+--- Potions/Plants Have from L0 CountByUid - does not need Have-warm or plan rebuild.
 --- Run even while plan/prewarm defers Watch craftable paint.
 local function TryCatalogLiveCatchup()
     if FlushCatalogIfStructureDirty() then
@@ -491,7 +491,7 @@ local function TryCatalogLiveCatchup()
 end
 
 --- Catalog tab: never RefreshActiveTab for bag/plan churn (ListBoxSetDisplayOrder
---- {}→order resets Potions/Plants scroll). Structure learns rebuild once; Have patches in place.
+--- {}->order resets Potions/Plants scroll). Structure learns rebuild once; Have patches in place.
 local function FlushCatalogTabUi()
     if not IsCatalogTabVisible() then
         return false
@@ -547,7 +547,7 @@ function Ui.FlushPendingFooterRefresh()
     end
 end
 
---- FOOTER_DIRTY → footer/macro chrome. payload.immediate syncs readiness now.
+--- FOOTER_DIRTY -> footer/macro chrome. payload.immediate syncs readiness now.
 local function OnFooterDirty(payload)
     Ui.RequestFooterRefresh()
     if type(payload) ~= "table" or payload.immediate ~= true then
@@ -578,7 +578,7 @@ local function OnFooterDirty(payload)
     end
 end
 
---- WATCH_UI_DIRTY → coalesced Watch flush; payload.immediate paints rows now.
+--- WATCH_UI_DIRTY -> coalesced Watch flush; payload.immediate paints rows now.
 local function OnWatchUiDirty(payload)
     payload = type(payload) == "table" and payload or {}
     Ui.MarkWatchUiDirty()
@@ -600,7 +600,7 @@ local function OnWatchUiDirty(payload)
     TryCatalogLiveCatchup()
 end
 
---- BREW_SESSION_CHANGED → row Brew chrome + live counts without waiting on coalesce.
+--- BREW_SESSION_CHANGED -> row Brew chrome + live counts without waiting on coalesce.
 local function OnBrewSessionChanged(payload)
     payload = type(payload) == "table" and payload or {}
     Ui.MarkWatchUiDirty()
@@ -698,7 +698,7 @@ function Ui.FlushWatchUiIfDirty()
         end
         -- Catalog Have is L0-only; do not wait for Have-warm / plan like Watch craftable.
         -- Consume dirty on catalog so a later defer-end does not RefreshActiveTab
-        -- (empty→full ListBoxSetDisplayOrder) and yank Potions scroll to the top.
+        -- (empty->full ListBoxSetDisplayOrder) and yank Potions scroll to the top.
         if IsCatalogTabVisible() then
             FlushCatalogTabUi()
             return true
@@ -819,7 +819,7 @@ function Ui.FlushWatchUiIfDirty()
         return
     end
 
-    -- Potions/Plants selected: Have/structure only — never RefreshActiveTab (scroll jump).
+    -- Potions/Plants selected: Have/structure only - never RefreshActiveTab (scroll jump).
     if FlushCatalogTabUi() then
         return true
     end

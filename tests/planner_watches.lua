@@ -414,12 +414,236 @@ local function testBuildFlagsClearOnError()
     eq(P._demandNeedScratch, nil, "demand scratch is cleared after an error")
 end
 
+local function testNeedSkillClearsWhenApoCrosses()
+    local apo = 40
+    StockPiler.TradeSkillCaps.GetApoSkill = function()
+        return apo
+    end
+    StockPiler.TradeSkillCaps.GetCultSkill = function()
+        return 200
+    end
+    StockPiler.TradeSkillCaps.CanAutoGrow = function()
+        return true
+    end
+    StockPiler.TradeSkillCaps.CanBrewPotions = function()
+        return apo > 0
+    end
+    StockPiler.RecipeSpec.RecipeSkillRequirements = function(recipe)
+        local need = tonumber(recipe and recipe.apoNeed) or 0
+        if need <= 0 then
+            return nil
+        end
+        return { apothecary = need, apo = need }
+    end
+    local mat = { key = "herbGate", role = "main" }
+    H.items = { { uniqueID = 42, stackCount = 10, matches = { herbGate = true } } }
+    H.watches = {
+        ["uid:9"] = { enabled = true, autoGrow = true, targetStock = 4, priorityTier = 1 },
+    }
+    H.recipes = {
+        ["uid:9"] = {
+            recipeKey = "r9",
+            recipeYield = 1,
+            out = 9,
+            apoNeed = 75,
+            slots = { { spec = mat, perCraft = 1, role = "main" } },
+        },
+    }
+    reset()
+    local plan = P.Build({ force = true })
+    check(type(plan) == "table" and type(plan.rows) == "table", "plan builds below the recipe skill")
+    local row = plan and plan.rows and plan.rows[1]
+    eq(row and row.statusKey, "need_skill", "watch is need_skill below the apothecary requirement")
+    local gen = plan and plan.planGen
+    local key = P.CacheKeyFromGens()
+    apo = 41
+    local held = P.Build()
+    eq(held, plan, "an unrelated skill point reuses the cached plan")
+    eq(held and held.planGen, gen, "an unrelated skill point does not rebuild")
+    eq(P.CacheKeyFromGens(), key, "an unrelated skill point keeps the cache key")
+    eq(held and held.rows[1].statusKey, "need_skill", "need_skill stays until the requirement is met")
+    apo = 75
+    local crossed = P.Build()
+    eq(crossed, plan, "crossing the requirement does not build a new plan")
+    eq(crossed and crossed.planGen, gen, "crossing the requirement does not full-rebuild")
+    eq(crossed and crossed.rows[1].statusKey, "ready_to_craft",
+        "the watch leaves need_skill after the skill-up")
+end
+
+local function testColdDemandPlantAndPotion()
+    load_module("Source/Grow.lua")
+    local Grow = StockPiler.Grow
+    local Watch = StockPiler.Watch
+    local prevCount = StockPiler.Inventory.CountByUid
+    StockPiler.Inventory.CountByUid = function(uid)
+        if uid == 3010048 then
+            return 5
+        end
+        return prevCount(uid)
+    end
+    StockPiler.Inventory.IsReady = function()
+        return true
+    end
+    StockPiler.Items = StockPiler.Items or {}
+    StockPiler.Items.ToSpec = function(uid)
+        return {
+            key = "plant:" .. tostring(uid),
+            uid = uid,
+            growable = true,
+            seedUid = 3010048,
+            plantUid = uid,
+            role = "ingredient",
+        }
+    end
+    StockPiler.SeedMap.ResolveSeedUidForPlant = function()
+        return 3010048
+    end
+    StockPiler.RecipeSpec.BuildBalancedSpecDemand = function(opts)
+        if type(opts) == "table" and opts.cacheOnly == true then
+            if type(P._demandCache) == "table" then
+                return P._demandCache
+            end
+            return nil
+        end
+        return P.BuildBalancedSpecDemand(opts)
+    end
+    local prewarms = 0
+    local demandQueued = false
+    StockPiler.FrameWork = {
+        EnqueueDemand = function()
+            demandQueued = true
+        end,
+        IsActive = function(id)
+            return id == "prewarm-demand" and demandQueued == true
+        end,
+    }
+    StockPiler.Scheduler = {
+        RequestCachePrewarm = function()
+            prewarms = prewarms + 1
+            StockPiler.FrameWork.EnqueueDemand("snap")
+        end,
+    }
+    if StockPiler.PlanSnapshot then
+        StockPiler.PlanSnapshot._plan = nil
+    end
+    P._demandCache = nil
+    P._demandCacheKey = nil
+    Watch.EnabledPotionWatchesNeedCultGrow = function()
+        return false
+    end
+    Watch.CountEnabledPlantWatches = function()
+        return 1
+    end
+    Watch.ParsePlantKey = function()
+        return 3020048
+    end
+    Watch.GetPlantWatches = function()
+        return {
+            ["plant:3020048"] = { enabled = true, targetStock = 10 },
+        }
+    end
+    StockPiler.Garden = {
+        GetPlots = function()
+            return { [1] = { plotNum = 1, stage = 0, seedUid = 0, locked = false } }
+        end,
+        GetPlot = function()
+            return { plotNum = 1, stage = 0, seedUid = 0, locked = false }
+        end,
+    }
+    Grow.InvalidatePlantQueue({ reason = "test" })
+    local builds = 0
+    local realBuild = P.Build
+    P.Build = function(...)
+        builds = builds + 1
+        return realBuild(...)
+    end
+    local plantJob = Grow.GetPlantJob()
+    eq(plantJob and plantJob.plantReason, "plant_stock",
+        "a cold demand cache still returns a plant_stock job")
+    eq(plantJob and plantJob.seedUid, 3010048, "plant_stock uses the bag seed")
+    eq(builds, 0, "plant_stock does not need a full Planner.Build")
+
+    -- Potion watch only: cold demand returns nil and must not stick on planGen.
+    Watch.GetPlantWatches = function()
+        return {}
+    end
+    Watch.CountEnabledPlantWatches = function()
+        return 0
+    end
+    H.watches["uid:9"] = { enabled = true, autoGrow = true, targetStock = 4 }
+    local spec = {
+        key = "herb",
+        growable = true,
+        seedUid = 3010048,
+        plantUid = 3020048,
+        role = "main",
+    }
+    local recipe = {
+        slots = { { role = "main", perCraft = 1, spec = spec } },
+        recipeYield = 1,
+    }
+    local planGen = 46
+    StockPiler.PlanSnapshot._plan = {
+        planGen = planGen,
+        rows = {
+            {
+                potionKey = "uid:9",
+                name = "Tonic",
+                potionMin = 4,
+                potionHave = 0,
+                potionDeficit = 4,
+                craftable = 0,
+                bottleGap = 4,
+                recipe = recipe,
+                priorityTier = 1,
+            },
+        },
+    }
+    P._demandCache = nil
+    Grow.InvalidatePlantQueue({ reason = "test-cold" })
+    local cold = Grow.GetPlantJob()
+    eq(cold, nil, "a potion watch returns nil while demand is cold")
+    check(Grow._plantJobProbed ~= true, "a cold nil is not cached")
+    check(Grow._plantNilPlanGen ~= planGen, "a cold nil does not stick across planGen")
+    local coldAgain = Grow.GetPlantJob()
+    eq(coldAgain, nil, "a second cold probe is still nil")
+    check(Grow._plantNilPlanGen ~= planGen, "the second cold nil still does not stick")
+    local before = prewarms
+    P._demandPrewarmDue = nil
+    demandQueued = false
+    P.InvalidateFocusCaches()
+    check(prewarms > before, "InvalidateFocusCaches schedules demand prewarm")
+    check(P._demandPrewarmDue == true, "InvalidateFocusCaches marks demand prewarm due")
+    check(P._demandCache == nil, "InvalidateFocusCaches still clears the demand cache")
+    P._demandCache = {
+        herb = {
+            spec = spec,
+            specKey = "herb",
+            absolute = 4,
+            seedUid = 3010048,
+            plantUid = 3020048,
+            deficit = 4,
+            craftsShort = 4,
+        },
+    }
+    local lifted = Grow.GetPlantJob()
+    eq(lifted and lifted.plantReason, "potion_stock",
+        "a warmed demand cache returns the potion plant job")
+    eq(lifted and lifted.seedUid, 3010048, "the potion plant job uses the bag seed")
+    eq(StockPiler.PlanSnapshot.Get().planGen, planGen,
+        "potion lift does not need a planGen bump")
+    eq(builds, 0, "warming demand does not full-build")
+    P.Build = realBuild
+end
+
 testSameOutput()
 testCoveredReserve()
 testWarmHave()
 testResinInflation()
 testSkillPointKeepsCacheKey()
 testBuildFlagsClearOnError()
+testNeedSkillClearsWhenApoCrosses()
+testColdDemandPlantAndPotion()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

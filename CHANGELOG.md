@@ -2,6 +2,13 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.2
+
+- Fixes broken window title, chat, and tooltip text in 1.1.1.
+- Cleaner `/stp help` command list.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.1
 
 - A recipe is saved when you brew it.
@@ -17,7 +24,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Hovering Stock on a plant watch shows harvested plants and seeds in bags on separate lines. The Stock column stays the harvested-plant count. If the seed link is unknown, the tip says so.
 - Refining a plant StockPiler has not seen before teaches its plant-to-seed link and adds that plant to Known plants, the same way harvesting does.
 - `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` were removed. Use the window tabs. Harvesting still needs the craft button.
-- A Craft button appears on screen by default. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. It starts unlocked. Shift+left-click locks it. `/stp button` sets the size (0.50–2.00, or 50%–200%) and the centered grow countdown.
+- A Craft button appears on screen by default. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. It starts unlocked. Shift+left-click locks it. `/stp button` sets the size (0.50-2.00, or 50%-200%) and the centered grow countdown.
 - Turning the Craft Macro checkbox off removes the macro from your bars and deletes it. Turning it back on creates the macro again but does not put it back on a bar.
 - The Craft button and hotbar macro show a red tint when StockPiler is waiting on you, and a grow countdown while plots are still growing. The tip explains what is missing when nothing is ready.
 - AutoBrew keeps the Apothecary window hidden while it brews.

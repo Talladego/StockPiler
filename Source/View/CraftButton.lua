@@ -122,7 +122,7 @@ local function IconIdForMode(iconMode, canUse)
     return ICON_HARVEST
 end
 
---- lit=false → disabled texture (idle only). Growing uses lit harvest + pie.
+--- lit=false -> disabled texture (idle only). Growing uses lit harvest + pie.
 local function SetIconTexture(iconNum, lit)
     if not DoesWindowExist(ICON_WIN) then
         return
@@ -820,7 +820,7 @@ function Button.TickMacroFlash(timeElapsed)
     end
 end
 
---- EventBus: hotbar Craft macro performed — mirror press on the HUD button.
+--- EventBus: hotbar Craft macro performed - mirror press on the HUD button.
 function Button.OnCraftPerformed(payload)
     if type(payload) == "table" and payload.source == "button" then
         return
@@ -908,7 +908,7 @@ function Button.TickGrowVisuals(opts)
     local harvestReady = Timer and Timer.HasHarvestReady and Timer.HasHarvestReady() == true
     local remain = nil
     -- Grow wipe only while plots are still growing and none are ready yet.
-    -- When the first plot finishes, drop the pie (ready harvest icon) — do not
+    -- When the first plot finishes, drop the pie (ready harvest icon) - do not
     -- re-arm it for remaining plots.
     if iconMode == "harvest" and not canUse and harvestReady ~= true then
         if Timer and Timer.ShortestSeconds then

@@ -258,7 +258,7 @@ end
 --- Thin DataUtils / engine wrappers. Trusts dirty gate unless forceRefresh.
 --- Force path calls GetCraftingItemData / GetInventoryItemData directly.
 --- Stock DataUtils.GetCraftingItems never clears craftingItemsDirty (it wrongly
---- clears itemsDirty instead) — once dirty at init, every ReloadCraftingItems
+--- clears itemsDirty instead) - once dirty at init, every ReloadCraftingItems
 --- refetches. Do NOT clear craftingItemsDirty/itemsDirty here: clearing made
 --- DataUtils serve a stale table on the next slot event (after the first move).
 function BA.GetBagTable(bagType, opts)

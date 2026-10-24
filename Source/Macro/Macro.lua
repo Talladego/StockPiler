@@ -329,7 +329,7 @@ local function ButtonIsOurs(button)
         return false
     end
     -- Trust ids rebuilt on MACROS_LOADED / MACRO_UPDATED (and hook install).
-    -- Do not call Get*MacroId here — those rescans GetMacroTable per button paint.
+    -- Do not call Get*MacroId here - those rescans GetMacroTable per button paint.
     local ids = Macro._ourIds
     if type(ids) ~= "table" then
         RebuildOurMacroIds()
@@ -463,7 +463,7 @@ local function CraftIconIdForMode(iconMode)
     return CRAFT_MACRO_ICON_HARVEST
 end
 
---- Apply Craft macro icon only when latch harvest↔brew changes (never on idle alone).
+--- Apply Craft macro icon only when latch harvest<->brew changes (never on idle alone).
 --- slot, when passed, is the id already verified for this hotbar pass.
 local function EnsureCraftMacroIcon(iconMode, slot)
     iconMode = (iconMode == "brew") and "brew" or "harvest"
@@ -792,7 +792,7 @@ end
 
 --- Put DO_MACRO back on the Action child. Clearing to NONE leaves
 --- WindowGameAction as a silent no-op (same failure mode as GCDsaver's
---- WindowGameAction swap — see RoR forums / Talladego on GCDsaver 1.0.5).
+--- WindowGameAction swap - see RoR forums / Talladego on GCDsaver 1.0.5).
 local function restoreDoMacroGameActionForButton(button)
     if not button or WindowSetGameActionData == nil then
         return false
@@ -1002,7 +1002,7 @@ function Macro.FireHarvestGameAction()
     return FireHarvestFromMacroSlots(Macro.GetMacroId())
 end
 
---- Preferred harvest fire order: Craft bar → footer chrome → orphan Harvest slots.
+--- Preferred harvest fire order: Craft bar -> footer chrome -> orphan Harvest slots.
 function Macro.FireHarvestActionPreferred()
     if Macro.FireCraftHarvestGameAction() then
         return true
@@ -1185,7 +1185,7 @@ function Macro.ReapplyCraftEnable()
 end
 
 --- Same booleans the footer just committed. Engine slot updates must not
---- recompute CanHarvestNow/CanBrewNow — that greys only Craft after Harvest
+--- recompute CanHarvestNow/CanBrewNow - that greys only Craft after Harvest
 --- has already been painted, until some later refresh happens to repaint it.
 local function committedWant(which)
     local h = Macro._commitCanHarvest
@@ -1682,7 +1682,7 @@ local function installUpdateEnabledStateHook()
         end
         local forced = false
         local want = false
-        -- Do not fall back to "ours but not harvest/brew ⇒ craft". A stale
+        -- Do not fall back to "ours but not harvest/brew => craft". A stale
         -- _ourIds entry for Assist would then clear that slot's Action bind.
         local isCraft = Macro.IsCraftMacroButton(self)
         if isCraft then
@@ -2248,7 +2248,7 @@ local function FireCraftPerformed(mode, fromButton)
     })
 end
 
---- Dual Craft macro / HUD brew entry. opts.fromButton → EventBus source="button".
+--- Dual Craft macro / HUD brew entry. opts.fromButton -> EventBus source="button".
 function Macro.CraftClick(opts)
     opts = type(opts) == "table" and opts or nil
     local fromButton = opts and opts.fromButton == true

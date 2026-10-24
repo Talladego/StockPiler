@@ -26,7 +26,7 @@ end
 
 --- Returns level, explicit.
 --- explicit=true: stock SoT reported a number (including 0 = unlearned).
---- explicit=false: sources missing/empty — keep sticky (combat/scenario blip).
+--- explicit=false: sources missing/empty - keep sticky (combat/scenario blip).
 local function ReadLevel(skillId)
     skillId = tonumber(skillId) or 0
     if skillId <= 0 then
@@ -128,7 +128,7 @@ end
 
 --- live + explicit from ReadLevel.
 --- Hot paths keep sticky on explicit 0: TradeSkillLevels can blip to 0 in
---- combat/scenario (0.3.238–0.3.240). Real unlearn is OnTradeSkillPulse.
+--- combat/scenario (0.3.238-0.3.240). Real unlearn is OnTradeSkillPulse.
 local function StickLevel(live, explicit, last)
     live = tonumber(live) or 0
     last = tonumber(last) or 0

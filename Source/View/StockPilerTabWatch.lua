@@ -622,7 +622,7 @@ local function PatchWatchRowsLiveCounts(rows)
         return
     end
     if StockPiler.Planner and StockPiler.Planner.LiveRecount then
-        -- Never WarmHave from Watch paint — FrameWork prewarm owns that.
+        -- Never WarmHave from Watch paint - FrameWork prewarm owns that.
         StockPiler.Planner.LiveRecount({
             allowWarmHave = false,
         })

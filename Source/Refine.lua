@@ -180,7 +180,7 @@ end
 --- nowhere left to plant. Empty plots need seeds now; GetSeedBudget headroom
 --- already counts in-ground credit, so refine-to-fill must not wait on harvest.
 --- (0.3.187 deferred whenever ground>0, which starved empty plots until the
---- first replant harvested — second cycle then refined and filled.)
+--- first replant harvested - second cycle then refined and filled.)
 local function SeedBufferSettleDeferred(seedUid)
     seedUid = tonumber(seedUid) or 0
     if seedUid <= 0 then
@@ -500,7 +500,7 @@ local function LineConvertiblePending(line)
         return false
     end
     local seedUid = tonumber(line.seedUid) or 0
-    -- Plant-only cushion (s0): no refine→seed path; Upgrade Seeds owns SM fishing.
+    -- Plant-only cushion (s0): no refine->seed path; Upgrade Seeds owns SM fishing.
     if seedUid <= 0 then
         return false
     end
@@ -1172,7 +1172,7 @@ function Refine.CollectIntents()
     end
 
     -- 2) Plant-need / 3) Resin-need share one demand snapshot (warm-cache hit is free).
-    -- Orch decision hold / plant quiet: cacheOnly — never WarmHave.miss on this frame.
+    -- Orch decision hold / plant quiet: cacheOnly - never WarmHave.miss on this frame.
     local demand = nil
     if RS and RS.BuildBalancedSpecDemand then
         local Sch = StockPiler.Scheduler

@@ -703,7 +703,7 @@ end
 --- In-bag refinable plant for a SkillUp seed line (PrimaryPlant / harvest / name+skill).
 --- Needed when grow products never linked the same-tier seed (crit plant sits on
 --- ladder with s0) so PrimaryPlantForSeed returns 0 while the plant is in bags.
---- Cached per inventory snapGen — must not full-scan bags inside PickBestBagSeed
+--- Cached per inventory snapGen - must not full-scan bags inside PickBestBagSeed
 --- (seen: Orchestrator.Tick + PickPlantCandidate ~1s every 5s).
 local _findBagPlantCache = {}
 local _findBagPlantCacheGen = nil

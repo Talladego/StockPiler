@@ -16,7 +16,7 @@ Sch.PLAN_COALESCE_WHEN_AWAKE_SEC = 3.0
 Sch.PLAN_MIN_GAP_SEC = 2.0
 Sch.PLAN_WARM_HOLD_MAX_SEC = 3.0
 Sch.SESSION_SETTLE_SEC = 2.5
--- 75 frames ended settle in ~1.2s at 60fps — AutoGrow planted before LOADING_END.
+-- 75 frames ended settle in ~1.2s at 60fps - AutoGrow planted before LOADING_END.
 Sch.SESSION_SETTLE_MIN_FRAMES = 90
 -- LOADING_END is often already gone by addon init; never latch AutoGrow forever.
 Sch.SESSION_SETTLE_AWAIT_MAX_SEC = 8
@@ -91,7 +91,7 @@ local function InvalidatePlantQueue(reason)
 end
 
 local function RequestCachePrewarm(reason)
-    -- Defer prewarm during plant/refine quiet — sync WarmHave.miss under
+    -- Defer prewarm during plant/refine quiet - sync WarmHave.miss under
     -- Inv.ApplySlots was the dominant ~90-100ms trail after every IssueOne.
     if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         Sch._pendingPrewarmAfterQuiet = true
@@ -130,7 +130,7 @@ local function FlushPendingPrewarmAfterQuiet()
         Planner.InvalidateHaveCacheAfterQuiet()
     end
     RequestCachePrewarm(reason)
-    -- Rebuild after prewarm finishes — never same frame as quiet-end flush.
+    -- Rebuild after prewarm finishes - never same frame as quiet-end flush.
     Sch._pendingPlanAfterPrewarm = true
 end
 
@@ -291,7 +291,7 @@ local function RebuildPlanIfDue()
     if fwBusyOther then
         return false
     end
-    -- Hold rebuild until WarmHave finishes — including Cheap/Garden paths.
+    -- Hold rebuild until WarmHave finishes - including Cheap/Garden paths.
     -- Snap bumps InvalidateHaveWarm; without this wait CheapRebuild sync-warms
     -- under a remounted cache and stamps stale craftable after the first move.
     -- Start the hold clock before treating prewarm-busy as a reason to wait.
@@ -721,7 +721,7 @@ local function ExpirePlantQuiet(now)
     if now >= untilT then
         Sch._plantQuietUntil = 0
         -- Quiet-end: drop remounted have, prewarm, then rebuild (bag moves during
-        -- quiet never EnqueuePlanRebuild — without this Watch sits one stack behind).
+        -- quiet never EnqueuePlanRebuild - without this Watch sits one stack behind).
         Sch.SkipPlanThisFrame()
         Sch.SkipUiThisFrame()
         local Planner = StockPiler.Planner
@@ -922,6 +922,9 @@ end
 function Sch.OnTradeSkillsChanged(payload)
     if type(payload) == "table" and payload.reason == "trade-caps" then
         return
+    end
+    if StockPiler.Planner and StockPiler.Planner.RefreshSkillGateStatuses then
+        StockPiler.Planner.RefreshSkillGateStatuses()
     end
     Sch.EnqueuePlanRebuild({ urgent = true })
     Sch.WakeAutoGrow()

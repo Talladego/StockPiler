@@ -2,11 +2,11 @@
 
 StockPiler keeps the potions and plants you care about in stock. Watch an item, set how many you want, and let it grow, buy, and brew toward that amount.
 
-**Version 1.1.1**
+**Version 1.1.2**
 
 ## Install
 
-1. Download `StockPiler-1.1.1.zip` from [Releases](https://github.com/Talladego/StockPiler/releases).
+1. Download `StockPiler-1.1.2.zip` from [Releases](https://github.com/Talladego/StockPiler/releases).
 2. Unzip it into `Interface/AddOns/` so the folder is `Interface/AddOns/StockPiler/`.
 3. Reload the UI.
 4. Open the window with `/stp` or `/stockpiler`.
@@ -38,7 +38,7 @@ Automation starts off. Turn on only the parts you want.
 | `/stockpiler` | Same as `/stp` |
 | `/stp help` | Show the command list |
 | `/stp button` | Show the Craft button scale |
-| `/stp button <scale>` | Set the Craft button scale (0.50–2.00, or 50%–200%) |
+| `/stp button <scale>` | Set the Craft button scale (0.50-2.00, or 50%-200%) |
 | `/stp button timer [on\|off]` | Centered grow countdown on the Craft button |
 | `/stp button reset` | Restore the Craft button (shown, unlocked, scale 1.00, timer on, centered) |
 | `/stp chat` | Show the current chat mode |

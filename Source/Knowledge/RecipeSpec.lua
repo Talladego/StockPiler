@@ -480,7 +480,7 @@ local function PruneOutcomesMismatchedToMainEffect(recipe)
 end
 
 --- Stamp EFFECT onto incomplete main slots.
---- Prefer bound-main description (Viscous Rat Spittle → snare). Potion Use/name is
+--- Prefer bound-main description (Viscous Rat Spittle -> snare). Potion Use/name is
 --- fallback only when outcomes are not multi-effect polluted.
 local function StampIncompleteMainEffect(recipe)
     if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
@@ -491,7 +491,7 @@ local function StampIncompleteMainEffect(recipe)
     local effectRef = (B and B.EFFECT) or 6
     local effectId = 0
 
-    -- 1) Bound main item (description / Items) — authoritative for glue/snare stubs.
+    -- 1) Bound main item (description / Items) - authoritative for glue/snare stubs.
     if MS and MS.ResolveMainEffectId then
         for i = 1, #recipe.slots do
             local slot = recipe.slots[i]
@@ -520,7 +520,7 @@ local function StampIncompleteMainEffect(recipe)
         end
     end
 
-    -- 2) Potion fallback — skip when outcomes disagree on EFFECT (collision fingerprint).
+    -- 2) Potion fallback - skip when outcomes disagree on EFFECT (collision fingerprint).
     if effectId <= 0 then
         local _, outcomeEffectCount = RecipeOutcomeEffectIdSet(recipe)
         local effectKey = recipe.effectKey
@@ -1152,7 +1152,7 @@ local function CountItemsMatchingSpec(spec)
         end
     end
     -- Incomplete mains included: ProductMatches accepts fingerprint twins
-    -- (Supple Scale stub ↔ Preserved Glossy Chitin), not boundUid-only.
+    -- (Supple Scale stub <-> Preserved Glossy Chitin), not boundUid-only.
     if Inv and Inv.ForEachItem and M then
         Inv.ForEachItem(accumulate)
     end
@@ -1346,7 +1346,7 @@ local function GrowReserveForSpec(spec)
     end
     -- Hold only the resolved seed (when same-tier / unknown) plus the genus
     -- ladder seed at this plant's skillReq. Never max over every grow/refine
-    -- linked seed — lower-tier leftovers inflate reserve and block brew.
+    -- linked seed - lower-tier leftovers inflate reserve and block brew.
     local headroom = 0
     if isSeed then
         headroom = headroomOf(seedUid)
@@ -2090,7 +2090,7 @@ function RS.CraftsNeededForDeficit(deficit, recipe, potionUid)
     return math.max(1, math.ceil(deficit / yield))
 end
 
---- Best-case bottles from current materials (crafts × integer yield).
+--- Best-case bottles from current materials (crafts x integer yield).
 function RS.CountPotionsCraftable(recipe, opts, potionUid)
     local crafts = RS.CountCraftsPossible(recipe, opts)
     local bottles = crafts * RS.StableCraftYield(recipe, potionUid)
@@ -3762,7 +3762,7 @@ local function RematerializeRecipeFingerprints()
                 newKey = tostring(SlotsFingerprint(slots) or "")
             end
             if newKey == "" then
-                -- Irreparable: no usable slot fingerprint — quarantine then drop.
+                -- Irreparable: no usable slot fingerprint - quarantine then drop.
                 report.dropped = report.dropped + 1
                 report.droppedRecipeKeys[#report.droppedRecipeKeys + 1] = oldKeyStr
                 if quarantine then
@@ -4033,7 +4033,7 @@ end
 --- is below the buffer (bag + in-ground + outstanding). Memoized per bag snap +
 --- garden planGen + refine outstanding (planting must invalidate without a bag move).
 --- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots.
---- opts.plantUids: plants with no known seed (Savage Marshroot s0) — plant bag
+--- opts.plantUids: plants with no known seed (Savage Marshroot s0) - plant bag
 --- count is the cushion so stimulant lines are not skipped by the seed-only hot path.
 function RS.WatchHasSeedBufferShort(recipe, opts)
     if not (StockPiler.Watch and StockPiler.Watch.IsSeedBufferEnabled
@@ -4210,7 +4210,7 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
                             break
                         end
                     else
-                        -- Bound uid / tip plant only — FindPlantUidForSpec is a full
+                        -- Bound uid / tip plant only - FindPlantUidForSpec is a full
                         -- bag+Items ProductMatches walk (0.3.348 Watch hitch / crash).
                         if plantUid <= 0 then
                             plantUid = tonumber(spec.uid) or tonumber(spec.uniqueID)

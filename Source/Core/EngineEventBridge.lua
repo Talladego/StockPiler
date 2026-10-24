@@ -103,8 +103,8 @@ function Bridge.OnInventoryUpdated(updatedSlots)
 end
 
 function Bridge.OnCraftingSlotUpdated(updatedSlots)
-    -- Stock: PLAYER_CRAFTING_SLOT_UPDATED → DataUtils.ReloadCraftingItems (craft bag).
-    -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here→main.
+    -- Stock: PLAYER_CRAFTING_SLOT_UPDATED -> DataUtils.ReloadCraftingItems (craft bag).
+    -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here->main.
     if GameData and GameData.Player then
         GameData.Player.craftingItemsDirty = true
     end
@@ -226,7 +226,7 @@ function Bridge.OnCultivationUpdated()
     if StockPiler.LearnBridge and StockPiler.LearnBridge.OnCultivationUpdated then
         StockPiler.LearnBridge.OnCultivationUpdated()
     end
-    -- Footer via coalesced flush only — never SyncActionReadiness per plot.
+    -- Footer via coalesced flush only - never SyncActionReadiness per plot.
     local suppressed = Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true
     local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
     if not suppressed and not settling then
@@ -265,7 +265,7 @@ function Bridge.OnTradeSkillUpdated()
         Bridge._skillsWereReady = true
     end
     -- Cult often arrives one TRADE_SKILL_UPDATED before Apo. Scrubbing potion
-    -- watches while apo still reads 0 was wiping every marked L1–L200 watch.
+    -- watches while apo still reads 0 was wiping every marked L1-L200 watch.
     if apo > 0 then
         Bridge._apoSkillSeen = true
     end
@@ -392,6 +392,11 @@ function Bridge.OnTradeSkillUpdated()
         end
         if StockPiler.Scheduler and StockPiler.Scheduler.EnqueuePlanRebuild then
             StockPiler.Scheduler.EnqueuePlanRebuild()
+        end
+        -- Cached rows keep need_skill until a watched threshold is crossed.
+        -- This does not BuildFull on an unrelated +1 skill point.
+        if StockPiler.Planner and StockPiler.Planner.RefreshSkillGateStatuses then
+            StockPiler.Planner.RefreshSkillGateStatuses()
         end
         if StockPiler.Ui and StockPiler.Ui.InvalidateSkillGates then
             StockPiler.Ui.InvalidateSkillGates()
@@ -660,9 +665,9 @@ function Bridge.Register()
     Bridge._handlers = {}
     local prefix = "StockPiler.EngineEventBridge."
     -- Parity with EA_Window_Backpack + DataUtils:
-    --   PLAYER_INVENTORY_SLOT_UPDATED → main bag
-    --   PLAYER_CRAFTING_SLOT_UPDATED  → craft bag (apo mats)
-    --   PLAYER_CRAFTING_INVENTORY_UPDATED → craft bag capacity / full rebuild
+    --   PLAYER_INVENTORY_SLOT_UPDATED -> main bag
+    --   PLAYER_CRAFTING_SLOT_UPDATED  -> craft bag (apo mats)
+    --   PLAYER_CRAFTING_INVENTORY_UPDATED -> craft bag capacity / full rebuild
     RegisterOne(ev, "PLAYER_INVENTORY_SLOT_UPDATED", prefix .. "OnInventoryUpdated")
     RegisterOne(ev, "PLAYER_CRAFTING_SLOT_UPDATED", prefix .. "OnCraftingSlotUpdated")
     RegisterOne(ev, "PLAYER_CRAFTING_INVENTORY_UPDATED", prefix .. "OnCraftingInventoryUpdated")

@@ -143,6 +143,93 @@ eq(matches, 0, "cooldown skips vendor matching")
 eq(wakes, 0, "a long cooldown does not wake buy every frame")
 check((tonumber(Buy._nextBuyAfter) or 0) > 1000, "the next buy waits for the cooldown")
 
+-- Mixed probe: one timed-out uid among six jobs, only uid 1001 is in a 60-row store.
+now = 3000
+Buy._nextBuyAfter = 0
+Buy._nextBuyIsCooldown = false
+Buy._noSpendCooldownUntil = {}
+Buy._lateBuyAttempts = {}
+Buy._pendingBuy = nil
+Buy._visitStopReason = nil
+Buy._visitPurchases = 0
+Buy._visitBought = 0
+Buy._jobsCache = nil
+Buy._storeMatchCache = nil
+Buy._storeMatchCacheToken = nil
+StockPiler.VendorAdapter._matchIndexGen = 1
+StockPiler.Planner.CollectVendorBuyJobs = function()
+    local jobs = {}
+    for i = 1, 6 do
+        local uid = 1000 + i
+        jobs[i] = {
+            uid = uid,
+            deficit = 1,
+            specKey = "j" .. uid,
+            spec = { uid = uid },
+        }
+    end
+    return jobs
+end
+StockPiler.VendorAdapter.GetMatchIndex = function()
+    local rows = {}
+    for i = 1, 60 do
+        local uid = (i == 1) and 1001 or (3000 + i)
+        rows[i] = {
+            canbuy = true,
+            cost = 10,
+            item = {
+                uniqueID = uid,
+                slotNum = i,
+                stackCount = 1,
+                cost = 10,
+                name = "Row " .. i,
+            },
+        }
+    end
+    return { rows = rows }
+end
+StockPiler.VendorAdapter.BuyItem = function()
+    return true
+end
+StockPiler.MaterialSpec.Matches = function(item, spec)
+    matches = matches + 1
+    local iu = tonumber(item and item.uniqueID) or 0
+    local su = tonumber(spec and spec.uid) or 0
+    return iu > 0 and iu == su
+end
+matches = 0
+check(Buy.IssueOne("buy") == true, "buying uid 1001 arms a pending purchase")
+now = now + 3.6
+local timedOut = Buy.IssueOne("timeout")
+check(timedOut ~= true, "the 3.6s no-spend timeout does not keep buying")
+matches = 0
+wakes = 0
+local trues = 0
+local quietWakes = 0
+local tailWakes = 0
+local frames = 360
+local gap = tonumber(Buy.POST_BUY_GAP_SEC) or 0.35
+for _ = 1, frames do
+    local wakesBefore = wakes
+    if Buy.IssueOne("cool") == true then
+        trues = trues + 1
+    end
+    local woke = wakes > wakesBefore
+    local wait = (tonumber(Buy._nextBuyAfter) or 0) - now
+    if woke then
+        if wait > gap then
+            quietWakes = quietWakes + 1
+        else
+            tailWakes = tailWakes + 1
+        end
+    end
+    now = now + (1 / 60)
+end
+eq(trues, 0, "mixed cooldown does not return true across 6s at 60fps")
+eq(matches, 0, "mixed cooldown does not rescan the store")
+eq(quietWakes, 0, "a long mixed cooldown does not wake buy every frame")
+check(tailWakes > 0 and tailWakes < 40, "AutoBuy wakes only inside the short resume gap")
+
 now = 2000
 Buy._nextBuyAfter = 0
 Buy._noSpendCooldownUntil = {}

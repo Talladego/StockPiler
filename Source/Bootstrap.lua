@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.1.1"
+StockPiler.Version = L"1.1.2"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -73,9 +73,13 @@ end
 local function PrintHelp()
     Print(T("boot.help.header"))
     Print(T("boot.help.open"))
+    Print(T("boot.help.help"))
     Print(T("boot.help.chat"))
     Print(T("boot.help.button"))
+    Print(T("boot.help.button_timer"))
+    Print(T("boot.help.button_reset"))
     Print(T("boot.help.link"))
+    Print(T("boot.help.apply"))
 end
 
 --- Settings only (prefs / watches / toggles). Leaves learned Account data alone.
@@ -453,7 +457,7 @@ function StockPiler.OnSlash(input)
         local buttonArg = string.match(lower, "^button%s+(.+)$")
         if buttonArg then
             buttonArg = string.gsub(buttonArg, "^scale%s+", "")
-            -- "button reset" / "button timer …" are handled above; do not treat as scale.
+            -- "button reset" / "button timer ..." are handled above; do not treat as scale.
             if buttonArg == "reset" or buttonArg == "timer"
                 or string.match(buttonArg, "^timer%s")
             then

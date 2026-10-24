@@ -684,7 +684,7 @@ function StockPilerTabPotions.Refresh()
     BuildVisibleList()
     local keyChanged = prevKey ~= StockPilerTabPotions._listStructureKey
     if DoesWindowExist("SPTabPotionsList") then
-        -- Empty→full ListBoxSetDisplayOrder resets scroll; skip when row ids unchanged.
+        -- Empty->full ListBoxSetDisplayOrder resets scroll; skip when row ids unchanged.
         if keyChanged or prevKey == nil then
             ListBoxSetDisplayOrder("SPTabPotionsList", {})
             ListBoxSetDisplayOrder("SPTabPotionsList", StockPilerTabPotions.displayOrder)
@@ -693,7 +693,7 @@ function StockPilerTabPotions.Refresh()
     end
 end
 
---- Bag-snap live Have (CountByUid) without ListBox rebuild — Watch catchup parity.
+--- Bag-snap live Have (CountByUid) without ListBox rebuild - Watch catchup parity.
 function StockPilerTabPotions.PatchLiveHave()
     local list = StockPilerTabPotions.listData
     if type(list) ~= "table" or #list == 0 then

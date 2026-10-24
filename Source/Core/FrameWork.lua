@@ -180,7 +180,7 @@ end
 
 --- WarmHave / Demand / seed-lines: one phase per Pump frame (budget=1).
 --- WarmHave itself is two resume steps (collect vs bag) so recipe hydrate
---- never shares a frame with the bag walk — and never with Watch paint.
+--- never shares a frame with the bag walk - and never with Watch paint.
 function FW.EnqueueWarmHave(gen)
     return FW.Start({
         id = "prewarm-warm-have",

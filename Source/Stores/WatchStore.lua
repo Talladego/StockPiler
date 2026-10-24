@@ -62,7 +62,7 @@ end
 
 --- Resolve a watch by exact store key, or by unique uid:N / uid:N|rk:... match.
 --- Composite keys (uid:N|rk:...) never alias a sibling recipe for the same
---- output — Potions-tab multi-recipe rows must toggle independently.
+--- output - Potions-tab multi-recipe rows must toggle independently.
 --- Legacy plain uid:N still resolves when no composite watches exist yet.
 --- Returns watch, storeKey (nil, nil when missing or ambiguous).
 function Watch.ResolveWatchEntry(recipeKey)

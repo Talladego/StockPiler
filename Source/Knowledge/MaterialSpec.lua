@@ -775,7 +775,7 @@ end
 
 --- When Items has not completed the bound uid yet, still accept a bag main that
 --- shares slot/skill/stab/power with the incomplete stub (twin preserved forms).
---- EFFECT must also agree when either side knows it — otherwise L175 stab/power
+--- EFFECT must also agree when either side knows it - otherwise L175 stab/power
 --- twins (WP / armor / snare) collide on the same incomplete fingerprint.
 local function IncompleteMainStatsMatch(itemData, spec)
     if type(itemData) ~= "table" or type(spec) ~= "table" then
@@ -995,7 +995,7 @@ end
 
 --- Recipe / demand identity. Omits DESTROY_ON_FAIL (via MaterialExceptions) so
 --- Fabricated vs Artisan's Glass Vial share keys despite differing on that bonus.
---- opts.omitUid: never embed uid: (recipe storage — Scale/Chitin twins share a key).
+--- opts.omitUid: never embed uid: (recipe storage - Scale/Chitin twins share a key).
 function MS.Key(spec, boundUid, opts)
     if type(spec) ~= "table" then
         return ""

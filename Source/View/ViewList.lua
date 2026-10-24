@@ -413,7 +413,7 @@ end
 -- List row zebra + mouseover highlight
 ----------------------------------------------------------------
 
---- Walk up from a child control to the ListBox row that owns …Background.
+--- Walk up from a child control to the ListBox row that owns ...Background.
 function VL.ResolveListRow(winName)
     winName = tostring(winName or "")
     local guard = 0

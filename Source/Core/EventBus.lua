@@ -51,7 +51,7 @@ function Bus.FireWatchUiDirty(payload)
     end
 end
 
---- Brew session phase / load-source chrome (Load→Brew chips, row state).
+--- Brew session phase / load-source chrome (Load->Brew chips, row state).
 function Bus.FireBrewSessionChanged(payload)
     local E = StockPiler.Events
     if E and E.BREW_SESSION_CHANGED then

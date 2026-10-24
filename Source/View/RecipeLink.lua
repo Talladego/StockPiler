@@ -841,7 +841,7 @@ function RL.SerializePlain(fields)
     return plain
 end
 
---- Parse plain POTION;… payload (string). Returns fields table or nil.
+--- Parse plain POTION;... payload (string). Returns fields table or nil.
 --- Any invalid field rejects the whole link.
 function RL.ParsePlain(plain)
     plain = ToNarrow(plain)

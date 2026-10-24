@@ -429,7 +429,7 @@ function StockPilerWindow.PrimeTabListsIfNeeded()
     end
     StockPilerWindow._tabListsPrimed = true
     local selected = StockPilerWindow.SelectedTab or StockPilerWindow.TABS_POTIONS
-    -- Layout only. Never call tab.refresh here — that ran WarmHave inside WatchRows
+    -- Layout only. Never call tab.refresh here - that ran WarmHave inside WatchRows
     -- on the same frame as SelectTab/OnShow (SP2 Flatten).
     StockPilerWindow.EnsureSelectedTabShowing()
     local tab = StockPilerWindow.Tabs[selected]
@@ -529,7 +529,7 @@ function StockPilerWindow.BeginOpenPaint()
 end
 
 --- Bind Watch ListBox after the parent has a real size. Scheduler skip/settle
---- must not cancel this — that left first-open empty until a tab click.
+--- must not cancel this - that left first-open empty until a tab click.
 function StockPilerWindow.FlushOpenPaint()
     if StockPilerWindow._openPaintPending ~= true then
         -- Reload while shown: OnShown may not run; catch an unpainted Watch tab.
@@ -717,7 +717,7 @@ function StockPilerWindow.ConfirmClearWatches(kind)
             StockPiler.Ui.MarkWatchUiDirty()
         end
     end
-    -- forceRebind only while Watch is visible — otherwise KickListBoxLayout
+    -- forceRebind only while Watch is visible - otherwise KickListBoxLayout
     -- would show Watch on top of Potions/Plants (Clear Watches runs from those tabs).
     if StockPilerWindow.SelectedTab == StockPilerWindow.TABS_WATCH
         and StockPilerTabWatch and StockPilerTabWatch.Refresh
