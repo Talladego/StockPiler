@@ -526,7 +526,10 @@ check(string.find(shareXml, 'name="$parentLearn" inherits="EA_Button_DefaultResi
 check(string.find(shareXml, 'name="$parentCancel" inherits="EA_Button_DefaultResizeable"', 1, true) ~= nil, "Cancel uses the skinned resizeable button")
 check(string.find(shareXml, 'inherits="EA_Button_Default"', 1, true) == nil, "preview buttons are not the unskinned base template")
 check(string.find(shareXml, 'name="$parentButtonBackground"', 1, true) ~= nil, "buttons sit in the bottom bar")
-check(string.find(shareXml, 'relativeTo="$parentButtonBackground"', 1, true) ~= nil, "Learn and Cancel anchor to the bottom bar")
+check(string.find(shareXml, '<Anchor point="bottom" relativePoint="bottomright" relativeTo="$parentButtonBackground">', 1, true) ~= nil, "Learn anchors its right edge to the bar center")
+check(string.find(shareXml, '<Anchor point="bottom" relativePoint="bottomleft" relativeTo="$parentButtonBackground">', 1, true) ~= nil, "Cancel anchors its left edge to the bar center")
+check(string.find(shareXml, 'point="bottomleft" relativePoint="bottom"', 1, true) == nil, "button anchors do not reverse point and relativePoint")
+check(string.find(shareXml, 'point="bottomright" relativePoint="bottom"', 1, true) == nil, "button anchors do not hang off the window edges")
 
 local iconsBefore = iconDataCalls
 local texturesBefore = #iconTextures

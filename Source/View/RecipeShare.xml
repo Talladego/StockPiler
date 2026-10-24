@@ -213,8 +213,8 @@
                 <Button name="$parentCancel" inherits="EA_Button_DefaultResizeable">
                     <Size><AbsPoint x="180" y="39" /></Size>
                     <Anchors>
-                        <Anchor point="bottomright" relativePoint="bottom" relativeTo="$parentButtonBackground">
-                            <AbsPoint x="-6" y="-18" />
+                        <Anchor point="bottom" relativePoint="bottomleft" relativeTo="$parentButtonBackground">
+                            <AbsPoint x="6" y="-18" />
                         </Anchor>
                     </Anchors>
                     <TextOffset x="0" y="0" />
@@ -226,8 +226,8 @@
                 <Button name="$parentLearn" inherits="EA_Button_DefaultResizeable">
                     <Size><AbsPoint x="180" y="39" /></Size>
                     <Anchors>
-                        <Anchor point="bottomleft" relativePoint="bottom" relativeTo="$parentButtonBackground">
-                            <AbsPoint x="6" y="-18" />
+                        <Anchor point="bottom" relativePoint="bottomright" relativeTo="$parentButtonBackground">
+                            <AbsPoint x="-6" y="-18" />
                         </Anchor>
                     </Anchors>
                     <TextOffset x="0" y="0" />
