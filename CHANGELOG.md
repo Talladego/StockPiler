@@ -4,6 +4,11 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.3
 
+- Seed upgrades stop holding the garden once they cannot raise another seed tier, so leveling skills can use empty plots.
+- A short seed cushion is filled by refining plants you already have before those seeds are planted again.
+- Empty plots are released when a seed upgrade is stuck with nothing to plant or refine.
+- A missing basic seed is bought from the merchant again while that plant is still watched.
+- Chat asks you to close the merchant when refining is waiting on it.
 - Bug fixes.
 - Performance improvements.
 

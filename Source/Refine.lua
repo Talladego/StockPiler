@@ -1105,7 +1105,7 @@ function Refine.MaybeNotifyBlocked()
     end
     Refine._blockedVendorNotified = true
     local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
-        or L"Refine stalled - close the merchant window to continue."
+        or L"<icon02486> Refine stalled - close the merchant window to continue."
     if StockPiler.Debug and StockPiler.Debug.Print then
         StockPiler.Debug.Print(msg)
     end

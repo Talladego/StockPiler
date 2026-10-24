@@ -190,7 +190,7 @@ load_module("Source/Buy.lua")
 local Refine = StockPiler.Refine
 local Orch = StockPiler.Orchestrator
 local Buy = StockPiler.Buy
-local TIP = "Refine stalled - close the merchant window to continue."
+local TIP = "<icon02486> Refine stalled - close the merchant window to continue."
 
 eq(StockPiler.T("refine.blocked.vendor_open"), TIP, "vendor-open refine tip is the locale line")
 

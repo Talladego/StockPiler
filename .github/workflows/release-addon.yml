@@ -78,7 +78,8 @@ jobs:
             luac5.1 -p "$tmp/$rel"
           done
           # tests/*.lua includes tests/locale_tokens.lua ({token} gsub regression),
-          # tests/skillup_apo_ready.lua, and tests/refine_vendor_block.lua.
+          # tests/skillup_apo_ready.lua, tests/refine_vendor_block.lua, and
+          # tests/upgrade_cult_floor.lua.
           for t in tests/*.lua; do
             lua5.1 "$t"
           done

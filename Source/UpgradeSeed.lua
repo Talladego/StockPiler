@@ -485,10 +485,27 @@ local function TargetPlantableCount(t)
     if achieved > ownedReq then
         return 0, owned, climbCap
     end
-    -- Destination seeds already in the bag. Planting them does not raise seed
-    -- credit (in-ground still counts) and was refilling empty plots forever.
+    -- Destination rung already owned. Keep planting it only while the Cult-floor
+    -- seed buffer is short AND no same-tier plants are waiting to refine into
+    -- that buffer. Refining those plants comes first; a full buffer stops both.
     if needReq >= 1 and ownedReq >= needReq then
-        return 0, owned, climbCap
+        if CultMaxTierBufferFull(t.ladder, needReq, t.plantUid, t.seedUid) == true then
+            return 0, owned, climbCap
+        end
+        local plantUid = tonumber(owned.plantUid) or tonumber(t.plantUid) or 0
+        local refinable = 0
+        if plantUid > 0 and StockPiler.Refine and StockPiler.Refine.CountRefinablePlants then
+            local Items = StockPiler.Items
+            local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or t.spec
+            refinable = tonumber(StockPiler.Refine.CountRefinablePlants(plantUid, spec)) or 0
+        end
+        if refinable >= 1 then
+            return 0, owned, climbCap
+        end
+        local intermediate = IsIntermediateClimb(t.ladder, ownedReq)
+        return PlantableSurplus(seedUid, bagSeeds, empty, {
+            intermediate = intermediate,
+        }), owned, climbCap
     end
     local intermediate = IsIntermediateClimb(t.ladder, ownedReq)
     local plantable = PlantableSurplus(seedUid, bagSeeds, empty, {
@@ -802,8 +819,10 @@ function US.DescribePlantWatchClimb(watchPlantUid)
         out.pending = true
         out.climbNeedReq = watchedReq
     elseif out.stocked and climbNeed > watchedReq then
-        -- Cult-max climb waits until this watch is at target. A higher seed
-        -- already in bags must not skip restock (11/12 stays on the plant).
+        -- Phase B until the Cult-floor seed buffer is full (not after the first
+        -- destination seed). Do not clear pending via CultMaxNeedReq: a sparse
+        -- ladder such as 1 -> 200 at Cult 25 would drop an L1 climb early.
+        -- SkillUp yield is separate (IsActivelyClimbingPlantWatches).
         out.pending = HaveTargetRung(ladder, climbNeed, out.plantUid, out.seedUid, {
             requireBufferFull = true,
         }) ~= true
@@ -1363,8 +1382,9 @@ function US.NeedsRefineFirst()
     return result
 end
 
---- Hold empty plots for climb status only when no target has plantable seeds
---- or refinable plants (need_buy / climbing must not starve another genus).
+--- Hold empty plots while refine can still fill a climb, and release them when
+--- a stuck climb has nothing to plant or refine (that deadlock starved SkillUp
+--- after the first Cult-floor seed). A sibling that can plant also releases.
 function US.ShouldHoldEmptyPlots(climb)
     if US.IsEnabled() ~= true then
         return false
@@ -1378,6 +1398,7 @@ function US.ShouldHoldEmptyPlots(climb)
         return false
     end
     local targets = GetUpgradeTargets()
+    local anyProgress = false
     for i = 1, #targets do
         local t = targets[i]
         local plantable = TargetPlantableCount(t)
@@ -1386,8 +1407,11 @@ function US.ShouldHoldEmptyPlots(climb)
         end
         local up = TargetUpgradePlant(t)
         if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
-            return false
+            anyProgress = true
         end
+    end
+    if not anyProgress then
+        return false
     end
     return true
 end
@@ -1828,6 +1852,67 @@ function US.AppendRefineIntents(intents, appendFn)
     end
 end
 
+--- Opportunistic L1 vendor buy for one ladder. Mid-tier seeds are never bought.
+--- Buy.FindStoreMatch still no-ops when the open merchant does not sell it.
+local function AppendL1VendorBuyJob(jobs, seenBuy, ladder, needReq, fallbackSpec)
+    if type(ladder) ~= "table" then
+        return
+    end
+    local SM = StockPiler.SeedMap
+    local buy = SM and SM.LowestBuySeedOnLadder and SM.LowestBuySeedOnLadder(ladder) or nil
+    if type(buy) ~= "table" then
+        return
+    end
+    local seedUid = tonumber(buy.seedUid) or 0
+    if seedUid <= 0 then
+        return
+    end
+    local buyReq = math.max(1, tonumber(buy.skillReq) or 1)
+    -- Scan owned seeds up to Cult floor, not only needReq. A mid-tier plant-watch
+    -- arrive (needReq=50) used to miss bag L200 and AutoBuy L1.
+    local ownedCap = math.max(US.ClimbCap(needReq), US.FloorCultTier(US.GetCultSkill()))
+    local owned = US.PickBestOwnedSeed({
+        ladder = ladder,
+        climbCap = ownedCap,
+    })
+    local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
+    if ownedReq > buyReq then
+        -- Family already past the vendor rung; climb via plant/refine only.
+        return
+    end
+    if seenBuy[seedUid] == true then
+        return
+    end
+    local deficit = US.SeedDeficit(seedUid)
+    if deficit < 1 then
+        return
+    end
+    seenBuy[seedUid] = true
+    local MS = StockPiler.MaterialSpec
+    local Inv = StockPiler.Inventory
+    local sample = Inv and Inv.GetSample and Inv.GetSample(seedUid)
+    local spec = nil
+    if MS and MS.FromItemData and type(sample) == "table" then
+        spec = MS.FromItemData(sample, tostring(ladder.role or "main"))
+    elseif MS and MS.FromUid then
+        spec = MS.FromUid(seedUid)
+    end
+    local SE = StockPiler.SeedEconomy
+    if not (SE and SE.SeedBuyJob) then
+        return
+    end
+    jobs[#jobs + 1] = SE.SeedBuyJob({
+        seedUid = seedUid,
+        deficit = deficit,
+        upgradeSeed = true,
+        role = tostring(ladder.role or "main"),
+        spec = spec or fallbackSpec,
+        specKey = "upgrade_seed:" .. tostring(seedUid),
+        skillReq = buyReq,
+        familyKey = ladder.key,
+    })
+end
+
 function US.CollectBuyJobs()
     local jobs = {}
     if US.IsEnabled() ~= true then
@@ -1837,65 +1922,40 @@ function US.CollectBuyJobs()
     if not (Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true) then
         return jobs
     end
-    local SM = StockPiler.SeedMap
     local targets = GetUpgradeTargets()
     local seenBuy = {}
     for i = 1, #targets do
         local t = targets[i]
-        if type(t.ladder) == "table" then
-            -- L1 vendor seed only for cold-start / wiped vendor rung.
-            -- Owning mid/high seeds (Spumepetal@150+) must not trigger L1 top-up:
-            -- SeedDeficit(L1) only counts that uid's live stack, so buffer=5 with
-            -- live(L1)=0 bought 5x 84235 while L150/L175 seeds were already owned.
-            local buy = SM.LowestBuySeedOnLadder and SM.LowestBuySeedOnLadder(t.ladder) or nil
-            if type(buy) == "table" and (tonumber(buy.seedUid) or 0) > 0 then
-                local seedUid = tonumber(buy.seedUid) or 0
-                local buyReq = tonumber(buy.skillReq) or 1
-                if buyReq < 1 then
-                    buyReq = 1
-                end
-                -- Scan owned seeds up to Cult floor, not only t.needReq. A mid-tier
-                -- plant-watch arrive (needReq=50) used to miss bag L200 and AutoBuy L1.
-                local ownedCap = US.ClimbCap(t.needReq)
-                local cultFloor = US.FloorCultTier(US.GetCultSkill())
-                if cultFloor > ownedCap then
-                    ownedCap = cultFloor
-                end
-                local owned = US.PickBestOwnedSeed({
-                    ladder = t.ladder,
-                    climbCap = ownedCap,
-                })
-                local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
-                if ownedReq > buyReq then
-                    -- Family already past vendor rung; climb via plant/refine only.
-                elseif seenBuy[seedUid] ~= true then
-                    local deficit = US.SeedDeficit(seedUid)
-                    if deficit >= 1 then
-                        seenBuy[seedUid] = true
-                        local MS = StockPiler.MaterialSpec
-                        local Inv = StockPiler.Inventory
-                        local sample = Inv and Inv.GetSample and Inv.GetSample(seedUid)
-                        local spec = nil
-                        if MS and MS.FromItemData and type(sample) == "table" then
-                            spec = MS.FromItemData(sample, tostring(t.ladder.role or "main"))
-                        elseif MS and MS.FromUid then
-                            spec = MS.FromUid(seedUid)
-                        end
-                        jobs[#jobs + 1] = StockPiler.SeedEconomy.SeedBuyJob({
-                            seedUid = seedUid,
-                            deficit = deficit,
-                            upgradeSeed = true,
-                            role = tostring(t.ladder.role or "main"),
-                            spec = spec or t.spec,
-                            specKey = "upgrade_seed:" .. tostring(seedUid),
-                            skillReq = buyReq,
-                            familyKey = t.ladder.key,
-                        })
+        AppendL1VendorBuyJob(jobs, seenBuy, t.ladder, t.needReq, t.spec)
+    end
+    -- Climb targets can be empty after a wiped L1 watch (idle / pending false).
+    -- Still buy the vendor L1 seed while an enabled plant watch can raise a rung.
+    local plantWatches = Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) == "table" then
+        for plantKey, watch in pairs(plantWatches) do
+            if type(watch) == "table" and watch.enabled == true
+                and (Watch.ShouldAutoGrowPlant == nil or Watch.ShouldAutoGrowPlant(plantKey) == true)
+            then
+                local watchPlantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+                watchPlantUid = tonumber(watchPlantUid) or 0
+                if watchPlantUid > 0 then
+                    local d = US.DescribePlantWatchClimb(watchPlantUid)
+                    local needReq = tonumber(d.climbNeedReq) or tonumber(d.watchedReq) or 1
+                    local climbCap = US.ClimbCap(needReq)
+                    local cultFloor = US.FloorCultTier(US.GetCultSkill())
+                    local ownedCap = math.max(climbCap, cultFloor)
+                    local owned = US.PickBestOwnedSeed({
+                        ladder = d.ladder,
+                        climbCap = ownedCap,
+                    })
+                    local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
+                    if d.pending == true or d.arriveNeeded == true
+                        or (climbCap >= 1 and ownedReq < climbCap)
+                    then
+                        AppendL1VendorBuyJob(jobs, seenBuy, d.ladder, needReq, d.spec)
                     end
                 end
             end
-            -- Never AutoBuy intermediate climb seeds (L25/L50/...) - vendor only sells L1.
-            -- Progress those rungs via plant / crit / refine.
         end
     end
     return jobs
@@ -2279,6 +2339,32 @@ local function TUpgrade(key, tokens)
     return towstring(tostring(key))
 end
 
+--- True when this target can still raise a seed rung at the current Cult floor.
+--- Buffer-only fills (owned already at ClimbCap) and needs above ClimbCap do not
+--- count: those must not hard-yield SkillUp.
+local function TargetCanRaiseRung(t)
+    if type(t) ~= "table" then
+        return false
+    end
+    local needReq = tonumber(t.needReq) or 0
+    local haveReq = tonumber(t.haveReq) or 0
+    local climbCap = US.ClimbCap(needReq > 0 and needReq or haveReq)
+    if climbCap < 1 then
+        return false
+    end
+    if needReq > climbCap then
+        return false
+    end
+    if type(t.ladder) == "table" then
+        local owned = BestOwnedReqOnLadder(t.ladder, climbCap)
+        return owned < climbCap
+    end
+    if haveReq >= climbCap then
+        return false
+    end
+    return needReq > haveReq or haveReq < climbCap
+end
+
 --- True when Upgrade Seeds has climb work (potions, plant watches, or bag seeds).
 --- SkillUp yields Cult plots while this is true.
 --- Never sync-builds GetUpgradeTargets here: GrowReserve -> ShouldCultGrow ->
@@ -2293,14 +2379,24 @@ function US.IsActivelyClimbingPlantWatches()
     end
     local active = false
     -- Prefer last Collect / status rebuild (no CollectUpgradeTargets).
+    -- A cached target that only fills the Cult-floor buffer, or whose next rung
+    -- is above ClimbCap, is not climb work.
     if type(US._upgradeTargetsCache) == "table" and #US._upgradeTargetsCache >= 1 then
-        active = true
+        for i = 1, #US._upgradeTargetsCache do
+            if TargetCanRaiseRung(US._upgradeTargetsCache[i]) == true then
+                active = true
+                break
+            end
+        end
     elseif type(US._active) == "table" then
         local why = tostring(US._active.why or "")
+        -- need_cult is waiting on skill, not a rung Upgrade Seeds can raise.
         if why == "planting" or why == "refining" or why == "need_buy"
-            or why == "climbing" or why == "need_cult" or why == "no_family"
+            or why == "climbing" or why == "no_family"
         then
-            active = true
+            if TargetCanRaiseRung(US._active) == true then
+                active = true
+            end
         end
     end
     if not active then
@@ -2314,8 +2410,14 @@ function US.IsActivelyClimbingPlantWatches()
                     if uid > 0 then
                         local d = US.DescribePlantWatchClimb(uid)
                         if d.eligible == true and d.pending == true then
-                            active = true
-                            break
+                            local climbCap = US.ClimbCap(d.climbNeedReq or d.watchedReq)
+                            local ownedReq = BestOwnedReqOnLadder(d.ladder, climbCap)
+                            if d.arriveNeeded == true
+                                or (climbCap >= 1 and ownedReq < climbCap)
+                            then
+                                active = true
+                                break
+                            end
                         end
                     end
                 end
