@@ -355,6 +355,13 @@ local function RebuildPlanIfDue()
     return false
 end
 
+local function MainWindowOpen()
+    return type(DoesWindowExist) == "function"
+        and DoesWindowExist("StockPilerWindow") == true
+        and type(WindowGetShowing) == "function"
+        and WindowGetShowing("StockPilerWindow") == true
+end
+
 local function FlushWatchUiIfDue(didHeavy)
     if didHeavy == true then
         return false
@@ -364,7 +371,13 @@ local function FlushWatchUiIfDue(didHeavy)
     end
     local openPaint = StockPilerWindow and StockPilerWindow._openPaintPending == true
     local Ui = StockPiler.Ui
-    local missingSkillUp = Ui and Ui.WatchNeedsSkillUpPaint and Ui.WatchNeedsSkillUpPaint() == true
+    -- Skill-up paint is only useful while Watch is open and already dirty.
+    local missingSkillUp = false
+    if openPaint ~= true and MainWindowOpen() and Ui and Ui._watchUiDirty == true
+        and Ui.WatchNeedsSkillUpPaint
+    then
+        missingSkillUp = Ui.WatchNeedsSkillUpPaint() == true
+    end
     if not openPaint and missingSkillUp ~= true then
         if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
             return false
@@ -383,7 +396,13 @@ local function FlushWatchUiIfDue(didHeavy)
     return false
 end
 
+Sch.FlushWatchUiIfDue = FlushWatchUiIfDue
+
 local function AutoTickIntervalSec()
+    -- Every branch returns the fast interval while this flag is set.
+    if Sch._autoGrowFast == true then
+        return Sch.AUTO_TICK_SEC
+    end
     if StockPiler.Buy and StockPiler.Buy.NeedsTick and StockPiler.Buy.NeedsTick() == true then
         return Sch.AUTO_TICK_SEC
     end
@@ -402,6 +421,8 @@ local function AutoTickIntervalSec()
     end
     return Sch.AUTO_TICK_SEC
 end
+
+Sch.AutoTickIntervalSec = AutoTickIntervalSec
 
 function Sch.CurrentAutoTickSec()
     return AutoTickIntervalSec()

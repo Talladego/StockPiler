@@ -2663,6 +2663,18 @@ function StockPilerTabWatch.OnLoadRowRightClick()
     end
 end
 
+--- Shift+left-click name / icon / row inserts the chat link.
+--- Plants, skill-up, and upgrade rows do not. Target, priority, and Load keep their own clicks.
+function StockPilerTabWatch.OnLinkClick(flags)
+    local data = RowDataFromActiveChild()
+    if not data or IsPlantWatchRow(data) or IsEphemeralWatchRow(data) then
+        return
+    end
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.ShareRowIfShift then
+        StockPiler.RecipeLink.ShareRowIfShift(data, flags)
+    end
+end
+
 --- Right-click name / icon: Link in chat (does not steal Target/Prio/Brew right-clicks).
 function StockPilerTabWatch.OnRowNameRightClick()
     local data = RowDataFromActiveChild()
@@ -3584,6 +3596,77 @@ function StockPilerTabWatch.OnMouseOverStatus()
     )
 end
 
+--- Harvested plants and seeds in bags. Uses the row and cached counts only.
+--- An empty seed link is unknown, not zero seeds.
+function StockPilerTabWatch.PlantStockTipText(data)
+    if type(data) ~= "table" then
+        return L""
+    end
+    local have = tonumber(data.potionHave) or 0
+    local target = data.target
+    if target == nil then
+        target = data.potionMin
+    end
+    target = tonumber(target)
+    local harvested
+    if target ~= nil then
+        harvested = T("tip.watch.plants_harvested", {
+            have = tostring(have),
+            target = tostring(target),
+        })
+    else
+        harvested = T("tip.watch.plants_harvested_plain", {
+            have = tostring(have),
+        })
+    end
+    local seedCount = nil
+    if data.seedHave ~= nil then
+        seedCount = tonumber(data.seedHave) or 0
+    else
+        local seeds = nil
+        local seedUid = tonumber(data.seedUid) or 0
+        if seedUid > 0 then
+            seeds = { seedUid }
+        else
+            local plantUid = tonumber(data.plantUid) or tonumber(data.uniqueID) or 0
+            local SM = StockPiler.SeedMap
+            if plantUid > 0 and SM and SM.GetSeedUidsForPlant then
+                local found = SM.GetSeedUidsForPlant(plantUid)
+                if type(found) == "table" and #found > 0 then
+                    seeds = found
+                end
+            end
+        end
+        if type(seeds) == "table" then
+            seedCount = 0
+            local Inv = StockPiler.Inventory
+            for i = 1, #seeds do
+                local n = 0
+                if Inv and Inv.CountByUid then
+                    n = tonumber(Inv.CountByUid(seeds[i])) or 0
+                end
+                seedCount = seedCount + n
+            end
+        end
+    end
+    local seedLine
+    if seedCount ~= nil then
+        seedLine = T("tip.watch.seeds_in_bags", { count = tostring(seedCount) })
+    else
+        seedLine = T("tip.watch.seed_link_unknown")
+    end
+    local function asText(v)
+        if type(v) == "wstring" then
+            return v
+        end
+        if v == nil then
+            return L""
+        end
+        return towstring(tostring(v))
+    end
+    return asText(harvested) .. towstring("\n") .. asText(seedLine)
+end
+
 function StockPilerTabWatch.OnMouseOverStock()
     StockPiler.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
@@ -3596,6 +3679,10 @@ function StockPilerTabWatch.OnMouseOverStock()
     end
     if IsSkillUpWatchRow(data) then
         Tip(T("tip.watch.skillup_metrics"))
+        return
+    end
+    if IsPlantWatchRow(data) then
+        Tip(StockPilerTabWatch.PlantStockTipText(data))
         return
     end
     Tip(T("tip.watch.have_target", {

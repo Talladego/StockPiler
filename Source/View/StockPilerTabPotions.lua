@@ -935,6 +935,14 @@ function StockPilerTabPotions.OnMouseOverForget()
     StockPiler.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("potions.forget_tip"))
 end
 
+--- Shift+left-click row / icon / name inserts the chat link. An ordinary click does not.
+function StockPilerTabPotions.OnLinkClick(flags)
+    local data = RowDataFromActiveChild()
+    if StockPiler.RecipeLink and StockPiler.RecipeLink.ShareRowIfShift then
+        StockPiler.RecipeLink.ShareRowIfShift(data, flags)
+    end
+end
+
 --- Right-click row / icon / name: Link in chat (recipe share).
 function StockPilerTabPotions.OnRowRightClick()
     local data = RowDataFromActiveChild()

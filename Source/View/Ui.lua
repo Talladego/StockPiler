@@ -669,10 +669,8 @@ function Ui.FlushWatchUiIfDirty()
     end
     if not windowOpen then
         WakeReadyFromLiveStatus()
-        if ShouldDeferWatchFlush() then
-            return
-        end
-        -- Closed-window: Ready wake done; keep dirty for next open paint.
+        -- Closed window: both defer outcomes used to return immediately.
+        -- Keep the ready wake and leave dirty set for the next open.
         return
     end
     -- Bag snaps while on Potions/Plants (or while closed) only set pending;

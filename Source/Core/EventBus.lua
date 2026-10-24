@@ -8,6 +8,8 @@ StockPiler.EventBus = StockPiler.EventBus or {}
 local Bus = StockPiler.EventBus
 local subs = {}
 local nextToken = 0
+-- Immutable handler lists. Rebuilt only when that event's subscriptions change.
+local snapByEvent = {}
 
 StockPiler.Events = StockPiler.Events or {}
 local Edef = StockPiler.Events
@@ -84,6 +86,7 @@ function Bus.Subscribe(eventName, fn)
     nextToken = nextToken + 1
     local token = nextToken
     list[#list + 1] = { token = token, fn = fn }
+    snapByEvent[eventName] = nil
     return token
 end
 
@@ -101,6 +104,7 @@ function Bus.Unsubscribe(token)
                     if #list == 0 then
                         subs[eventName] = nil
                     end
+                    snapByEvent[eventName] = nil
                     return true
                 end
             end
@@ -133,13 +137,17 @@ function Bus.Fire(eventName, payload)
     if n <= 0 then
         return
     end
-    local handlers = {}
-    for i = 1, n do
-        local entry = list[i]
-        local fn = type(entry) == "table" and entry.fn or entry
-        if type(fn) == "function" then
-            handlers[#handlers + 1] = fn
+    local handlers = snapByEvent[eventName]
+    if handlers == nil then
+        handlers = {}
+        for i = 1, n do
+            local entry = list[i]
+            local fn = type(entry) == "table" and entry.fn or entry
+            if type(fn) == "function" then
+                handlers[#handlers + 1] = fn
+            end
         end
+        snapByEvent[eventName] = handlers
     end
     for i = 1, #handlers do
         if StockPiler.Debug and StockPiler.Debug.TryCallQuiet then

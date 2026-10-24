@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler" version="1.0.1" date="2026-10-22">
+    <UiMod name="StockPiler" version="1.1.0" date="2026-10-24">
         <Author name="Talladego" email="" />
         <Description text="Stock potions and plants. Grow, buy, and brew toward the amounts you set." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -74,6 +74,8 @@
             <File name="Source/View/ViewList.lua" />
             <File name="Source/View/RecipeTooltip.lua" />
             <File name="Source/View/RecipeLink.lua" />
+            <File name="Source/View/RecipeShare.xml" />
+            <File name="Source/View/RecipeShare.lua" />
             <File name="Source/View/Ui.lua" />
             <File name="Source/View/WarBoardBridge.xml" />
             <File name="Source/View/WarBoardBridge.lua" />
@@ -92,6 +94,7 @@
 
         <OnInitialize>
             <CreateWindow name="StockPilerWindow" show="false" />
+            <CreateWindow name="StockPilerRecipeShareWindow" show="false" />
             <CallFunction name="StockPiler.Initialize" />
         </OnInitialize>
 

@@ -148,6 +148,9 @@ end
 
 --- Soft expire (~30s): MarkDirty inventory once; next pass force-clears remaining.
 function RP.ExpireStuck()
+    if next(RP._outstanding) == nil then
+        return false
+    end
     local now = NowSec()
     local ttl = tonumber(RP.OUTSTANDING_TTL_SEC) or 30
     local changed = false

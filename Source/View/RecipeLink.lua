@@ -2,7 +2,9 @@
 -- StockPiler RecipeLink -- chat share / import for known potions
 -- Plain payload (paste-safe). New shares omit the fingerprint (rk);
 -- import recomputes it from the slots. Order:
---   POTION;uid=<n>;icon=<n>;n=<name>;slots=<encoded>
+--   POTION;uid=<n>;icon=<n>;n=<name>;d=<details>;slots=<encoded>
+-- d= is optional item names and icons (uid,icon,name rows joined with ~).
+-- It is dropped first when the link is too long. Absent d= still imports.
 -- Slot rows (legacy rows stop before effectId):
 --   role:uid:perCraft:power:stability:duration:tradeSkill:skillLevel:cult:slotType:effectId:bonuses
 -- joined with ~ . bonuses is ref=value pairs separated by commas,
@@ -12,8 +14,8 @@
 -- Sharing refuses a saved recipe that lacks either one.
 -- Other roles may repeat. The apothecary already loads more than one of those.
 -- Hyperlink linkData: StockPiler: + plain payload
--- Click: import into Known Potions. Existing recipes, potion names,
--- and the active recipe are not modified.
+-- Click and /stp apply open a preview. Learn imports into Known Potions.
+-- Existing recipes, potion names, and the active recipe are not modified.
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
@@ -570,6 +572,10 @@ local function SlotsHaveMainAndContainer(slots)
     return mains >= 1 and containers >= 1
 end
 
+function RL.HasMainAndContainer(slots)
+    return SlotsHaveMainAndContainer(slots) == true
+end
+
 local function RecipeSlotsByKey(rk)
     rk = tostring(rk or "")
     if rk == "" then
@@ -604,6 +610,121 @@ local function AttachSlotsFromKnowledge(fields)
     return fields
 end
 
+local function KnownItemRow(uid)
+    local Items = StockPiler.Items
+    if not Items or uid == nil then
+        return nil
+    end
+    if Items.GetByUid then
+        local row = Items.GetByUid(uid)
+        if type(row) == "table" then
+            return row
+        end
+    end
+    if Items.AsItemData then
+        local row = Items.AsItemData(uid)
+        if type(row) == "table" then
+            return row
+        end
+    end
+    return nil
+end
+
+local function ItemToken(uid, icon, name)
+    uid = AsInt(uid)
+    if uid == nil or uid < 1 or uid > ID_MAX then
+        return nil
+    end
+    icon = AsInt(icon) or 0
+    if icon < 0 or icon > ID_MAX then
+        icon = 0
+    end
+    name = SanitizeName(name)
+    name = string.gsub(name, "[:~|,]", " ")
+    name = string.gsub(name, "%s+", " ")
+    name = string.gsub(name, "^%s+", "")
+    name = string.gsub(name, "%s+$", "")
+    return tostring(uid) .. "," .. tostring(icon) .. "," .. name
+end
+
+--- Optional item names and icons. Slots already carry role, quantity, and bonuses.
+--- "~" joins rows. "^" is never used; chat would strip it.
+function RL.EncodeItemDetails(potionUid, potionIcon, potionName, slots)
+    local seen = {}
+    local parts = {}
+    local function add(uid, icon, name)
+        uid = AsInt(uid)
+        if uid == nil or seen[uid] == true then
+            return
+        end
+        local known = KnownItemRow(uid)
+        if type(known) == "table" then
+            if (icon == nil or icon == 0) and tonumber(known.iconNum) then
+                icon = tonumber(known.iconNum)
+            end
+            if (name == nil or ToNarrow(name) == "") and known.name ~= nil then
+                name = known.name
+            end
+        end
+        local token = ItemToken(uid, icon, name)
+        if token == nil then
+            return
+        end
+        seen[uid] = true
+        parts[#parts + 1] = token
+    end
+    add(potionUid, potionIcon, potionName)
+    if type(slots) == "table" then
+        for i = 1, #slots do
+            local slot = slots[i]
+            if type(slot) == "table" then
+                local spec = type(slot.spec) == "table" and slot.spec or slot
+                add(slot.uid or spec.uid, spec.iconNum or slot.iconNum, spec.name or slot.name)
+            end
+        end
+    end
+    return table.concat(parts, "~")
+end
+
+function RL.DecodeItemDetails(encoded)
+    encoded = ToNarrow(encoded)
+    if encoded == "" then
+        return nil
+    end
+    if string.find(encoded, "^", 1, true) ~= nil then
+        return nil
+    end
+    if string.sub(encoded, 1, 1) == "~" or string.sub(encoded, -1) == "~" then
+        return nil
+    end
+    if string.find(encoded, "~~", 1, true) ~= nil then
+        return nil
+    end
+    local details = {}
+    local count = 0
+    for piece in string.gmatch(encoded, "[^~]+") do
+        count = count + 1
+        if count > RL.MAX_SLOTS + 1 then
+            return nil
+        end
+        local uidRaw, iconRaw, name = string.match(piece, "^(%d+),(%d+),(.*)$")
+        local uid = StrictInt(uidRaw, 1, ID_MAX, false)
+        local icon = StrictInt(iconRaw, 0, ID_MAX, false)
+        if uid == nil or icon == nil or details[uid] ~= nil then
+            return nil
+        end
+        name = ValidName(name)
+        if name == nil then
+            return nil
+        end
+        details[uid] = { uid = uid, icon = icon, name = name }
+    end
+    if count < 1 then
+        return nil
+    end
+    return details
+end
+
 --- Serialize a potion share. fields: uid, name, icon, slots?
 --- The fingerprint is not included; import recomputes it.
 function RL.SerializePlain(fields)
@@ -631,14 +752,16 @@ function RL.SerializePlain(fields)
         if decoded == nil then
             return nil
         end
+        fields.slots = decoded
         -- Re-emit so a legacy "^" payload is not copied into a new share.
         slotsEnc = RL.EncodeSlots(decoded)
         if slotsEnc == nil or slotsEnc == "" then
             return nil
         end
     end
+    local detailsEnc = RL.EncodeItemDetails(uid, icon, name, fields.slots)
 
-    local function build(includeName, includeIcon)
+    local function build(includeName, includeIcon, includeDetails)
         local parts = {
             "POTION",
             "uid=" .. tostring(uid),
@@ -649,18 +772,24 @@ function RL.SerializePlain(fields)
         if includeName and name ~= "" then
             parts[#parts + 1] = "n=" .. name
         end
+        if includeDetails and detailsEnc ~= "" then
+            parts[#parts + 1] = "d=" .. detailsEnc
+        end
         if slotsEnc ~= "" then
             parts[#parts + 1] = "slots=" .. slotsEnc
         end
         return table.concat(parts, ";")
     end
 
-    local plain = build(true, true)
+    local plain = build(true, true, true)
     if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
-        plain = build(true, false)
+        plain = build(true, true, false)
     end
     if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
-        plain = build(false, false)
+        plain = build(true, false, false)
+    end
+    if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
+        plain = build(false, false, false)
     end
     return plain
 end
@@ -736,6 +865,8 @@ function RL.ParsePlain(plain)
                 fields.rk = val
             elseif key == "slots" then
                 fields.slotsEncoded = val
+            elseif key == "d" then
+                fields.detailsEncoded = val
             end
         end
     end
@@ -775,6 +906,12 @@ function RL.ParsePlain(plain)
     if fields.slotsEncoded ~= nil and fields.slotsEncoded ~= "" then
         fields.slots = RL.DecodeSlots(fields.slotsEncoded)
         if fields.slots == nil or SlotsHaveMainAndContainer(fields.slots) ~= true then
+            return nil
+        end
+    end
+    if fields.detailsEncoded ~= nil and fields.detailsEncoded ~= "" then
+        fields.details = RL.DecodeItemDetails(fields.detailsEncoded)
+        if fields.details == nil then
             return nil
         end
     end
@@ -1282,10 +1419,66 @@ function RL.OnContextCopyString()
     RL.CopyFields(fields)
 end
 
+function RL.IsShiftFlags(flags)
+    local shift = SystemData and SystemData.ButtonFlags and SystemData.ButtonFlags.SHIFT
+    if shift == nil then
+        return false
+    end
+    if flags == shift then
+        return true
+    end
+    if type(flags) == "number" and flags ~= 0 and bit and bit.band then
+        return bit.band(flags, shift) ~= 0
+    end
+    return false
+end
+
+--- Shift+left-click inserts the chat link. An ordinary click does nothing here.
+function RL.ShareRowIfShift(data, flags)
+    if RL.IsShiftFlags(flags) ~= true then
+        return false
+    end
+    if type(data) ~= "table" then
+        return false
+    end
+    if data.kind == "plant" or data.isPlantWatch == true or data.skillUp == true
+        or data.upgradeWatch == true or data.addonOwned == true
+    then
+        return false
+    end
+    local fields = RL.FieldsFromRow(data)
+    if fields == nil then
+        return false
+    end
+    return RL.ShareFields(fields) == true
+end
+
+--- Chat click and /stp apply open the preview. Learn is the import.
+function RL.PresentLinkedRecipe(fields)
+    local Share = StockPiler.RecipeShare
+    if Share and Share.Show then
+        return Share.Show(fields) == true
+    end
+    return RL.OpenLinkedRecipe(fields) == true
+end
+
+function RL.OpenApply(text)
+    local Share = StockPiler.RecipeShare
+    if Share and Share.ShowFromPlain then
+        return Share.ShowFromPlain(text) == true
+    end
+    local fields = RL.ParsePlain(text)
+    if fields then
+        return RL.OpenLinkedRecipe(fields) == true
+    end
+    Print(T("link.bad_payload"))
+    return false
+end
+
 local function OnHyperLinkLButtonUp(linkData, flags, x, y)
     local parsed = RL.ParseLinkData(linkData)
     if parsed ~= nil then
-        RL.OpenLinkedRecipe(parsed)
+        RL.PresentLinkedRecipe(parsed)
         return
     end
     if RL._prevOnHyperLinkLButtonUp then

@@ -899,8 +899,20 @@ function Macro.IsCraftMacroButton(button)
     if not button or not IsDoMacroAction(button.m_ActionType) then
         return false
     end
-    local macroId = Macro.GetCraftMacroId()
-    return macroId ~= nil and button.m_ActionId == macroId
+    local actionId = tonumber(button.m_ActionId) or 0
+    if actionId <= 0 then
+        return false
+    end
+    local Timer = StockPiler.CraftHarvestTimer
+    if Timer and type(Timer.SnapCraftMacroId) == "function" then
+        local snapId = Timer.SnapCraftMacroId()
+        if snapId ~= nil then
+            snapId = tonumber(snapId) or 0
+            return snapId > 0 and actionId == snapId
+        end
+    end
+    local macroId = tonumber(Macro.GetCraftMacroId()) or 0
+    return macroId > 0 and actionId == macroId
 end
 
 local function FireHarvestFromMacroSlots(macroId)

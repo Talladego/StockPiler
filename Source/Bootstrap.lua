@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.0.1"
+StockPiler.Version = L"1.1.0"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -649,16 +649,11 @@ function StockPiler.OnSlash(input)
         local applyArg = string.match(text, "^[Aa][Pp][Pp][Ll][Yy]%s+(.+)$")
         if applyArg then
             local RL = StockPiler.RecipeLink
-            if not (RL and RL.ParsePlain and RL.OpenLinkedRecipe) then
+            if not (RL and RL.OpenApply) then
                 Print(T("link.bad_payload"))
                 return
             end
-            local fields = RL.ParsePlain(applyArg)
-            if fields then
-                RL.OpenLinkedRecipe(fields)
-            else
-                Print(T("link.bad_payload"))
-            end
+            RL.OpenApply(applyArg)
             return
         end
     end

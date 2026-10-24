@@ -245,6 +245,9 @@ end
 --- Drain up to frame budget (default 1). Returns true if any step ran.
 function FW.Pump()
     FW._didWork = false
+    if #(FW._order) == 0 then
+        return false
+    end
     if ShouldSkipPump() then
         return false
     end

@@ -1060,8 +1060,80 @@ testZeroBonusKept()
 testChatCountsExistingText()
 testChatKeepsMultiSlotLink()
 testNeedsMainAndContainer()
+local function testItemDetailsRoundTrip()
+    local fields = {
+        uid = 3012345,
+        name = "Bitter Example",
+        icon = 123,
+        slots = sampleSlots,
+    }
+    local plain = RL.SerializePlain(fields)
+    check(type(plain) == "string", "details serialize")
+    check(string.find(plain, "d=", 1, true) ~= nil, "share carries item details")
+    check(string.find(plain, "^", 1, true) == nil, "details payload has no caret")
+    local parsed = RL.ParsePlain(plain)
+    check(type(parsed) == "table" and type(parsed.details) == "table", "details parse")
+    eq(parsed.details[3012345].name, "Bitter Example", "potion name carried")
+    eq(parsed.details[3012345].icon, 123, "potion icon carried")
+    eq(parsed.details[1001].name, "", "unknown slot name stays empty")
+    local slotsEnc = RL.EncodeSlots(sampleSlots)
+    eq(RL.ParsePlain("POTION;uid=3012345;d=3012345,123,Bad^n;slots=" .. slotsEnc), nil, "caret in details rejects the link")
+    eq(RL.ParsePlain("POTION;uid=3012345;d=~~;slots=" .. slotsEnc), nil, "bad details reject the link")
+    eq(RL.ParsePlain("POTION;uid=3012345;d=3012345,123,Name~~1001,1,Herb;slots=" .. slotsEnc), nil, "doubled detail separator rejects the link")
+    local legacy = RL.ParsePlain("POTION;uid=3012345;n=Bitter Example;slots=" .. slotsEnc)
+    check(type(legacy) == "table" and legacy.details == nil, "links without details still parse")
+end
+
+local function testPresentDoesNotImport()
+    resetKnowledge()
+    local shown = nil
+    local showCalls = 0
+    StockPiler.RecipeShare = {
+        Show = function(fields)
+            shown = fields
+            showCalls = showCalls + 1
+            return true
+        end,
+        ShowFromPlain = function(text)
+            shown = text
+            showCalls = showCalls + 1
+            return true
+        end,
+    }
+    local fields = {
+        uid = 3012345,
+        name = "Bitter Example",
+        icon = 123,
+        slots = sampleSlots,
+    }
+    eq(RL.PresentLinkedRecipe(fields), true, "present opens preview")
+    eq(shown, fields, "present passes fields")
+    eq(#registered, 0, "present does not import")
+    local plain = RL.SerializePlain(fields)
+    eq(RL.OpenApply(plain), true, "apply opens preview")
+    eq(type(shown), "string", "apply passes the plain string")
+    eq(#registered, 0, "apply does not import")
+    EA_ChatWindow = { OnHyperLinkLButtonUp = function() end }
+    RL._hyperlinkHooked = false
+    RL._prevOnHyperLinkLButtonUp = nil
+    RL.InstallHyperlinkHook()
+    local beforeShows = showCalls
+    EA_ChatWindow.OnHyperLinkLButtonUp("StockPiler:" .. plain, 0, 0, 0)
+    eq(showCalls, beforeShows + 1, "chat click opens preview")
+    eq(#registered, 0, "chat click does not import")
+    StockPiler.RecipeShare = nil
+    StockPiler.Ui = {
+        ShowWindow = function() end,
+    }
+    eq(RL.OpenApply(plain), true, "apply without preview still imports")
+    eq(#registered, 1, "fallback import registered one recipe")
+    RL.UninstallHyperlinkHook()
+end
+
 testShareRequiresMainAndContainer()
 testLegacyCaretAndBadSeparators()
+testItemDetailsRoundTrip()
+testPresentDoesNotImport()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

@@ -2,11 +2,11 @@
 
 StockPiler keeps the potions and plants you care about in stock. Watch an item, set how many you want, and let it grow, buy, and brew toward that amount.
 
-**Version 1.0.1**
+**Version 1.1.0**
 
 ## Install
 
-1. Download `StockPiler-1.0.1.zip` from [Releases](https://github.com/Talladego/StockPiler/releases).
+1. Download `StockPiler-1.1.0.zip` from [Releases](https://github.com/Talladego/StockPiler/releases).
 2. Unzip it into `Interface/AddOns/` so the folder is `Interface/AddOns/StockPiler/`.
 3. Reload the UI.
 4. Open the window with `/stp` or `/stockpiler`.
@@ -25,7 +25,8 @@ LibSlash is optional. Without it, the window still loads, but the slash commands
 - **AutoBrew.** Brews a watch that is ready until it reaches its target. It waits while you are planting, refining, or harvesting.
 - **Level up skills.** While Cultivation or Apothecary is under 200, practice rows appear on Watch after your real watches are stocked. Practice brews are not added to your known potions.
 - **Craft button.** Shown on screen by default. It brews when a potion is ready, harvests when a plot is ready, and stays dark when there is nothing to do. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. The Craft Macro checkbox on Watch adds a hotbar macro you place yourself. Turning that checkbox off removes the macro from your bars. Turning it back on does not put it back.
-- **Recipe links.** Right-click a potion on Potions or Watch and choose Link in chat to put `[StockPiler Recipe: <name>]` in the chat box (press Enter to send). Copy string puts a plain recipe line in the chat box so you can copy it. Clicking a link adds the recipe to Known Potions when you do not already have it. If you already know the potion, a different recipe is kept as an alternative and does not change your name, icon, or active recipe. `/stp apply` is an advanced command for a pasted plain string.
+- **Recipe links.** Right-click a potion on Potions or Watch and choose Link in chat, or Shift+left-click its name, icon, or row, to put `[StockPiler Recipe: <name>]` in the chat box (press Enter to send). Copy string puts a plain recipe line in the chat box so you can copy it. Clicking a link, or `/stp apply`, opens a preview of the potion and its ingredients. Learn recipe adds it to Known Potions. Cancel, the close button, and Escape leave your saved recipes unchanged. If you already know that recipe, Learn stays off. If you already know the potion, a different recipe is kept as an alternative and does not change your name, icon, or active recipe.
+- **Plant stock.** Hover Stock on a plant watch to see harvested plants and seeds in bags separately. The Stock number stays the harvested-plant count. If StockPiler does not know which seed grows that plant, the tip says so.
 
 Automation starts off. Turn on only the parts you want.
 
@@ -44,7 +45,7 @@ Automation starts off. Turn on only the parts you want.
 | `/stp chat quiet` | Changes, harvests, and brews only |
 | `/stp chat off` | No StockPiler chat |
 | `/stp link` | Insert a recipe chat link for the last shared potion |
-| `/stp apply POTION;...` | Advanced: import a pasted plain recipe string into Known Potions |
+| `/stp apply POTION;...` | Open a preview of a pasted plain recipe string. Learn adds it |
 
 `/stp chat` by itself tells you which mode is on.
 

@@ -376,16 +376,31 @@ function P.EnsureCharacterBucketShape(char)
         char.plantWatches = {}
     end
     char.watchPriorityTiersMigrated = char.watchPriorityTiersMigrated == true
-    local retired = {}
+    local retired = nil
     for k in pairs(char) do
         if defaults[k] == nil then
+            if retired == nil then
+                retired = {}
+            end
             retired[#retired + 1] = k
         end
     end
-    for i = 1, #retired do
-        char[retired[i]] = nil
+    if retired ~= nil then
+        for i = 1, #retired do
+            char[retired[i]] = nil
+        end
     end
     return char
+end
+
+-- Character tables already passed through EnsureCharacterBucketShape.
+-- Keyed by table identity so a replaced bucket is shaped again.
+local shapedBuckets = setmetatable({}, { __mode = "k" })
+
+function P.InvalidateCharacterBucket(row)
+    if type(row) == "table" then
+        shapedBuckets[row] = nil
+    end
 end
 
 function P.GetCharacterBucket(create)
@@ -400,7 +415,12 @@ function P.GetCharacterBucket(create)
         row = P.CopyTable(StockPiler.DefaultCharacterSettings)
         settings.characters[key] = row
     end
-    return P.EnsureCharacterBucketShape(row), key
+    if shapedBuckets[row] == true then
+        return row, key
+    end
+    row = P.EnsureCharacterBucketShape(row)
+    shapedBuckets[row] = true
+    return row, key
 end
 
 -- Window controls only. Slash-only prefs (debug, chat, event trace, language)
@@ -468,6 +488,7 @@ function P.ResetSettingsToDefaults()
             local key = UI_CHARACTER_KEYS[i]
             char[key] = P.CopyTable(cdef[key])
         end
+        P.InvalidateCharacterBucket(char)
     end
     return P.EnsureSettings()
 end

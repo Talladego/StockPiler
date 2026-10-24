@@ -2,6 +2,13 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.0
+
+- Clicking a recipe link, or using /stp apply, opens a preview of the potion and its ingredients. Learn recipe adds it to Known Potions. Cancel, the close button, and Escape leave saved recipes unchanged. If you already know that recipe, Learn stays off.
+- Shift+left-click a potion's name, icon, or row on Potions or Watch to put the same chat link in the box. Ordinary clicks stay as they are. Plants and practice rows do not link.
+- Hovering Stock on a plant watch shows harvested plants and seeds in bags on separate lines. The Stock column stays the harvested-plant count. If the seed link is unknown, the tip says so.
+- Performance improvements.
+
 ## 1.0.1
 
 - Recipe linking: right-click a potion on Potions or Watch and choose Link in chat to insert `[StockPiler Recipe: <name>]`. Copy string puts a plain recipe line in the chat box. Clicking a link adds that recipe to Known Potions when you do not already have it, and does not create a watch. If you already know the potion, a different recipe is stored as an alternative and does not change the potion name, icon, or active recipe. A recipe you already have is left unchanged. `/stp link` repeats the last recipe you chose Link in chat for (this session). `/stp apply` is an advanced command for a pasted plain string. A material stat of zero is kept in the link, so importing it does not add a second copy of that recipe. Does not auto-send chat.

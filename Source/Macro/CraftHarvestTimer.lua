@@ -83,6 +83,10 @@ end
 --- Smallest totalTimer among planted plots that are still growing.
 --- Nil when nothing is growing. Live cultivator read, same as the Craft tip.
 function Timer.ShortestSeconds()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        return snap.shortest
+    end
     local CA = StockPiler.CultivatorAdapter
     if not (CA and CA.GetPlotInfo) then
         return nil
@@ -207,6 +211,10 @@ end
 
 --- Any planted plot ready to harvest (stage or timer).
 function Timer.HasHarvestReady()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        return snap.harvestReady == true
+    end
     local ready = false
     EachPlot(function(plot)
         if ready ~= true and IsPlotHarvestReady(plot) then
@@ -219,6 +227,10 @@ end
 --- Icon of a plot that is already grown. Nil while every planted plot is still growing.
 --- Seed art fallback for overlays.
 function Timer.ReadySeedIcon()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        return snap.seedIcon
+    end
     local icon = nil
     EachPlot(function(plot)
         if icon ~= nil then
@@ -236,6 +248,10 @@ end
 
 --- Grown plant product icon. Falls back to seed icon when the plant art is unknown.
 function Timer.ReadyPlantIcon()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        return snap.plantIcon
+    end
     local icon = nil
     EachPlot(function(plot)
         if icon ~= nil then
@@ -306,6 +322,10 @@ end
 --- Icon of the potion Brew would perform. Falls back to the matching flask
 --- when the potion has no catalog icon yet.
 function Timer.ReadyPotionIcon()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        return snap.potionIcon
+    end
     local Brew = StockPiler.Brew
     if not (Brew and Brew.PickReadyWatch) then
         return nil
@@ -495,7 +515,21 @@ end
 --- True when SP is waiting on the player (vendor / buy) and AutoGrow has
 --- nothing left to plant, harvest, refine, or buy on an open store.
 function Timer.NeedsUserStay()
+    local snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        return snap.userStay == true
+    end
     return Timer.UserStayInfo() ~= nil
+end
+
+--- Verified Craft macro id for the current synchronous Refresh, or nil outside one.
+--- Zero means the refresh checked and found no owned macro.
+function Timer.SnapCraftMacroId()
+    local snap = Timer._refreshSnap
+    if type(snap) ~= "table" then
+        return nil
+    end
+    return tonumber(snap.craftId) or 0
 end
 
 --- 75% red tint on an action-button base icon (or false to leave unchanged).
@@ -894,7 +928,21 @@ local function EachActionButton(fn)
 end
 
 function Timer.Refresh()
+    Timer._refreshSnap = nil
     local Macro = StockPiler.Macro
+    local craftId = 0
+    if Macro and Macro.GetCraftMacroId then
+        craftId = tonumber(Macro.GetCraftMacroId()) or 0
+    end
+    Timer._refreshSnap = {
+        craftId = craftId,
+        harvestReady = Timer.HasHarvestReady() == true,
+        shortest = Timer.ShortestSeconds(),
+        userStay = Timer.NeedsUserStay() == true,
+        potionIcon = Timer.ReadyPotionIcon(),
+        plantIcon = Timer.ReadyPlantIcon(),
+        seedIcon = Timer.ReadySeedIcon(),
+    }
     if Macro and Macro.IsCraftMacroButton then
         EachActionButton(function(button)
             if Macro.IsCraftMacroButton(button) then
@@ -924,6 +972,7 @@ function Timer.Refresh()
             )
         end
     end
+    Timer._refreshSnap = nil
 end
 
 function Timer.OnUpdate(timeElapsed)

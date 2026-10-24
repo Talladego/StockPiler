@@ -128,6 +128,7 @@
             <EventHandlers>
                 <EventHandler event="OnMouseOver" function="StockPilerViewList.OnRowMouseOver" />
                 <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowMouseOverEnd" />
+                <EventHandler event="OnLButtonUp" function="StockPilerTabPotions.OnLinkClick" />
                 <EventHandler event="OnRButtonUp" function="StockPilerTabPotions.OnRowRightClick" />
             </EventHandlers>
             <Windows>
@@ -169,6 +170,7 @@
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPilerTabPotions.OnMouseOverIcon" />
                         <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowChildMouseOverEnd" />
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabPotions.OnLinkClick" />
                         <EventHandler event="OnRButtonUp" function="StockPilerTabPotions.OnRowRightClick" />
                     </EventHandlers>
                 </DynamicImage>
@@ -185,6 +187,7 @@
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPilerViewList.OnRowChildMouseOver" />
                         <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowChildMouseOverEnd" />
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabPotions.OnLinkClick" />
                         <EventHandler event="OnRButtonUp" function="StockPilerTabPotions.OnRowRightClick" />
                     </EventHandlers>
                 </Label>
@@ -512,6 +515,7 @@
             <EventHandlers>
                 <EventHandler event="OnMouseOver" function="StockPilerViewList.OnRowMouseOver" />
                 <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowMouseOverEnd" />
+                <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnLinkClick" />
             </EventHandlers>
             <Windows>
                 <!-- Inset -22 clears EA_ScrollBar_DefaultVerticalChain so zebra never paints under the thumb. -->
@@ -571,6 +575,7 @@
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverIcon" />
                         <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowChildMouseOverEnd" />
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnLinkClick" />
                         <EventHandler event="OnRButtonUp" function="StockPilerTabWatch.OnRowNameRightClick" />
                     </EventHandlers>
                 </DynamicImage>
@@ -587,6 +592,7 @@
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPilerTabWatch.OnMouseOverName" />
                         <EventHandler event="OnMouseOverEnd" function="StockPilerViewList.OnRowChildMouseOverEnd" />
+                        <EventHandler event="OnLButtonUp" function="StockPilerTabWatch.OnLinkClick" />
                         <EventHandler event="OnRButtonUp" function="StockPilerTabWatch.OnRowNameRightClick" />
                     </EventHandlers>
                 </Label>
