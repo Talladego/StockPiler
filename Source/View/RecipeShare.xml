@@ -210,29 +210,29 @@
                     </Anchors>
                 </Window>
 
-                <Button name="$parentLearn" inherits="EA_Button_Default">
-                    <Size><AbsPoint x="150" y="39" /></Size>
+                <Button name="$parentCancel" inherits="EA_Button_DefaultResizeable">
+                    <Size><AbsPoint x="180" y="39" /></Size>
                     <Anchors>
-                        <Anchor point="bottom" relativePoint="bottomright" relativeTo="$parent">
-                            <AbsPoint x="-8" y="-18" />
-                        </Anchor>
-                    </Anchors>
-                    <TextOffset x="0" y="0" />
-                    <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="StockPiler.RecipeShare.OnLearn" />
-                    </EventHandlers>
-                </Button>
-
-                <Button name="$parentCancel" inherits="EA_Button_Default">
-                    <Size><AbsPoint x="150" y="39" /></Size>
-                    <Anchors>
-                        <Anchor point="bottom" relativePoint="bottomleft" relativeTo="$parent">
-                            <AbsPoint x="8" y="-18" />
+                        <Anchor point="bottomright" relativePoint="bottom" relativeTo="$parentButtonBackground">
+                            <AbsPoint x="-6" y="-18" />
                         </Anchor>
                     </Anchors>
                     <TextOffset x="0" y="0" />
                     <EventHandlers>
                         <EventHandler event="OnLButtonUp" function="StockPiler.RecipeShare.OnClose" />
+                    </EventHandlers>
+                </Button>
+
+                <Button name="$parentLearn" inherits="EA_Button_DefaultResizeable">
+                    <Size><AbsPoint x="180" y="39" /></Size>
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottom" relativeTo="$parentButtonBackground">
+                            <AbsPoint x="6" y="-18" />
+                        </Anchor>
+                    </Anchors>
+                    <TextOffset x="0" y="0" />
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPiler.RecipeShare.OnLearn" />
                     </EventHandlers>
                 </Button>
             </Windows>

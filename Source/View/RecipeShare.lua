@@ -123,6 +123,53 @@ local function BonusText(ref, value)
     return T(key, { value = "0", name = T(nameKey) })
 end
 
+--- Family, effect, type, level, grow time, and destroy-on-fail are not stats.
+--- CraftItemInfo.FormatBonus turns those into "Tradeskill ..." and "Requires Level ...".
+local function MetadataBonusRefs()
+    local skip = {
+        [5] = true,
+        [6] = true,
+        [8] = true,
+        [9] = true,
+        [10] = true,
+        [15] = true,
+    }
+    local MS = StockPiler.MaterialSpec
+    local B = MS and MS.CraftBonusRefs and MS.CraftBonusRefs()
+    if type(B) == "table" then
+        local names = {
+            "CRAFTING_FAMILY",
+            "EFFECT",
+            "TYPE",
+            "CRAFTING_LEVEL",
+            "GROW_TIME",
+            "DESTROY_ON_FAIL",
+        }
+        for i = 1, #names do
+            local ref = tonumber(B[names[i]])
+            if ref ~= nil and ref > 0 then
+                skip[ref] = true
+            end
+        end
+    end
+    return skip
+end
+
+local function StatBonusOrder()
+    local MS = StockPiler.MaterialSpec
+    local B = MS and MS.CraftBonusRefs and MS.CraftBonusRefs() or {}
+    return {
+        B.STABILITY or 1,
+        B.POWER or 2,
+        B.DURATION or 3,
+        B.MULTIPLIER or 4,
+        B.YIELD or 11,
+        B.CRITICAL_CHANCE or 12,
+        B.SPECIAL_CHANCE or 14,
+        B.FAIL_CHANCE or 13,
+    }
+end
+
 local function BonusLines(spec)
     local lines = {}
     local bonuses = type(spec) == "table" and spec.bonuses or nil
@@ -145,22 +192,12 @@ local function BonusLines(spec)
             lines[#lines + 1] = T("share.effect", { id = tostring(effect) })
         end
     end
-    local order = { 1, 2, 3, 4, 12, 14, 13 }
-    local seen = {}
+    local skip = MetadataBonusRefs()
+    local order = StatBonusOrder()
     for i = 1, #order do
         local ref = order[i]
-        if bonuses[ref] ~= nil then
-            seen[ref] = true
+        if skip[ref] ~= true and bonuses[ref] ~= nil then
             local text = BonusText(ref, bonuses[ref])
-            if text ~= nil then
-                lines[#lines + 1] = text
-            end
-        end
-    end
-    for ref, value in pairs(bonuses) do
-        ref = tonumber(ref) or 0
-        if ref > 0 and seen[ref] ~= true and ref ~= 6 then
-            local text = BonusText(ref, value)
             if text ~= nil then
                 lines[#lines + 1] = text
             end

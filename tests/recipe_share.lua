@@ -519,6 +519,15 @@ check(string.find(xmlText, "OnPrioLButtonUp", 1, true) ~= nil, "priority clicks 
 check(string.find(xmlText, "OnTargetLButtonUp", 1, true) ~= nil, "target clicks stay on the target control")
 check(string.find(xmlText, "OnLoadRow", 1, true) ~= nil, "load clicks stay on the load control")
 
+local shareXmlFile = io.open(ROOT .. "/Source/View/RecipeShare.xml", "rb")
+local shareXml = shareXmlFile:read("*a")
+shareXmlFile:close()
+check(string.find(shareXml, 'name="$parentLearn" inherits="EA_Button_DefaultResizeable"', 1, true) ~= nil, "Learn uses the skinned resizeable button")
+check(string.find(shareXml, 'name="$parentCancel" inherits="EA_Button_DefaultResizeable"', 1, true) ~= nil, "Cancel uses the skinned resizeable button")
+check(string.find(shareXml, 'inherits="EA_Button_Default"', 1, true) == nil, "preview buttons are not the unskinned base template")
+check(string.find(shareXml, 'name="$parentButtonBackground"', 1, true) ~= nil, "buttons sit in the bottom bar")
+check(string.find(shareXml, 'relativeTo="$parentButtonBackground"', 1, true) ~= nil, "Learn and Cancel anchor to the bottom bar")
+
 local iconsBefore = iconDataCalls
 local texturesBefore = #iconTextures
 local viewBefore = #viewListIcons
@@ -556,6 +565,56 @@ local bagSlot = Share.DescribeSlot(slot("main", 1001, 10), {})
 eq(bagSlot.name, "Bag Sample", "a bag sample names the ingredient row")
 local dbSlot = Share.DescribeSlot(slot("container", 2002, 0), {})
 eq(dbSlot.name, "Database Herb", "database data names an ingredient the bags do not have")
+
+CraftItemInfo = {
+    FormatBonus = function(ref, value)
+        local labels = {
+            [1] = "+2 Stability",
+            [2] = "+1 Power",
+            [5] = "Tradeskill Apothecary",
+            [6] = "Effect Heal",
+            [8] = "Type Vial",
+            [9] = "Requires Level 20",
+            [10] = "Grow Time 10",
+            [11] = "Yield +1",
+            [15] = "Destroy on Fail",
+        }
+        return labels[tonumber(ref) or 0] or ("bonus " .. tostring(ref) .. "=" .. tostring(value))
+    end,
+}
+local metaSlot = Share.DescribeSlot({
+    role = "container",
+    uid = 2002,
+    perCraft = 1,
+    spec = {
+        uid = 2002,
+        role = "container",
+        name = "Artisan's Glass Vial",
+        iconNum = 12,
+        effectId = 0,
+        bonuses = {
+            [1] = 2,
+            [2] = 1,
+            [5] = 4,
+            [6] = 15,
+            [8] = 1,
+            [9] = 20,
+            [10] = 10,
+            [11] = 1,
+            [15] = 1,
+        },
+    },
+}, {})
+local metaText = tostring(metaSlot.label) .. "\n" .. tostring(metaSlot.tip)
+check(string.find(metaText, "+2 Stability", 1, true) ~= nil, "stability still shows when metadata is present")
+check(string.find(metaText, "+1 Power", 1, true) ~= nil, "power still shows when metadata is present")
+check(string.find(metaText, "Yield +1", 1, true) ~= nil, "yield still shows")
+check(string.find(metaText, "Tradeskill Apothecary", 1, true) == nil, "tradeskill family is not a row bonus")
+check(string.find(metaText, "Type Vial", 1, true) == nil, "bonus type is not a row bonus")
+check(string.find(metaText, "Requires Level", 1, true) == nil, "crafting level is not a row bonus")
+check(string.find(metaText, "Grow Time", 1, true) == nil, "grow time is not a row bonus")
+check(string.find(metaText, "Destroy on Fail", 1, true) == nil, "destroy-on-fail is not a row bonus")
+check(string.find(metaText, "Effect Heal", 1, true) == nil, "the effect ref is not formatted as a bonus line")
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
