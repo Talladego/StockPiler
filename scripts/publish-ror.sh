@@ -69,7 +69,7 @@ echo "Addon site has no ${VERSION} release yet."
 
 dry_run() {
   echo "Dry run: would POST ${api_base}"
-  echo "Fields: version=${VERSION} package=@${ZIP} changelog_md=@${CHANGELOG}"
+  echo "Fields: version=${VERSION} package=@${ZIP} changelog_md=<${CHANGELOG}"
   echo "Authorization: Bearer token from ROR_TOKEN (not printed)."
 }
 
@@ -182,13 +182,14 @@ poll_release() {
 upload_body="${tmp}/upload.json"
 upload_hdr="${tmp}/upload.hdr"
 upload_err="${tmp}/upload.err"
+# changelog_md is a string. `<file` sends the file text; `@file` uploads it and the API returns 422.
 set +e
 upload_code=$(curl -sS --fail-with-body --proto '=https' --max-redirs 0 \
   --connect-timeout 20 --max-time 120 \
   -K "$auth_config" \
   -F "version=${VERSION}" \
   -F "package=@${ZIP};type=application/zip" \
-  -F "changelog_md=@${CHANGELOG};type=text/markdown" \
+  -F "changelog_md=<${CHANGELOG}" \
   -D "$upload_hdr" \
   -o "$upload_body" \
   -w "%{http_code}" \
