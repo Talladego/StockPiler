@@ -471,14 +471,10 @@ local function EnsureWatchNameRarityColors(data)
         end
     end
     itemData = data.itemData
-    if itemData and DataUtils and DataUtils.GetItemRarityColor then
-        local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
-        if ok and type(color) == "table" then
-            data.nameR = tonumber(color.r) or 255
-            data.nameG = tonumber(color.g) or 255
-            data.nameB = tonumber(color.b) or 255
-            return data.nameR, data.nameG, data.nameB
-        end
+    local VL = StockPiler.ViewList
+    if itemData and VL and VL.ItemRarityNameColor then
+        data.nameR, data.nameG, data.nameB = VL.ItemRarityNameColor(itemData)
+        return data.nameR, data.nameG, data.nameB
     end
     if data.nameR ~= nil and data.nameG ~= nil and data.nameB ~= nil then
         return tonumber(data.nameR) or 255, tonumber(data.nameG) or 255, tonumber(data.nameB) or 255

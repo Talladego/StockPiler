@@ -8,6 +8,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Multi-ingredient recipe links survive sending and opening the preview.
 - A recipe link can be learned only when it includes a main ingredient and a container, so a cut or incomplete link does not add a one-ingredient recipe. A grammar mark in the potion name is left out of the link.
 - Link in chat, Copy string, and /stp link skip a recipe that has no container. They say that it needs a main ingredient and a container.
+- Known Potions keep each variant's rarity and level (regular vs Potent on the same recipe). Recipe links can carry those values; older links without them still import. Name tint uses the saved rarity when bags have no sample.
 - Hovering Stock on a plant watch shows harvested plants and seeds in bags on separate lines. The Stock column stays the harvested-plant count. If the seed link is unknown, the tip says so.
 - Refining a plant StockPiler has not seen before teaches its plant-to-seed link and adds that plant to Known plants, the same way a harvest does. Known conversions still record. An unrelated gain, a seed packet, a stack move, or more than one possible output is not saved, and an unknown result does not mark the plant convert-failed.
 - `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` were removed. Use the window tabs. Harvesting still needs the craft button.

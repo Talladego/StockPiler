@@ -2,9 +2,11 @@
 -- StockPiler RecipeLink -- chat share / import for known potions
 -- Plain payload (paste-safe). New shares omit the fingerprint (rk);
 -- import recomputes it from the slots. Order:
---   POTION;uid=<n>;icon=<n>;n=<name>;d=<details>;slots=<encoded>
+--   POTION;uid=<n>;icon=<n>;n=<name>;rar=<n>;lv=<n>;d=<details>;slots=<encoded>
+-- rar= / lv= are optional WAR rarity and iLevel for that potion uid.
 -- d= is optional item names and icons (uid,icon,name rows joined with ~).
--- It is dropped first when the link is too long. Absent d= still imports.
+-- d= is dropped first when the link is too long, then rar=/lv=. Absent
+-- optional fields still imports.
 -- Slot rows (legacy rows stop before effectId):
 --   role:uid:perCraft:power:stability:duration:tradeSkill:skillLevel:cult:slotType:effectId:bonuses
 -- joined with ~ . bonuses is ref=value pairs separated by commas,
@@ -747,7 +749,7 @@ function RL.DecodeItemDetails(encoded)
     return details
 end
 
---- Serialize a potion share. fields: uid, name, icon, slots?
+--- Serialize a potion share. fields: uid, name, icon, rarity, iLevel, slots?
 --- The fingerprint is not included; import recomputes it.
 function RL.SerializePlain(fields)
     if type(fields) ~= "table" then
@@ -763,6 +765,14 @@ function RL.SerializePlain(fields)
         icon = 0
     end
     local name = SanitizeName(fields.name)
+    local rarity = AsInt(fields.rarity or fields.rar)
+    if rarity ~= nil and (rarity < 0 or rarity > ID_MAX) then
+        rarity = nil
+    end
+    local iLevel = AsInt(fields.iLevel or fields.lv or fields.level)
+    if iLevel ~= nil and (iLevel < 1 or iLevel > ID_MAX) then
+        iLevel = nil
+    end
     local slotsEnc = ""
     if type(fields.slots) == "table" then
         slotsEnc = RL.EncodeSlots(fields.slots)
@@ -783,7 +793,7 @@ function RL.SerializePlain(fields)
     end
     local detailsEnc = RL.EncodeItemDetails(uid, icon, name, fields.slots)
 
-    local function build(includeName, includeIcon, includeDetails)
+    local function build(includeName, includeIcon, includeTier, includeDetails)
         local parts = {
             "POTION",
             "uid=" .. tostring(uid),
@@ -794,6 +804,12 @@ function RL.SerializePlain(fields)
         if includeName and name ~= "" then
             parts[#parts + 1] = "n=" .. name
         end
+        if includeTier and rarity ~= nil then
+            parts[#parts + 1] = "rar=" .. tostring(rarity)
+        end
+        if includeTier and iLevel ~= nil then
+            parts[#parts + 1] = "lv=" .. tostring(iLevel)
+        end
         if includeDetails and detailsEnc ~= "" then
             parts[#parts + 1] = "d=" .. detailsEnc
         end
@@ -803,15 +819,19 @@ function RL.SerializePlain(fields)
         return table.concat(parts, ";")
     end
 
-    local plain = build(true, true, true)
+    -- Drop d= first, then rar=/lv=, then icon, then name when over budget.
+    local plain = build(true, true, true, true)
     if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
-        plain = build(true, true, false)
+        plain = build(true, true, true, false)
     end
     if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
-        plain = build(true, false, false)
+        plain = build(true, true, false, false)
     end
     if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
-        plain = build(false, false, false)
+        plain = build(true, false, false, false)
+    end
+    if string.len("StockPiler:" .. plain) > RL.LINK_MAX_DATA then
+        plain = build(false, false, false, false)
     end
     return plain
 end
@@ -883,6 +903,10 @@ function RL.ParsePlain(plain)
                 fields.icon = val
             elseif key == "n" or key == "name" then
                 fields.name = val
+            elseif key == "rar" or key == "rarity" then
+                fields.rarity = val
+            elseif key == "lv" or key == "ilevel" or key == "level" then
+                fields.iLevel = val
             elseif key == "rk" then
                 fields.rk = val
             elseif key == "slots" then
@@ -913,6 +937,24 @@ function RL.ParsePlain(plain)
             return nil
         end
         fields.name = name
+    end
+    if fields.rarity ~= nil and tostring(fields.rarity) ~= "" then
+        local rarity = StrictInt(fields.rarity, 0, ID_MAX, false)
+        if rarity == nil then
+            return nil
+        end
+        fields.rarity = rarity
+    else
+        fields.rarity = nil
+    end
+    if fields.iLevel ~= nil and tostring(fields.iLevel) ~= "" then
+        local iLevel = StrictInt(fields.iLevel, 1, ID_MAX, false)
+        if iLevel == nil then
+            return nil
+        end
+        fields.iLevel = iLevel
+    else
+        fields.iLevel = nil
     end
     if fields.rk ~= nil then
         local rk = ValidRk(fields.rk)
@@ -1058,14 +1100,44 @@ function RL.FieldsFromRow(data)
 
     local name = data.baseName or data.name
     local icon = tonumber(data.iconNum) or 0
-    if icon <= 0 and RS and RS.GetPotion then
-        local potion = RS.GetPotion(watchKey)
-        if type(potion) == "table" then
-            if name == nil or ToNarrow(name) == "" then
-                name = potion.name
-            end
+    local rarity = tonumber(data.rarity)
+    local iLevel = tonumber(data.iLevel) or tonumber(data.levelNum) or tonumber(data.level)
+    local potion = nil
+    if RS and RS.GetPotion then
+        potion = RS.GetPotion(watchKey)
+        if type(potion) ~= "table" then
+            potion = RS.GetPotion(RS.PotionKeyFromUid and RS.PotionKeyFromUid(uid) or ("uid:" .. tostring(uid)))
+        end
+    end
+    if type(potion) == "table" then
+        if (icon <= 0) then
             icon = tonumber(potion.iconNum) or icon
         end
+        if name == nil or ToNarrow(name) == "" then
+            name = potion.name
+        end
+        if rarity == nil then
+            rarity = tonumber(potion.rarity)
+        end
+        if iLevel == nil or iLevel <= 0 then
+            iLevel = tonumber(potion.iLevel)
+        end
+    end
+    if (rarity == nil or (iLevel == nil or iLevel <= 0))
+        and StockPiler.Inventory and StockPiler.Inventory.ResolvePotionItemData
+    then
+        local itemData = StockPiler.Inventory.ResolvePotionItemData(watchKey, uid, data.itemData)
+        if type(itemData) == "table" then
+            if rarity == nil then
+                rarity = tonumber(itemData.rarity)
+            end
+            if iLevel == nil or iLevel <= 0 then
+                iLevel = tonumber(itemData.iLevel) or tonumber(itemData.level)
+            end
+        end
+    end
+    if iLevel ~= nil and iLevel <= 0 then
+        iLevel = nil
     end
 
     local fields = {
@@ -1073,6 +1145,8 @@ function RL.FieldsFromRow(data)
         rk = rk,
         name = name,
         icon = icon,
+        rarity = rarity,
+        iLevel = iLevel,
     }
     return AttachSlotsFromKnowledge(fields)
 end
@@ -1402,7 +1476,22 @@ function RL.ImportKnownPotion(fields)
     if icon > 0 then
         out.iconNum = icon
     end
-    RS.RegisterKnownPotion(uid, out, rk, "good", { linkImport = true })
+    local rarity = tonumber(fields.rarity)
+    local iLevel = tonumber(fields.iLevel) or tonumber(fields.lv) or tonumber(fields.level)
+    if rarity ~= nil then
+        out.rarity = rarity
+    end
+    if iLevel ~= nil and iLevel > 0 then
+        out.iLevel = iLevel
+    end
+    local quality = "good"
+    if RS.OutputQuality then
+        quality = RS.OutputQuality(out) or "good"
+    end
+    if quality == "failed" then
+        quality = "good"
+    end
+    RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
     AfterPotionImport()
     return "imported"
 end

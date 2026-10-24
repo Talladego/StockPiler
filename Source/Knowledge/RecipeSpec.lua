@@ -916,6 +916,59 @@ local function OutputQuality(out)
     return "good"
 end
 
+--- Classify a brew/link output name as good / potent / volatile (or failed).
+function RS.OutputQuality(out)
+    return OutputQuality(out)
+end
+
+local function ReadTierFromOut(out)
+    if type(out) ~= "table" then
+        return nil, nil
+    end
+    local sample = type(out.itemData) == "table" and out.itemData or out
+    local rarity = tonumber(out.rarity)
+    if rarity == nil then
+        rarity = tonumber(sample.rarity)
+    end
+    local iLevel = tonumber(out.iLevel) or tonumber(out.level)
+    if iLevel == nil or iLevel <= 0 then
+        iLevel = tonumber(sample.iLevel) or tonumber(sample.level) or 0
+    end
+    if iLevel <= 0 then
+        iLevel = nil
+    end
+    return rarity, iLevel
+end
+
+--- Stamp rarity / iLevel on a potion row. linkImport fills gaps only on existing rows.
+local function ApplyPotionTierFields(potion, out, opts)
+    if type(potion) ~= "table" then
+        return
+    end
+    opts = type(opts) == "table" and opts or {}
+    local rarity, iLevel = ReadTierFromOut(out)
+    local linkImport = opts.linkImport == true
+    local isNew = opts.isNew == true
+    if rarity ~= nil then
+        if linkImport then
+            if isNew or (tonumber(potion.rarity) or 0) <= 0 then
+                potion.rarity = rarity
+            end
+        else
+            potion.rarity = rarity
+        end
+    end
+    if iLevel ~= nil then
+        if linkImport then
+            if isNew or (tonumber(potion.iLevel) or 0) <= 0 then
+                potion.iLevel = iLevel
+            end
+        else
+            potion.iLevel = iLevel
+        end
+    end
+end
+
 --- Bag deltas are noisy (double craft, missed stack). Multiplier does not
 --- determine yield: +1 yielded 1, +2 and +3 yielded 2, +16/+17/+18 yielded 5,
 --- and Stability +10 did not raise yield. There is no bottle formula.
@@ -1956,6 +2009,54 @@ function RS.MigrateFractionalRecipeYields()
     return true
 end
 
+--- One-shot: copy rarity / iLevel from Account.items onto potion rows that lack them.
+--- Does not invent values or rewrite recipes/outcomes. Latch: potionTierMigrateV1.
+function RS.MigratePotionTierFromItems()
+    local acct = StockPiler.Account
+    if type(acct) ~= "table" then
+        return false
+    end
+    if acct.potionTierMigrateV1 == true then
+        return false
+    end
+    local potions = PotionsTable()
+    if type(potions) ~= "table" then
+        acct.potionTierMigrateV1 = true
+        return false
+    end
+    local stamped = 0
+    local Items = StockPiler.Items
+    for _, potion in pairs(potions) do
+        if type(potion) == "table" then
+            local uid = tonumber(potion.outputUid) or 0
+            local needRarity = (tonumber(potion.rarity) or 0) <= 0
+            local needLevel = (tonumber(potion.iLevel) or 0) <= 0
+            if uid > 0 and (needRarity or needLevel) then
+                local learned = Items and Items.AsItemData and Items.AsItemData(uid) or nil
+                if type(learned) ~= "table" and Items and Items.GetByUid then
+                    learned = Items.GetByUid(uid)
+                end
+                if type(learned) == "table" then
+                    if needRarity and (tonumber(learned.rarity) or 0) > 0 then
+                        potion.rarity = tonumber(learned.rarity)
+                        stamped = stamped + 1
+                    end
+                    local learnedLvl = tonumber(learned.iLevel) or tonumber(learned.level) or 0
+                    if needLevel and learnedLvl > 0 then
+                        potion.iLevel = learnedLvl
+                        stamped = stamped + 1
+                    end
+                end
+            end
+        end
+    end
+    acct.potionTierMigrateV1 = true
+    if stamped > 0 and StockPiler.Knowledge and StockPiler.Knowledge.Touch then
+        StockPiler.Knowledge.Touch("potion-tier-migrate-v1")
+    end
+    return stamped > 0
+end
+
 --- Fraction of fingerprint brews that produced this potion uid.
 --- Returns nil when sample size is below OUTCOME_RATE_MIN_ATTEMPTS.
 function RS.OutcomeSuccessRate(recipe, potionUid)
@@ -2734,6 +2835,7 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
         existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
         existing.iconNum = (out and tonumber(out.iconNum)) or existing.iconNum or 0
     end
+    ApplyPotionTierFields(existing, out, { linkImport = linkImport, isNew = isNew })
     if existing.linimentClass ~= true then
         if RS.IsLinimentClass({ name = existing.name, uid = outputUid }) then
             existing.linimentClass = true

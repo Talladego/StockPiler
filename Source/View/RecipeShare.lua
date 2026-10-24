@@ -314,12 +314,20 @@ local function PotionPresentation(fields)
     local carried = Carried(fields, uid)
     local name = fields.name
     local icon = tonumber(fields.icon) or 0
+    local rarity = tonumber(fields.rarity)
+    local iLevel = tonumber(fields.iLevel) or tonumber(fields.lv)
     if type(known) == "table" then
         if known.name ~= nil and ToNarrow(known.name) ~= "" then
             name = known.name
         end
         if icon <= 0 then
             icon = tonumber(known.iconNum) or 0
+        end
+        if rarity == nil then
+            rarity = tonumber(known.rarity)
+        end
+        if iLevel == nil or iLevel <= 0 then
+            iLevel = tonumber(known.iLevel) or tonumber(known.level)
         end
     end
     if (name == nil or ToNarrow(name) == "") and type(carried) == "table" then
@@ -331,7 +339,18 @@ local function PotionPresentation(fields)
     if name == nil or ToNarrow(name) == "" then
         name = T("ui.potion_fallback")
     end
-    return name, icon
+    return name, icon, rarity, iLevel
+end
+
+local function SetPotionNameColor(rarity)
+    local r, g, b = 255, 255, 255
+    local VL = StockPiler.ViewList
+    if VL and VL.ItemRarityNameColor and rarity ~= nil then
+        r, g, b = VL.ItemRarityNameColor({ rarity = rarity, itemSet = 0 })
+    end
+    if type(LabelSetTextColor) == "function" then
+        LabelSetTextColor(WIN .. "PotionName", r, g, b)
+    end
 end
 
 local function StatusKey()
@@ -388,9 +407,10 @@ function RS.Paint()
     if type(fields) ~= "table" then
         return false
     end
-    local name, icon = PotionPresentation(fields)
+    local name, icon, rarity = PotionPresentation(fields)
     SetLabel(WIN .. "TitleText", T("share.title"))
     SetLabel(WIN .. "PotionName", name)
+    SetPotionNameColor(rarity)
     SetLabel(WIN .. "Status", T(StatusKey()))
     local hint = T("share.hint")
     local slots = SortedSlots(fields.slots)

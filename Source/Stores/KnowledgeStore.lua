@@ -147,6 +147,9 @@ function Know.MigrateFingerprints()
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigrateFractionalRecipeYields then
         StockPiler.RecipeSpec.MigrateFractionalRecipeYields()
     end
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigratePotionTierFromItems then
+        StockPiler.RecipeSpec.MigratePotionTierFromItems()
+    end
     Know.ValidateAndRepairSavedData()
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.MigratePotionEffectKeys then
         StockPiler.RecipeSpec.MigratePotionEffectKeys()

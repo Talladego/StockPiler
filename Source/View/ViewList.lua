@@ -15,9 +15,9 @@ end
 function VL.ItemRarityNameColor(itemData)
     if itemData and DataUtils and DataUtils.GetItemRarityColor then
         -- Engine GetItemRarityColor treats missing itemSet as utility grey.
-        -- Learned Items.AsItemData rows often omit itemSet; probe with 0 so rarity tint works.
+        -- Known-potion / Items shells often omit itemSet; probe with 0 when rarity is set.
         local probe = itemData
-        if itemData.itemSet == nil and itemData.rarity ~= nil then
+        if itemData.rarity ~= nil and itemData.itemSet == nil then
             probe = {
                 rarity = itemData.rarity,
                 itemSet = 0,

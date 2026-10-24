@@ -162,6 +162,28 @@ StockPiler.RecipeSpec = {
                 iconNum = 0,
             }
         end
+        local function applyTier()
+            local rarity = out and tonumber(out.rarity)
+            local iLevel = out and (tonumber(out.iLevel) or tonumber(out.level))
+            if rarity ~= nil then
+                if opts.linkImport == true then
+                    if isNew or (tonumber(existing.rarity) or 0) <= 0 then
+                        existing.rarity = rarity
+                    end
+                else
+                    existing.rarity = rarity
+                end
+            end
+            if iLevel ~= nil and iLevel > 0 then
+                if opts.linkImport == true then
+                    if isNew or (tonumber(existing.iLevel) or 0) <= 0 then
+                        existing.iLevel = iLevel
+                    end
+                else
+                    existing.iLevel = iLevel
+                end
+            end
+        end
         if opts.linkImport == true then
             if isNew then
                 existing.name = out and out.name or existing.name
@@ -169,6 +191,7 @@ StockPiler.RecipeSpec = {
                     existing.iconNum = tonumber(out.iconNum)
                 end
             end
+            applyTier()
             local keys = {}
             if type(existing.recipeKeys) == "table" then
                 for i = 1, #existing.recipeKeys do
@@ -205,6 +228,7 @@ StockPiler.RecipeSpec = {
             StockPiler.Items.StoreItem(out or { uniqueID = uid }, "potion")
             existing.name = out and out.name
             existing.iconNum = out and out.iconNum
+            applyTier()
             existing.recipeKeys = { rk }
             existing.activeRecipeKey = rk
         end
@@ -216,6 +240,16 @@ StockPiler.RecipeSpec = {
             linkImport = opts.linkImport == true,
         }
         return existing, isNew, true, false
+    end,
+    OutputQuality = function(out)
+        local name = string.lower(tostring(out and out.name or ""))
+        if string.find(name, "volatile", 1, true) then
+            return "volatile"
+        end
+        if string.find(name, "potent", 1, true) then
+            return "potent"
+        end
+        return "good"
     end,
     RecipeSpecKey = recipeKey,
 }
@@ -445,6 +479,48 @@ local function testImportAfterForget()
     eq(potions["uid:66"].name, "Readd", "new potion gets link name")
 end
 
+--- Sibling brew outcomes on a shared fingerprint must not hide a relearned link.
+local function testCatalogListsSharedFingerprintRelearn()
+    resetKnowledge()
+    load_module("Source/View/Catalog.lua")
+    local rk = recipeKey(sampleSlots)
+    recipes[rk] = {
+        recipeSpecKey = rk,
+        slots = sampleSlots,
+        outcomes = { ["55"] = { uid = 55, samples = 2, qtySum = 4, quality = "good" } },
+        brewSuccesses = 2,
+    }
+    potions["uid:55"] = {
+        potionKey = "uid:55",
+        outputUid = 55,
+        recipeKeys = { rk },
+        activeRecipeKey = rk,
+        name = "Sibling",
+        iconNum = 1,
+    }
+    local result = RL.ImportKnownPotion({
+        uid = 66,
+        name = "Relearn",
+        slots = sampleSlots,
+    })
+    eq(result, "imported", "shared fingerprint relearn imports")
+    eq(recipes[rk].outcomes["66"], nil, "relearn still adds no synthetic outcome")
+    check(type(potions["uid:66"]) == "table", "relearn registers potion")
+    local entries = StockPiler.Catalog.ListPotionRecipeEntries()
+    local found55, found66 = false, false
+    for i = 1, #entries do
+        local uid = tonumber(entries[i].outputUid) or 0
+        if uid == 55 then
+            found55 = true
+        end
+        if uid == 66 then
+            found66 = true
+        end
+    end
+    check(found55 == true, "sibling with outcomes still listed")
+    check(found66 == true, "relearned potion listed without its own outcome")
+end
+
 local function testImportAdds()
     resetKnowledge()
     local rk = recipeKey(sampleSlots)
@@ -468,6 +544,62 @@ local function testImportAdds()
     eq(potions["uid:77"].name, "Fresh", "new potion name")
     eq(potions["uid:77"].iconNum, 9, "new potion icon")
     eq(potions["uid:77"].activeRecipeKey, rk, "new potion active is recomputed key")
+end
+
+local function testTierRoundTripAndImport()
+    resetKnowledge()
+    local fields = {
+        uid = 301,
+        name = "Potent Lasting Test",
+        icon = 44,
+        rarity = 3,
+        iLevel = 50,
+        slots = sampleSlots,
+    }
+    local plain = RL.SerializePlain(fields)
+    check(type(plain) == "string", "tier share serializes")
+    check(string.find(plain, "rar=3", 1, true) ~= nil, "share includes rar=")
+    check(string.find(plain, "lv=50", 1, true) ~= nil, "share includes lv=")
+    local parsed = RL.ParsePlain(plain)
+    check(type(parsed) == "table", "tier share parses")
+    eq(tonumber(parsed.rarity), 3, "parsed rarity")
+    eq(tonumber(parsed.iLevel), 50, "parsed iLevel")
+    local legacy = RL.ParsePlain(RL.SerializePlain({
+        uid = 302,
+        name = "Legacy",
+        icon = 1,
+        slots = sampleSlots,
+    }))
+    check(type(legacy) == "table", "legacy without tier still parses")
+    eq(legacy.rarity, nil, "legacy rarity absent")
+    eq(legacy.iLevel, nil, "legacy iLevel absent")
+
+    local result = RL.ImportKnownPotion({
+        uid = 301,
+        name = "Potent Lasting Test",
+        icon = 44,
+        rarity = 3,
+        iLevel = 50,
+        slots = sampleSlots,
+    })
+    eq(result, "imported", "tier import succeeds")
+    eq(tonumber(potions["uid:301"].rarity), 3, "import stamps rarity")
+    eq(tonumber(potions["uid:301"].iLevel), 50, "import stamps iLevel")
+    eq(registered[#registered].quality, "potent", "potent name classifies quality")
+    eq(recipes[recipeKey(sampleSlots)].outcomes["301"], nil, "tier import still has no outcome")
+
+    potions["uid:301"].rarity = 5
+    potions["uid:301"].iLevel = 99
+    registered = {}
+    eq(RL.ImportKnownPotion({
+        uid = 301,
+        name = "Potent Lasting Test",
+        rarity = 2,
+        iLevel = 40,
+        slots = sampleSlots,
+    }), "known", "already linked stays known")
+    eq(tonumber(potions["uid:301"].rarity), 5, "known import does not clobber rarity")
+    eq(tonumber(potions["uid:301"].iLevel), 99, "known import does not clobber iLevel")
 end
 
 local function testImportNoSlots()
@@ -1045,7 +1177,9 @@ testLinkLabelFields()
 testGrammarSuffixStrippedFromName()
 testImportKnownSkips()
 testImportAfterForget()
+testCatalogListsSharedFingerprintRelearn()
 testImportAdds()
+testTierRoundTripAndImport()
 testImportNoSlots()
 testRejects()
 testPlantRejected()
