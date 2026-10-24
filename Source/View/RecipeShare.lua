@@ -330,6 +330,25 @@ local function PotionPresentation(fields)
             iLevel = tonumber(known.iLevel) or tonumber(known.level)
         end
     end
+    local saved = nil
+    local Spec = StockPiler.RecipeSpec
+    if uid > 0 and Spec and Spec.GetPotion then
+        saved = Spec.GetPotion(uid)
+    end
+    if type(saved) == "table" then
+        if (name == nil or ToNarrow(name) == "") and saved.name ~= nil and ToNarrow(saved.name) ~= "" then
+            name = saved.name
+        end
+        if icon <= 0 then
+            icon = tonumber(saved.iconNum) or 0
+        end
+        if rarity == nil then
+            rarity = tonumber(saved.rarity)
+        end
+        if iLevel == nil or iLevel <= 0 then
+            iLevel = tonumber(saved.iLevel)
+        end
+    end
     if (name == nil or ToNarrow(name) == "") and type(carried) == "table" then
         name = carried.name
     end
@@ -341,6 +360,8 @@ local function PotionPresentation(fields)
     end
     return name, icon, rarity, iLevel
 end
+
+RS.PotionPresentation = PotionPresentation
 
 local function SetPotionNameColor(rarity)
     local r, g, b = 255, 255, 255

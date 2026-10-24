@@ -1102,12 +1102,10 @@ function RL.FieldsFromRow(data)
     local icon = tonumber(data.iconNum) or 0
     local rarity = tonumber(data.rarity)
     local iLevel = tonumber(data.iLevel) or tonumber(data.levelNum) or tonumber(data.level)
+    -- GetPotion accepts a numeric uid or "uid:<n>", not a composite "uid:X|rk:Y" watch key.
     local potion = nil
     if RS and RS.GetPotion then
-        potion = RS.GetPotion(watchKey)
-        if type(potion) ~= "table" then
-            potion = RS.GetPotion(RS.PotionKeyFromUid and RS.PotionKeyFromUid(uid) or ("uid:" .. tostring(uid)))
-        end
+        potion = RS.GetPotion(uid)
     end
     if type(potion) == "table" then
         if (icon <= 0) then
@@ -1293,8 +1291,9 @@ function RL.ShareWatchKey(watchKey)
     end
     local name = nil
     local icon = 0
+    local potion = nil
     if RS and RS.GetPotion then
-        local potion = RS.GetPotion(parsed.potionKey or watchKey)
+        potion = RS.GetPotion(parsed.potionKey or watchKey)
         if type(potion) == "table" then
             name = potion.name
             icon = tonumber(potion.iconNum) or 0
@@ -1306,6 +1305,8 @@ function RL.ShareWatchKey(watchKey)
         recipeSpecKey = rk,
         name = name,
         iconNum = icon,
+        rarity = potion and potion.rarity,
+        iLevel = potion and potion.iLevel,
     }
     return RL.ShareFromRow(fakeRow)
 end

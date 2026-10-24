@@ -619,6 +619,42 @@ check(string.find(metaText, "Grow Time", 1, true) == nil, "grow time is not a ro
 check(string.find(metaText, "Destroy on Fail", 1, true) == nil, "destroy-on-fail is not a row bonus")
 check(string.find(metaText, "Effect Heal", 1, true) == nil, "the effect ref is not formatted as a bonus line")
 
+local nameColors = {}
+function LabelSetTextColor(win, r, g, b)
+    nameColors[win] = { r = r, g = g, b = b }
+end
+StockPiler.ViewList.ItemRarityNameColor = function(item)
+    if tonumber(item and item.rarity) == 3 then
+        return 40, 80, 200
+    end
+    return 255, 255, 255
+end
+StockPiler.Account.potions["uid:4242"] = {
+    potionKey = "uid:4242",
+    outputUid = 4242,
+    name = "Saved Blue",
+    iconNum = 77,
+    rarity = 3,
+    iLevel = 36,
+}
+local legacyPlain = RL.SerializePlain(fieldsFor(4242, "Legacy Name", sampleSlots()))
+check(type(legacyPlain) == "string" and string.find(legacyPlain, "rar=", 1, true) == nil, "legacy share omits rarity")
+check(type(legacyPlain) == "string" and string.find(legacyPlain, "lv=", 1, true) == nil, "legacy share omits level")
+eq(Share.ShowFromPlain(legacyPlain), true, "legacy link opens the preview")
+local painted = nameColors[WIN .. "PotionName"]
+eq(painted and painted.r, 40, "saved rarity tints the potion name")
+eq(painted and painted.g, 80, "saved rarity green channel")
+eq(painted and painted.b, 200, "saved rarity is not white")
+eq(labels[WIN .. "PotionName"], "Legacy Name", "the link name stays when a saved potion exists")
+local presentedName, presentedIcon, presentedRarity, presentedLevel = Share.PotionPresentation({
+    uid = 4242,
+    slots = sampleSlots(),
+})
+eq(presentedName, "Saved Blue", "a nameless link uses the saved potion name")
+eq(presentedIcon, 77, "a nameless link uses the saved potion icon")
+eq(presentedRarity, 3, "presentation uses the saved rarity")
+eq(presentedLevel, 36, "presentation uses the saved level")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

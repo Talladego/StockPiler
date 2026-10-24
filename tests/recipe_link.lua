@@ -146,6 +146,9 @@ StockPiler.RecipeSpec = {
         return recipes[tostring(rk or "")]
     end,
     GetPotion = function(key)
+        if type(key) == "number" then
+            key = "uid:" .. tostring(key)
+        end
         return potions[tostring(key or "")]
     end,
     RegisterKnownPotion = function(uid, out, rk, quality, opts)
@@ -1273,10 +1276,92 @@ local function testPresentDoesNotImport()
     RL.UninstallHyperlinkHook()
 end
 
+local function testCompositeWatchKeyUsesUid()
+    resetKnowledge()
+    local seen = {}
+    local orig = StockPiler.RecipeSpec.GetPotion
+    StockPiler.RecipeSpec.GetPotion = function(key)
+        seen[#seen + 1] = key
+        if key == 77 then
+            return {
+                name = "Saved Blue",
+                iconNum = 12,
+                rarity = 3,
+                iLevel = 22,
+            }
+        end
+        return nil
+    end
+    local fields = RL.FieldsFromRow({
+        potionRecipeKey = "uid:77|rk:mainx1:lie",
+        uniqueID = 77,
+    })
+    StockPiler.RecipeSpec.GetPotion = orig
+    check(type(fields) == "table", "composite watch key still builds fields")
+    eq(fields.name, "Saved Blue", "fields use the uid potion name")
+    eq(fields.icon, 12, "fields use the uid potion icon")
+    eq(tonumber(fields.rarity), 3, "fields use the uid potion rarity")
+    eq(tonumber(fields.iLevel), 22, "fields use the uid potion level")
+    local sawComposite = false
+    local sawUid = false
+    for i = 1, #seen do
+        if seen[i] == "uid:77|rk:mainx1:lie" then
+            sawComposite = true
+        end
+        if seen[i] == 77 then
+            sawUid = true
+        end
+    end
+    check(sawComposite ~= true, "FieldsFromRow does not look up the composite watch key")
+    check(sawUid == true, "FieldsFromRow looks up GetPotion by uid")
+end
+
+local function testShareWatchKeyCopiesTier()
+    resetKnowledge()
+    local rk = recipeKey(sampleSlots)
+    recipes[rk] = { recipeSpecKey = rk, slots = sampleSlots }
+    local orig = StockPiler.RecipeSpec.GetPotion
+    StockPiler.RecipeSpec.GetPotion = function(key)
+        if key == "uid:55" then
+            return {
+                name = "Tiered",
+                iconNum = 4,
+                rarity = 4,
+                iLevel = 40,
+            }
+        end
+        if key == 55 then
+            return { name = "FromUid", iconNum = 1 }
+        end
+        return nil
+    end
+    TextEditBoxSetMaxChars = function() end
+    TextEditBoxGetText = function()
+        return ""
+    end
+    local inserted = nil
+    CreateHyperLink = function(data, text)
+        return "<LINK data=\"" .. tostring(data) .. "\" text=\"" .. tostring(text) .. "\">"
+    end
+    EA_ChatWindow = {
+        InsertText = function(text)
+            inserted = tostring(text)
+        end,
+    }
+    eq(RL.ShareWatchKey("uid:55|rk:" .. rk), true, "watch key shares the saved recipe")
+    StockPiler.RecipeSpec.GetPotion = orig
+    check(type(inserted) == "string", "watch key inserted a link")
+    check(type(inserted) == "string" and string.find(inserted, "rar=4", 1, true) ~= nil, "watch key link carries saved rarity")
+    check(type(inserted) == "string" and string.find(inserted, "lv=40", 1, true) ~= nil, "watch key link carries saved level")
+    check(type(inserted) == "string" and string.find(inserted, "Tiered", 1, true) ~= nil, "watch key link keeps the saved potion name")
+end
+
 testShareRequiresMainAndContainer()
 testLegacyCaretAndBadSeparators()
 testItemDetailsRoundTrip()
 testPresentDoesNotImport()
+testCompositeWatchKeyUsesUid()
+testShareWatchKeyCopiesTier()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

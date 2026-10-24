@@ -190,6 +190,18 @@ eq(tonumber(potions["uid:9200"].iLevel), 45, "link stamps iLevel on new")
 eq(RS.OutputQuality({ name = "Potent Draught" }), "potent", "OutputQuality potent")
 eq(RS.OutputQuality({ name = "Draught" }), "good", "OutputQuality good")
 
+load_module("Source/View/RecipeLink.lua")
+local RL = StockPiler.RecipeLink
+local fromComposite = RL.FieldsFromRow({
+    potionRecipeKey = "uid:9002|rk:rk:b",
+    uniqueID = 9002,
+})
+check(type(fromComposite) == "table", "composite watch key builds share fields")
+eq(fromComposite and fromComposite.name, "Already Set", "composite key resolves the saved potion by uid")
+eq(tonumber(fromComposite and fromComposite.rarity), 9, "composite key keeps the saved rarity")
+eq(tonumber(fromComposite and fromComposite.iLevel), 99, "composite key keeps the saved level")
+eq(tonumber(fromComposite and fromComposite.icon), 12, "composite key keeps the saved icon")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)
