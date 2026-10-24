@@ -4,10 +4,6 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.1
 
-- Refining a plant learns the seed that refine produced, even when a harvest already linked that plant to a different seed.
-- Closing a recipe preview with Cancel, the close button, or Escape leaves it dismissed. Learn after that does not add the recipe. Opening the link again still lets you learn it.
-- Turning Craft Macro off removes the macro from your bars and deletes it. Replacing that macro on a hotbar button clears the grow countdown on the button.
-- Recipe names that contain a percent sign no longer break the preview, Learn, or Forget.
 - A recipe is saved when you brew it.
 - Practice plots and surplus plantings use a basic additive. Plots grown for a watch or a seed upgrade use the best additive you have.
 - Crafting messages follow the language of your client.
