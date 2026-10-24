@@ -41,13 +41,12 @@ Automation starts off. Turn on only the parts you want.
 | `/stp button <scale>` | Set the Craft button scale (0.50–2.00, or 50%–200%) |
 | `/stp button timer [on\|off]` | Centered grow countdown on the Craft button |
 | `/stp button reset` | Restore the Craft button (shown, unlocked, scale 1.00, timer on, centered) |
+| `/stp chat` | Show the current chat mode |
 | `/stp chat on` | All StockPiler chat messages |
 | `/stp chat quiet` | Changes, harvests, and brews only |
 | `/stp chat off` | No StockPiler chat |
 | `/stp link` | Insert a recipe chat link for the last shared potion |
 | `/stp apply <recipe>` | Open a preview of a pasted recipe. Learn adds it |
-
-`/stp chat` by itself tells you which mode is on.
 
 ## License
 
