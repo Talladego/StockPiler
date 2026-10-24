@@ -78,22 +78,9 @@ local function SetShown(win, showing)
 end
 
 local function KnownItem(uid)
-    local Items = StockPiler.Items
-    uid = tonumber(uid) or 0
-    if uid <= 0 or not Items then
-        return nil
-    end
-    if Items.GetByUid then
-        local row = Items.GetByUid(uid)
-        if type(row) == "table" then
-            return row
-        end
-    end
-    if Items.AsItemData then
-        local row = Items.AsItemData(uid)
-        if type(row) == "table" then
-            return row
-        end
+    local RL = StockPiler.RecipeLink
+    if RL and RL.KnownItemRow then
+        return RL.KnownItemRow(uid)
     end
     return nil
 end
@@ -113,6 +100,27 @@ local function RoleTitle(role)
         return T("material.role.ingredient")
     end
     return T("material.role." .. role)
+end
+
+local function BonusText(ref, value)
+    local n = tonumber(value)
+    if n == nil then
+        return nil
+    end
+    local MS = StockPiler.MaterialSpec
+    if n ~= 0 and MS and MS.FormatBonusLine then
+        local line = MS.FormatBonusLine(ref, n)
+        if type(line) == "table" and line.text ~= nil and ToNarrow(line.text) ~= "" then
+            return line.text
+        end
+    end
+    if n ~= 0 then
+        return nil
+    end
+    local percent = ref == 12 or ref == 13 or ref == 14
+    local key = percent and "material.bonus.pct" or "material.bonus.flat"
+    local nameKey = BONUS_KEY[ref] or "material.bonus.generic"
+    return T(key, { value = "0", name = T(nameKey) })
 end
 
 local function BonusLines(spec)
@@ -143,21 +151,19 @@ local function BonusLines(spec)
         local ref = order[i]
         if bonuses[ref] ~= nil then
             seen[ref] = true
-            local value = tostring(bonuses[ref])
-            local key = BONUS_KEY[ref] or "material.bonus.generic"
-            lines[#lines + 1] = T("material.bonus.flat", {
-                value = value,
-                name = T(key),
-            })
+            local text = BonusText(ref, bonuses[ref])
+            if text ~= nil then
+                lines[#lines + 1] = text
+            end
         end
     end
     for ref, value in pairs(bonuses) do
         ref = tonumber(ref) or 0
         if ref > 0 and seen[ref] ~= true and ref ~= 6 then
-            lines[#lines + 1] = T("material.bonus.flat", {
-                value = tostring(value),
-                name = T(BONUS_KEY[ref] or "material.bonus.generic"),
-            })
+            local text = BonusText(ref, value)
+            if text ~= nil then
+                lines[#lines + 1] = text
+            end
         end
     end
     return lines
@@ -207,15 +213,32 @@ function RS.DescribeSlot(slot, fields)
     if name == nil or ToNarrow(name) == "" then
         name = T("share.unknown_item", { uid = tostring(uid) })
     end
-    local label = T("share.slot_line", {
+    local base = T("share.slot_line", {
         qty = tostring(qty),
         role = RoleTitle(role),
         name = name,
     })
-    local lines = { label }
+    local lines = { base }
     local bonuses = BonusLines(spec)
     for i = 1, #bonuses do
         lines[#lines + 1] = bonuses[i]
+    end
+    local label = base
+    if #bonuses > 0 then
+        local summary = nil
+        for i = 1, #bonuses do
+            local piece = bonuses[i]
+            if piece ~= nil and ToNarrow(piece) ~= "" then
+                if summary == nil then
+                    summary = ToW(piece)
+                else
+                    summary = summary .. towstring(" | ") .. ToW(piece)
+                end
+            end
+        end
+        if summary ~= nil then
+            label = ToW(base) .. towstring(" | ") .. summary
+        end
     end
     return {
         uid = uid,
@@ -289,11 +312,38 @@ local function LearnEnabled()
     return StatusKey() == "share.status_new"
 end
 
+local SHARE_ICON_SCALE = 28 / 64
+
 local function SetIcon(win, icon)
-    if icon > 0 and type(DynamicImageSetTexture) == "function" then
-        DynamicImageSetTexture(win, icon, 0, 0)
+    icon = tonumber(icon) or 0
+    if icon <= 0 then
+        SetShown(win, false)
+        return
     end
-    SetShown(win, icon > 0)
+    local VL = StockPiler.ViewList
+    if VL and type(VL.SetIconTexture) == "function" then
+        VL.SetIconTexture(win, icon, SHARE_ICON_SCALE)
+        return
+    end
+    if type(GetIconData) ~= "function" or type(DynamicImageSetTexture) ~= "function" then
+        SetShown(win, false)
+        return
+    end
+    local ok, texture, x, y
+    if StockPiler.Util and StockPiler.Util.TryCallQuiet then
+        ok, texture, x, y = StockPiler.Util.TryCallQuiet("GetIconData", GetIconData, icon)
+    else
+        ok, texture, x, y = pcall(GetIconData, icon)
+    end
+    if ok and texture ~= nil and texture ~= "" then
+        DynamicImageSetTexture(win, texture, x or 0, y or 0)
+        if type(DynamicImageSetTextureScale) == "function" then
+            DynamicImageSetTextureScale(win, SHARE_ICON_SCALE)
+        end
+        SetShown(win, true)
+        return
+    end
+    SetShown(win, false)
 end
 
 function RS.Paint()

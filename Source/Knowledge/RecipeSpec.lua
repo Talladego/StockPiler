@@ -303,6 +303,26 @@ local function SlimSlotsForStorage(slots)
                 entry.spec.isRefinable = spec.isRefinable == true
             end
         end
+        local keptName = slot and slot.name
+        if (keptName == nil or ToNarrow(keptName) == "") and type(spec) == "table" then
+            keptName = spec.name
+        end
+        local keptIcon = tonumber(slot and slot.iconNum) or 0
+        if keptIcon <= 0 and type(spec) == "table" then
+            keptIcon = tonumber(spec.iconNum) or 0
+        end
+        if keptName ~= nil and ToNarrow(keptName) ~= "" then
+            entry.name = keptName
+            if type(entry.spec) == "table" then
+                entry.spec.name = keptName
+            end
+        end
+        if keptIcon > 0 then
+            entry.iconNum = keptIcon
+            if type(entry.spec) == "table" then
+                entry.spec.iconNum = keptIcon
+            end
+        end
         slim[#slim + 1] = entry
     end
     return slim

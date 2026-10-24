@@ -80,11 +80,15 @@ local function HarvestIconMode()
     return (Macro._craftIconMode or "harvest") ~= "brew"
 end
 
+-- Filled on the first plot read during a refresh. Forward-declared.
+local FillPlotSnap
+
 --- Smallest totalTimer among planted plots that are still growing.
 --- Nil when nothing is growing. Live cultivator read, same as the Craft tip.
 function Timer.ShortestSeconds()
     local snap = Timer._refreshSnap
     if type(snap) == "table" then
+        FillPlotSnap(snap)
         return snap.shortest
     end
     local CA = StockPiler.CultivatorAdapter
@@ -209,10 +213,62 @@ local function IsPlotHarvestReady(plot)
     return total <= 0
 end
 
+--- One cultivator walk for every plot-derived refresh field.
+FillPlotSnap = function(snap)
+    if type(snap) ~= "table" or snap._plotsFilled == true then
+        return
+    end
+    snap._plotsFilled = true
+    local shortest = nil
+    local harvestReady = false
+    local plantIcon = nil
+    local seedIcon = nil
+    local empty = StageNum("EMPTY", 0)
+    local grown = StageNum("GROWN", 4)
+    local harvestable = StageNum("HARVESTABLE", grown)
+    local harvesting = StageNum("HARVESTING", 5)
+    EachPlot(function(plot)
+        local stage = tonumber(plot.stage) or 0
+        local seedUid = tonumber(plot.seedUid) or 0
+        local total = tonumber(plot.totalTimer) or 0
+        if seedUid > 0 and stage ~= empty and stage ~= 255
+            and stage ~= grown and stage ~= harvestable and stage ~= harvesting
+            and total > 0
+        then
+            if shortest == nil or total < shortest then
+                shortest = total
+            end
+        end
+        if IsPlotHarvestReady(plot) then
+            harvestReady = true
+            if seedIcon == nil then
+                local n = SeedIconNum(plot)
+                if n > 0 then
+                    seedIcon = n
+                end
+            end
+            if plantIcon == nil then
+                local n = PlantIconNum(plot)
+                if n <= 0 then
+                    n = SeedIconNum(plot)
+                end
+                if n > 0 then
+                    plantIcon = n
+                end
+            end
+        end
+    end)
+    snap.shortest = shortest
+    snap.harvestReady = harvestReady
+    snap.plantIcon = plantIcon
+    snap.seedIcon = seedIcon
+end
+
 --- Any planted plot ready to harvest (stage or timer).
 function Timer.HasHarvestReady()
     local snap = Timer._refreshSnap
     if type(snap) == "table" then
+        FillPlotSnap(snap)
         return snap.harvestReady == true
     end
     local ready = false
@@ -229,6 +285,7 @@ end
 function Timer.ReadySeedIcon()
     local snap = Timer._refreshSnap
     if type(snap) == "table" then
+        FillPlotSnap(snap)
         return snap.seedIcon
     end
     local icon = nil
@@ -250,6 +307,7 @@ end
 function Timer.ReadyPlantIcon()
     local snap = Timer._refreshSnap
     if type(snap) == "table" then
+        FillPlotSnap(snap)
         return snap.plantIcon
     end
     local icon = nil
@@ -323,7 +381,7 @@ end
 --- when the potion has no catalog icon yet.
 function Timer.ReadyPotionIcon()
     local snap = Timer._refreshSnap
-    if type(snap) == "table" then
+    if type(snap) == "table" and snap._potionFilled == true then
         return snap.potionIcon
     end
     local Brew = StockPiler.Brew
@@ -350,7 +408,12 @@ function Timer.ReadyPotionIcon()
         icon = ContainerIconForRow(row)
     end
     if icon <= 0 then
-        return nil
+        icon = nil
+    end
+    snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        snap._potionFilled = true
+        snap.potionIcon = icon
     end
     return icon
 end
@@ -516,10 +579,16 @@ end
 --- nothing left to plant, harvest, refine, or buy on an open store.
 function Timer.NeedsUserStay()
     local snap = Timer._refreshSnap
-    if type(snap) == "table" then
+    if type(snap) == "table" and snap._userStayFilled == true then
         return snap.userStay == true
     end
-    return Timer.UserStayInfo() ~= nil
+    local stay = Timer.UserStayInfo() ~= nil
+    snap = Timer._refreshSnap
+    if type(snap) == "table" then
+        snap._userStayFilled = true
+        snap.userStay = stay
+    end
+    return stay
 end
 
 --- Verified Craft macro id for the current synchronous Refresh, or nil outside one.
@@ -927,22 +996,22 @@ local function EachActionButton(fn)
     end
 end
 
-function Timer.Refresh()
-    Timer._refreshSnap = nil
+local function RefreshBody()
     local Macro = StockPiler.Macro
     local craftId = 0
     if Macro and Macro.GetCraftMacroId then
         craftId = tonumber(Macro.GetCraftMacroId()) or 0
     end
-    Timer._refreshSnap = {
-        craftId = craftId,
-        harvestReady = Timer.HasHarvestReady() == true,
-        shortest = Timer.ShortestSeconds(),
-        userStay = Timer.NeedsUserStay() == true,
-        potionIcon = Timer.ReadyPotionIcon(),
-        plantIcon = Timer.ReadyPlantIcon(),
-        seedIcon = Timer.ReadySeedIcon(),
-    }
+    -- No owned Craft macro: skip plot scans and the hotbar walk.
+    if craftId == 0 then
+        local CB = StockPiler.CraftButton
+        if CB and CB.TickGrowVisuals then
+            CB.TickGrowVisuals()
+        end
+        return
+    end
+    -- Plot, potion, and user-stay fields fill on the first read.
+    Timer._refreshSnap = { craftId = craftId }
     if Macro and Macro.IsCraftMacroButton then
         EachActionButton(function(button)
             if Macro.IsCraftMacroButton(button) then
@@ -953,7 +1022,7 @@ function Timer.Refresh()
     -- Floating craft button: grow pie + lit harvest while plots tick.
     local CB = StockPiler.CraftButton
     if CB and CB.TickGrowVisuals then
-        pcall(CB.TickGrowVisuals)
+        CB.TickGrowVisuals()
     end
     -- Harvest/Brew readiness never flips when plots start growing, so the
     -- appearance key would leave Craft on the disabled texture until the
@@ -972,7 +1041,15 @@ function Timer.Refresh()
             )
         end
     end
+end
+
+function Timer.Refresh()
     Timer._refreshSnap = nil
+    local ok, err = pcall(RefreshBody)
+    Timer._refreshSnap = nil
+    if ok ~= true and StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
+        StockPiler.Debug.ReportProtectedCallFailure("CraftHarvestTimer.Refresh", err, true)
+    end
 end
 
 function Timer.OnUpdate(timeElapsed)

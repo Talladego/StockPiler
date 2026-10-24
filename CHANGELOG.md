@@ -4,17 +4,11 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.0
 
-- Clicking a recipe link, or using /stp apply, opens a preview of the potion and its ingredients. Learn recipe adds it to Known Potions. Cancel, the close button, and Escape leave saved recipes unchanged. If you already know that recipe, Learn stays off.
-- Shift+left-click a potion's name, icon, or row on Potions or Watch to put the same chat link in the box. Ordinary clicks stay as they are. Plants and practice rows do not link.
-- Hovering Stock on a plant watch shows harvested plants and seeds in bags on separate lines. The Stock column stays the harvested-plant count. If the seed link is unknown, the tip says so.
-- Performance improvements.
-
-## 1.0.1
-
-- Recipe linking: right-click a potion on Potions or Watch and choose Link in chat to insert `[StockPiler Recipe: <name>]`. Copy string puts a plain recipe line in the chat box. Clicking a link adds that recipe to Known Potions when you do not already have it, and does not create a watch. If you already know the potion, a different recipe is stored as an alternative and does not change the potion name, icon, or active recipe. A recipe you already have is left unchanged. `/stp link` repeats the last recipe you chose Link in chat for (this session). `/stp apply` is an advanced command for a pasted plain string. A material stat of zero is kept in the link, so importing it does not add a second copy of that recipe. Does not auto-send chat.
-- Multi-ingredient recipe links survive sending and clicking in chat.
-- A recipe link is saved only when it includes a main ingredient and a container, so a cut or incomplete link does not add a one-ingredient recipe. A grammar mark in the potion name is left out of the link.
+- Recipe linking: right-click a potion on Potions or Watch and choose Link in chat to insert `[StockPiler Recipe: <name>]`. Shift+left-click the potion's name, icon, or row puts the same chat link in the box. Ordinary clicks stay as they are. Plants and practice rows do not link. Copy string puts a plain recipe line in the chat box. Clicking a link, or using /stp apply, opens a preview of the potion and its ingredients, including crafting bonuses. Learn recipe adds it to Known Potions and does not create a watch. Cancel, the close button, and Escape leave saved recipes unchanged. If you already know that recipe, Learn stays off. A different recipe for a potion you already know is stored as an alternative and does not change the potion name, icon, or active recipe. A recipe you already have is left unchanged. `/stp link` repeats the last recipe you chose Link in chat for (this session). A material stat of zero is kept in the link, so learning it does not add a second copy of that recipe. Does not auto-send chat.
+- Multi-ingredient recipe links survive sending and opening the preview.
+- A recipe link can be learned only when it includes a main ingredient and a container, so a cut or incomplete link does not add a one-ingredient recipe. A grammar mark in the potion name is left out of the link.
 - Link in chat, Copy string, and /stp link skip a recipe that has no container. They say that it needs a main ingredient and a container.
+- Hovering Stock on a plant watch shows harvested plants and seeds in bags on separate lines. The Stock column stays the harvested-plant count. If the seed link is unknown, the tip says so.
 - Refining a plant StockPiler has not seen before teaches its plant-to-seed link and adds that plant to Known plants, the same way a harvest does. Known conversions still record. An unrelated gain, a seed packet, a stack move, or more than one possible output is not saved, and an unknown result does not mark the plant convert-failed.
 - `/stp harvest`, `/stp potions`, `/stp plants`, and `/stp watch` were removed. Use the window tabs. Harvesting still needs the craft button.
 - A Craft button appears on screen by default. Drag it when it is idle, move or resize it in the Layout Editor, or hide it from the Watch tab. It starts unlocked. Shift+left-click locks it. `/stp button` sets the size (0.50–2.00; numbers up to 10 clamp; above 10 up to 200 is a percent) and the centered grow countdown.

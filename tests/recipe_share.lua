@@ -120,7 +120,23 @@ end
 function WindowSetShowing(win, flag)
     shown[win] = flag == true
 end
-function DynamicImageSetTexture()
+local iconTextures = {}
+local iconScales = {}
+local iconDataCalls = 0
+function GetIconData(icon)
+    iconDataCalls = iconDataCalls + 1
+    return "tex-share", 3, 4
+end
+function DynamicImageSetTexture(win, texture, x, y)
+    iconTextures[#iconTextures + 1] = {
+        win = win,
+        texture = texture,
+        x = x,
+        y = y,
+    }
+end
+function DynamicImageSetTextureScale(win, scale)
+    iconScales[#iconScales + 1] = { win = win, scale = scale }
 end
 WindowUtils = {
     Cascade = { MODE_AUTOMATIC = "auto" },
@@ -243,6 +259,32 @@ check(string.find(tostring(described.tip), "material.bonus.stability", 1, true) 
     or string.find(tostring(described.tip), "0", 1, true) ~= nil, "zero bonus is listed")
 check(string.find(tostring(described.tip), "77", 1, true) ~= nil
     or string.find(tostring(described.tip), "share.effect", 1, true) ~= nil, "effect is listed")
+local rowLabel = labels[WIN .. "Ingredient1"] or ""
+check(string.find(rowLabel, " | ", 1, true) ~= nil, "ingredient row shows a bonus summary")
+check(string.find(rowLabel, "material.bonus.flat_plus", 1, true) ~= nil, "positive flat bonuses use FormatBonusLine")
+check(string.find(rowLabel, "material.bonus.pct_plus", 1, true) ~= nil, "percent bonuses use FormatBonusLine")
+check(string.find(rowLabel, "material.bonus.critical", 1, true) ~= nil, "critical chance is named critical")
+check(string.find(rowLabel, "value=0", 1, true) ~= nil, "an explicit zero bonus is visible")
+local zeroCrit = Share.DescribeSlot(slot("main", 1001, 10, { [12] = 0, [4] = 3 }), {})
+check(string.find(tostring(zeroCrit.label), "material.bonus.pct", 1, true) ~= nil, "a zero percent bonus uses pct")
+check(string.find(tostring(zeroCrit.label), "value=0", 1, true) ~= nil, "a zero percent bonus stays visible")
+local resolvedIcon = false
+for i = 1, #iconTextures do
+    local row = iconTextures[i]
+    check(type(row.texture) == "string", "ingredient texture comes from GetIconData")
+    if row.texture == "tex-share" and row.x == 3 and row.y == 4 then
+        resolvedIcon = true
+    end
+end
+check(resolvedIcon, "GetIconData resolves texture, x, and y")
+check(iconDataCalls > 0, "the fallback path calls GetIconData")
+local scaled = false
+for i = 1, #iconScales do
+    if math.abs((iconScales[i].scale or 0) - (28 / 64)) < 0.0001 then
+        scaled = true
+    end
+end
+check(scaled, "ingredient icons scale to 28/64")
 
 local recipeCount = 0
 for _ in pairs(recipes) do
@@ -285,6 +327,36 @@ check(type(learned.outcomes) ~= "table" or next(learned.outcomes) == nil, "learn
 local potion = potions["uid:9001"]
 check(type(potion) == "table", "learn adds the potion")
 eq(tostring(potion.activeRecipeKey or ""), tostring(learnedKey), "new potion uses the learned recipe")
+local learnedMain = nil
+for i = 1, #(learned.slots or {}) do
+    if learned.slots[i].role == "main" then
+        learnedMain = learned.slots[i]
+    end
+end
+check(StockPiler.Account.items[1001] == nil and StockPiler.Account.items["1001"] == nil, "the ingredient is not in Account.items")
+check(type(learnedMain) == "table" and string.find(tostring(learnedMain.name), "Herb", 1, true) ~= nil, "a learned slot keeps the carried name")
+eq(tonumber(learnedMain and learnedMain.iconNum), 5001, "a learned slot keeps the carried icon")
+local reshare = RL.SerializePlain({
+    uid = 9001,
+    name = "Preview Potion",
+    icon = 55,
+    slots = learned.slots,
+})
+local reshared = RL.ParsePlain(reshare)
+check(type(reshared) == "table" and type(reshared.details) == "table"
+    and string.find(tostring(reshared.details[1001] and reshared.details[1001].name), "Herb", 1, true) ~= nil,
+    "re-share keeps an unowned ingredient name")
+eq(reshared and reshared.details and reshared.details[1001] and reshared.details[1001].icon, 5001, "re-share keeps an unowned ingredient icon")
+load_module("Source/View/RecipeTooltip.lua")
+local hoverRows = StockPiler.RecipeTooltip.BuildRows({
+    name = "Preview Potion",
+    recipe = learned,
+})
+local hoverText = ""
+for i = 1, #hoverRows do
+    hoverText = hoverText .. tostring(hoverRows[i].text)
+end
+check(string.find(hoverText, "Herb", 1, true) ~= nil, "hover shows a learned ingredient that is not in Account.items")
 
 learned.brewSuccesses = 4
 learned.outcomes = { ["9001"] = { samples = 3 } }
@@ -382,11 +454,14 @@ check(type(inserted) == "string" and string.find(inserted, "StockPiler", 1, true
 inserted = nil
 eq(RL.ShareRowIfShift(shareRow, 5), true, "shift bit in combined flags links")
 
+local viewListIcons = {}
 StockPiler.ViewList = {
     OnRowChildMouseOver = function() end,
     OnRowChildMouseOverEnd = function() end,
     ConfirmTwoButton = function() end,
-    SetIconTexture = function() end,
+    SetIconTexture = function(win, icon, scale)
+        viewListIcons[#viewListIcons + 1] = { win = win, icon = icon, scale = scale }
+    end,
     ShowTextTip = function() end,
 }
 function DoesWindowExist(name)
@@ -443,6 +518,44 @@ eq(count(xmlText, "StockPilerTabWatch.OnLinkClick"), 3, "watch row, icon, and na
 check(string.find(xmlText, "OnPrioLButtonUp", 1, true) ~= nil, "priority clicks stay on the priority control")
 check(string.find(xmlText, "OnTargetLButtonUp", 1, true) ~= nil, "target clicks stay on the target control")
 check(string.find(xmlText, "OnLoadRow", 1, true) ~= nil, "load clicks stay on the load control")
+
+local iconsBefore = iconDataCalls
+local texturesBefore = #iconTextures
+local viewBefore = #viewListIcons
+eq(Share.Show(fieldsFor(9001, "Preview Potion", sampleSlots())), true, "preview with ViewList loaded")
+eq(iconDataCalls, iconsBefore, "ViewList.SetIconTexture resolves icons")
+eq(#iconTextures, texturesBefore, "the ViewList path does not pass a raw icon id")
+check(#viewListIcons > viewBefore, "preview delegates ingredient icons to ViewList")
+local delegatedScale = false
+for i = viewBefore + 1, #viewListIcons do
+    if math.abs((viewListIcons[i].scale or 0) - (28 / 64)) < 0.0001 then
+        delegatedScale = true
+    end
+end
+check(delegatedScale, "ViewList icons use the 28/64 scale")
+
+StockPiler.Inventory = {
+    GetSample = function(uid)
+        if tonumber(uid) == 1001 then
+            return { uniqueID = 1001, name = "Bag Sample", iconNum = 77 }
+        end
+        return nil
+    end,
+}
+function GetDatabaseItemData(uid)
+    if tonumber(uid) == 2002 then
+        return { uniqueID = 2002, name = "Database Herb", iconNum = 88 }
+    end
+    return nil
+end
+local fromSample = RL.KnownItemRow(1001)
+eq(fromSample and fromSample.name, "Bag Sample", "KnownItemRow checks Inventory.GetSample")
+local fromDb = RL.KnownItemRow(2002)
+eq(fromDb and fromDb.name, "Database Herb", "KnownItemRow checks GetDatabaseItemData")
+local bagSlot = Share.DescribeSlot(slot("main", 1001, 10), {})
+eq(bagSlot.name, "Bag Sample", "a bag sample names the ingredient row")
+local dbSlot = Share.DescribeSlot(slot("container", 2002, 0), {})
+eq(dbSlot.name, "Database Herb", "database data names an ingredient the bags do not have")
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

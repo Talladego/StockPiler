@@ -431,7 +431,26 @@ end
 --- Resolve display item for the ingredient used when the recipe was learned.
 --- Returns nil when uid/name cannot be resolved (skip for older recipes).
 local function ResolveLearnedExemplar(slot, spec)
-    return ResolveDisplayItem(SlotExemplarUid(slot, spec))
+    local item = ResolveDisplayItem(SlotExemplarUid(slot, spec))
+    if type(item) == "table" then
+        return item
+    end
+    local name = type(slot) == "table" and slot.name or nil
+    local icon = tonumber(type(slot) == "table" and slot.iconNum) or 0
+    if (name == nil or NarrowName(name) == "") and type(spec) == "table" then
+        name = spec.name
+    end
+    if icon <= 0 and type(spec) == "table" then
+        icon = tonumber(spec.iconNum) or 0
+    end
+    if name == nil or NarrowName(name) == "" then
+        return nil
+    end
+    return {
+        uniqueID = SlotExemplarUid(slot, spec),
+        name = name,
+        iconNum = icon,
+    }
 end
 
 local function ItemMatchesSpec(itemData, spec)

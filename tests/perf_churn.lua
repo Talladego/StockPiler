@@ -349,12 +349,20 @@ textWrites = 0
 showWrites = 0
 Timer.Refresh()
 eq(macroReads, 1, "a steady refresh reads the craft macro once")
--- Four plot walks for the overlay plus one for the user-stay check.
--- Not one walk per hotbar button.
-eq(plotReads, 20, "a steady refresh shares one plot snapshot")
+-- One shared cultivator walk fills every plot field.
+eq(plotReads, 4, "a steady refresh shares one plot snapshot")
 eq(textWrites, 4, "only the craft copies clear their label")
 eq(showWrites, 4, "only the craft copies update label visibility")
 eq(buttons[5].label.last, nil, "a non-craft button is not painted")
+
+slot1.name = "Assist"
+slot1.text = "/assist"
+plotReads = 0
+Timer.Refresh()
+eq(plotReads, 0, "a missing craft macro skips plot reads")
+eq(Timer._refreshSnap, nil, "a missing craft macro clears the snapshot")
+slot1.name = "StockPiler Craft"
+slot1.text = "/script StockPiler.Macro.CraftClick()"
 
 plots[1].totalTimer = 7
 local plotsBefore = plotReads
@@ -394,6 +402,14 @@ eq(StockPiler.Macro.IsCraftMacroButton(buttons[5]), false, "a stale cached id do
 StockPiler.Macro.CraftMacroId = 0
 eq(StockPiler.Macro.GetCraftMacroId(), 1, "a fresh lookup finds the restored craft macro")
 eq(StockPiler.Macro.IsCraftMacroButton(buttons[1]), true, "the restored slot matches the craft button")
+
+plots[1].stage = 1
+plots[1].totalTimer = 20
+buttons[1].label.SetText = function()
+    error("boom")
+end
+Timer.Refresh()
+eq(Timer._refreshSnap, nil, "a paint error still clears the snapshot")
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

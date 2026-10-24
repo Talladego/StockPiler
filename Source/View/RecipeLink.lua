@@ -610,9 +610,26 @@ local function AttachSlotsFromKnowledge(fields)
     return fields
 end
 
-local function KnownItemRow(uid)
+function RL.KnownItemRow(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local Inv = StockPiler.Inventory
+    if Inv and Inv.GetSample then
+        local sample = Inv.GetSample(uid)
+        if type(sample) == "table" then
+            return sample
+        end
+    end
+    if type(GetDatabaseItemData) == "function" then
+        local ok, row = pcall(GetDatabaseItemData, uid)
+        if ok and type(row) == "table" then
+            return row
+        end
+    end
     local Items = StockPiler.Items
-    if not Items or uid == nil then
+    if not Items then
         return nil
     end
     if Items.GetByUid then
@@ -628,6 +645,10 @@ local function KnownItemRow(uid)
         end
     end
     return nil
+end
+
+local function KnownItemRow(uid)
+    return RL.KnownItemRow(uid)
 end
 
 local function ItemToken(uid, icon, name)
@@ -673,7 +694,8 @@ function RL.EncodeItemDetails(potionUid, potionIcon, potionName, slots)
         seen[uid] = true
         parts[#parts + 1] = token
     end
-    add(potionUid, potionIcon, potionName)
+    -- The potion already has uid=, icon=, and n=. d= is ingredient details.
+    -- A caller may still pass the potion uid when it is also a slot.
     if type(slots) == "table" then
         for i = 1, #slots do
             local slot = slots[i]
@@ -903,13 +925,19 @@ function RL.ParsePlain(plain)
             fields.rk = rk
         end
     end
-    if fields.slotsEncoded ~= nil and fields.slotsEncoded ~= "" then
+    if fields.slotsEncoded ~= nil then
+        if fields.slotsEncoded == "" then
+            return nil
+        end
         fields.slots = RL.DecodeSlots(fields.slotsEncoded)
         if fields.slots == nil or SlotsHaveMainAndContainer(fields.slots) ~= true then
             return nil
         end
     end
-    if fields.detailsEncoded ~= nil and fields.detailsEncoded ~= "" then
+    if fields.detailsEncoded ~= nil then
+        if fields.detailsEncoded == "" then
+            return nil
+        end
         fields.details = RL.DecodeItemDetails(fields.detailsEncoded)
         if fields.details == nil then
             return nil
@@ -1286,6 +1314,34 @@ function RL.ImportKnownPotion(fields)
     if type(slots) ~= "table" or SlotsHaveMainAndContainer(slots) ~= true then
         return "failed"
     end
+    local details = fields.details
+    if type(details) ~= "table" and type(fields.detailsEncoded) == "string" and fields.detailsEncoded ~= "" then
+        details = RL.DecodeItemDetails(fields.detailsEncoded)
+    end
+    if type(details) == "table" then
+        for i = 1, #slots do
+            local slot = slots[i]
+            if type(slot) == "table" then
+                local slotUid = tonumber(slot.uid) or 0
+                local carried = details[slotUid]
+                if type(carried) == "table" then
+                    if carried.name ~= nil and ToNarrow(carried.name) ~= "" then
+                        slot.name = carried.name
+                        if type(slot.spec) == "table" then
+                            slot.spec.name = carried.name
+                        end
+                    end
+                    local carriedIcon = tonumber(carried.icon) or 0
+                    if carriedIcon > 0 then
+                        slot.iconNum = carriedIcon
+                        if type(slot.spec) == "table" then
+                            slot.spec.iconNum = carriedIcon
+                        end
+                    end
+                end
+            end
+        end
+    end
 
     local RS = StockPiler.RecipeSpec
     if not (RS and RS.RegisterKnownPotion and RS.RecipeSpecKey) then
@@ -1334,6 +1390,15 @@ function RL.ImportKnownPotion(fields)
         out.name = ToW(fields.name)
     end
     local icon = tonumber(fields.icon) or 0
+    local carriedOut = type(details) == "table" and details[uid] or nil
+    if (out.name == nil or ToNarrow(out.name) == "") and type(carriedOut) == "table"
+        and carriedOut.name ~= nil and ToNarrow(carriedOut.name) ~= ""
+    then
+        out.name = ToW(carriedOut.name)
+    end
+    if icon <= 0 and type(carriedOut) == "table" then
+        icon = tonumber(carriedOut.icon) or 0
+    end
     if icon > 0 then
         out.iconNum = icon
     end
