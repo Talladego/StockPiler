@@ -1356,12 +1356,101 @@ local function testShareWatchKeyCopiesTier()
     check(type(inserted) == "string" and string.find(inserted, "Tiered", 1, true) ~= nil, "watch key link keeps the saved potion name")
 end
 
+local function testPercentNames()
+    local enc = RL.EncodeSlots(sampleSlots)
+    eq(RL.ParsePlain("POTION;uid=9002;n=Elixir %1%2;slots=" .. enc), nil,
+        "percent in a potion name rejects the link")
+    eq(RL.ParsePlain("POTION;uid=9001;n=Fine Draught;d=1001,0,Root %2;slots=" .. enc), nil,
+        "percent in an ingredient name rejects the link")
+    local plain = RL.SerializePlain({
+        uid = 9002,
+        name = "Elixir %1%2",
+        icon = 1,
+        slots = sampleSlots,
+    })
+    check(type(plain) == "string", "outgoing name is sanitized")
+    check(type(plain) == "string" and string.find(plain, "%", 1, true) == nil,
+        "sanitized share strips percent signs")
+    check(type(plain) == "string" and string.find(plain, "Elixir 12", 1, true) ~= nil,
+        "percent characters are removed from the shared name")
+    local trailing = RL.SerializePlain({
+        uid = 9004,
+        name = "100%",
+        icon = 1,
+        slots = sampleSlots,
+    })
+    check(type(trailing) == "string" and string.find(trailing, "n=100;", 1, true) ~= nil,
+        "a trailing percent is stripped from the shared name")
+end
+
+local function testHyperlinkWrapperOrders()
+    local calls = 0
+    local function stock(...)
+        calls = calls + 1
+        return "stock"
+    end
+    EA_ChatWindow = { OnHyperLinkLButtonUp = stock, InsertText = function() end }
+    RL._hyperlinkHooked = false
+    RL.InstallHyperlinkHook()
+    local captured = EA_ChatWindow.OnHyperLinkLButtonUp
+    check(type(captured) == "function" and captured ~= stock, "stockpiler wrapper is installed")
+    local laterCalls = 0
+    local function later(...)
+        laterCalls = laterCalls + 1
+        return captured(...)
+    end
+    EA_ChatWindow.OnHyperLinkLButtonUp = later
+    RL.Shutdown()
+    eq(EA_ChatWindow.OnHyperLinkLButtonUp, later, "shutdown leaves a later chat wrapper")
+    local forwarded = EA_ChatWindow.OnHyperLinkLButtonUp("ITEM:123", 0, 1, 2)
+    eq(calls, 1, "later wrapper still forwards an ordinary link after shutdown")
+    eq(forwarded, "stock", "ordinary link return value survives shutdown")
+    eq(laterCalls, 1, "later wrapper ran")
+
+    calls = 0
+    laterCalls = 0
+    RL.Initialize()
+    check(EA_ChatWindow.OnHyperLinkLButtonUp ~= later, "re-init wraps the later handler")
+    EA_ChatWindow.OnHyperLinkLButtonUp("ITEM:456", 0, 1, 2)
+    eq(laterCalls, 1, "re-init still calls the later wrapper")
+    eq(calls, 1, "re-init still forwards ordinary links through the later wrapper")
+    RL.Shutdown()
+    eq(EA_ChatWindow.OnHyperLinkLButtonUp, later, "second shutdown restores the later wrapper")
+    calls = 0
+    laterCalls = 0
+    EA_ChatWindow.OnHyperLinkLButtonUp("PLAYER:1", 0, 0, 0)
+    eq(calls, 1, "ordinary link still forwards after init shutdown init")
+
+    calls = 0
+    local otherCalls = 0
+    local function other(...)
+        otherCalls = otherCalls + 1
+        return stock(...)
+    end
+    EA_ChatWindow = { OnHyperLinkLButtonUp = other, InsertText = function() end }
+    RL._hyperlinkHooked = false
+    RL.InstallHyperlinkHook()
+    check(EA_ChatWindow.OnHyperLinkLButtonUp ~= other, "stockpiler wraps the earlier addon")
+    EA_ChatWindow.OnHyperLinkLButtonUp("ITEM:9", 0, 0, 0)
+    eq(otherCalls, 1, "active wrapper forwards ordinary links to the earlier addon")
+    eq(calls, 1, "earlier addon still reaches stock")
+    RL.UninstallHyperlinkHook()
+    eq(EA_ChatWindow.OnHyperLinkLButtonUp, other, "shutdown restores the earlier addon")
+    otherCalls = 0
+    calls = 0
+    EA_ChatWindow.OnHyperLinkLButtonUp("ITEM:10", 0, 0, 0)
+    eq(otherCalls, 1, "restored addon still runs")
+    eq(calls, 1, "restored addon still forwards to stock")
+end
+
 testShareRequiresMainAndContainer()
 testLegacyCaretAndBadSeparators()
 testItemDetailsRoundTrip()
 testPresentDoesNotImport()
 testCompositeWatchKeyUsesUid()
 testShareWatchKeyCopiesTier()
+testPercentNames()
+testHyperlinkWrapperOrders()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

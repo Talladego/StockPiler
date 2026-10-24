@@ -584,12 +584,26 @@ function SkillUp.ShouldCultPlant()
 end
 
 local function SeedSkillReq(item)
+    local SM = StockPiler.SeedMap
+    if SM and SM.ItemSkillReq then
+        return tonumber(SM.ItemSkillReq(item)) or 0
+    end
     if type(item) ~= "table" then
         return 0
     end
-    local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq) or 0
+    local function positive(value)
+        value = tonumber(value)
+        if value ~= nil and value > 0 then
+            return value
+        end
+        return nil
+    end
+    local req = positive(item.craftingSkillRequirement)
+        or positive(item.skillReq)
+        or positive(item.skillLevel)
+        or 0
     if req <= 0 and type(item.bonuses) == "table" then
-        req = tonumber(item.bonuses[9]) or 0
+        req = positive(item.bonuses[9]) or positive(item.bonuses["9"]) or 0
     end
     return req
 end
@@ -3003,25 +3017,24 @@ function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
     plantUid = tonumber(plantUid) or 0
     local reserve = 0
     local plantReq = 0
-    local function seedSkillReq(uid)
+    local function skillReqOfUid(uid)
         uid = tonumber(uid) or 0
         if uid <= 0 then
             return 0
         end
         local Inv = StockPiler.Inventory
         local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
-        if type(sample) ~= "table" and StockPiler.Items and StockPiler.Items.GetByUid then
-            sample = StockPiler.Items.GetByUid(uid)
-        end
-        if type(sample) ~= "table" then
-            return 0
-        end
-        local req = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq)
-            or tonumber(sample.skillLevel) or 0
-        if req <= 0 and type(sample.bonuses) == "table" then
-            req = tonumber(sample.bonuses[9]) or 0
+        local req = SeedSkillReq(sample)
+        if req <= 0 and StockPiler.Items and StockPiler.Items.GetByUid then
+            local row = StockPiler.Items.GetByUid(uid)
+            if type(row) == "table" then
+                req = SeedSkillReq(row)
+            end
         end
         return req
+    end
+    local function seedSkillReq(uid)
+        return skillReqOfUid(uid)
     end
     if plantUid > 0 then
         local SM = StockPiler.SeedMap
@@ -3030,18 +3043,7 @@ function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
             plantReq = tonumber(spec and spec.skillLevel) or 0
         end
         if plantReq <= 0 then
-            local Inv = StockPiler.Inventory
-            local sample = Inv and Inv.GetSample and Inv.GetSample(plantUid)
-            if type(sample) ~= "table" and Inv and Inv.GetByUid then
-                sample = Inv.GetByUid(plantUid)
-            end
-            if type(sample) == "table" then
-                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq)
-                    or tonumber(sample.skillLevel) or 0
-                if plantReq <= 0 and type(sample.bonuses) == "table" then
-                    plantReq = tonumber(sample.bonuses[9]) or 0
-                end
-            end
+            plantReq = skillReqOfUid(plantUid)
         end
     end
     local function bumpFromSeed(uid, requireSameTier)

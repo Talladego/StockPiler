@@ -2,6 +2,15 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.1
+
+- Refining a plant learns the seed that refine produced, even when a harvest already linked that plant to a different seed.
+- Closing a recipe preview with Cancel, the close button, or Escape leaves it dismissed. Learn after that does not add the recipe. Opening the link again still lets you learn it.
+- Turning Craft Macro off removes the macro from your bars and deletes it. Replacing that macro on a hotbar button clears the grow countdown on the button.
+- Recipe names that contain a percent sign no longer break the preview, Learn, or Forget.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.0
 
 - Share a recipe from Potions or Watch: right-click and choose Link in chat, or Shift+left-click the potion's name, icon, or row. Copy string puts a plain recipe line in the chat box. `/stp link` repeats the last recipe you chose Link in chat for. Clicking a chat link, or `/stp apply`, opens a preview of the potion, its ingredients, and their crafting bonuses. Learn recipe adds it to Known Potions and does not create a watch. Cancel, the close button, and Escape leave your saved recipes unchanged. A different recipe for a potion you already know is stored as an alternative and does not replace your active recipe.

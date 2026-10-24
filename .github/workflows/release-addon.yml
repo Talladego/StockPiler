@@ -43,10 +43,32 @@ jobs:
             echo "release_notes_path=${notes}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Lua syntax
+      - name: Lua syntax, tests, and version consistency
+        env:
+          VERSION: ${{ steps.changelog.outputs.version }}
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y lua5.1
+          boot=$(sed -n 's/^StockPiler.Version = L"\([^"]*\)".*/\1/p' Source/Bootstrap.lua)
+          if [[ "$boot" != "$VERSION" ]]; then
+            echo "Source/Bootstrap.lua version ${boot} does not match StockPiler.mod / CHANGELOG ${VERSION}" >&2
+            exit 1
+          fi
+          if [[ -f Source/Constants.lua ]]; then
+            const=$(sed -n 's/^StockPiler.Version = L"\([^"]*\)".*/\1/p' Source/Constants.lua | head -n 1)
+            if [[ -z "$const" ]]; then
+              const=$(sed -n 's/.*Version = "\([^"]*\)".*/\1/p' Source/Constants.lua | head -n 1)
+            fi
+            if [[ -n "$const" && "$const" != "$VERSION" ]]; then
+              echo "Source/Constants.lua version ${const} does not match ${VERSION}" >&2
+              exit 1
+            fi
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v${VERSION}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match addon version v${VERSION}" >&2
+            exit 1
+          fi
           # WAR wstring literals (L"...") are not valid Lua 5.1. Check a rewritten copy.
           tmp=$(mktemp -d)
           find Source -name '*.lua' -print0 | while IFS= read -r -d '' f; do
@@ -54,6 +76,9 @@ jobs:
             mkdir -p "$tmp/$(dirname "$rel")"
             sed -E 's/L"([^"]*)"/"\1"/g' "$f" > "$tmp/$rel"
             luac5.1 -p "$tmp/$rel"
+          done
+          for t in tests/*.lua; do
+            lua5.1 "$t"
           done
 
       - name: Pack addon zip
@@ -114,8 +139,8 @@ jobs:
           # the release still exists; the push covers a tag left behind alone.
           gh release delete latest --yes --cleanup-tag || true
           git push origin :refs/tags/latest 2>/dev/null || true
-          gh release list --limit 100 --json tagName,publishedAt \
-            --jq '[.[] | select(.tagName | startswith("v"))] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
+          gh release list --limit 100 --json tagName,publishedAt,isDraft,isPrerelease \
+            --jq '[.[] | select(.tagName | startswith("v")) | select(.isDraft == false and .isPrerelease == false)] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
             | while IFS= read -r old; do
                 [ -n "$old" ] || continue
                 gh release delete "$old" --yes --cleanup-tag
@@ -123,13 +148,25 @@ jobs:
 
       - name: Publish versioned release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: StockPiler ${{ github.ref_name }}
-          body_path: ${{ steps.changelog.outputs.release_notes_path }}
-          prerelease: false
-          make_latest: true
-          files: dist/StockPiler-*.zip
-          fail_on_unmatched_files: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.changelog.outputs.version }}
+          ZIP: ${{ steps.pack.outputs.zip_path }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.release_notes_path }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match addon version ${tag}" >&2
+            exit 1
+          fi
+          version_notes=$(cat "$RELEASE_NOTES")
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" "$ZIP" \
+              --target "$GITHUB_SHA" \
+              --title "StockPiler ${VERSION}" \
+              --latest \
+              --notes "$version_notes"
+          else
+            echo "Release ${tag} already exists; leaving it in place"
+          fi

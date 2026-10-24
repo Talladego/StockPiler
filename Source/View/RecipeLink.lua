@@ -98,6 +98,8 @@ local function SanitizeName(name)
     end
     name = string.gsub(name, "%^.*$", "")
     name = string.gsub(name, '[<>"&;%[%]^=%c]', "")
+    -- "%" is a gsub capture marker in every phrase that prints this name.
+    name = string.gsub(name, "%%", "")
     name = string.gsub(name, "%s+", " ")
     name = string.gsub(name, "^%s+", "")
     name = string.gsub(name, "%s+$", "")
@@ -117,6 +119,9 @@ local function ValidName(name)
         return nil
     end
     if string.match(name, '[<>"&;%[%]^=%c]') ~= nil then
+        return nil
+    end
+    if string.find(name, "%", 1, true) ~= nil then
         return nil
     end
     return name
@@ -1630,14 +1635,32 @@ function RL.OpenApply(text)
     return false
 end
 
-local function OnHyperLinkLButtonUp(linkData, flags, x, y)
-    local parsed = RL.ParseLinkData(linkData)
-    if parsed ~= nil then
-        RL.PresentLinkedRecipe(parsed)
-        return
+-- Each install keeps its own previous handler and active flag. A later addon
+-- can keep calling this wrapper after shutdown; clearing the saved handler
+-- would swallow ordinary item and player links.
+local hyperlinkInstall = nil
+
+local function InstallHyperlinkWrapper(prev)
+    local active = true
+    local function wrapper(...)
+        if active ~= true then
+            if prev ~= nil then
+                return prev(...)
+            end
+            return
+        end
+        local linkData = ...
+        local parsed = RL.ParseLinkData(linkData)
+        if parsed ~= nil then
+            RL.PresentLinkedRecipe(parsed)
+            return
+        end
+        if prev ~= nil then
+            return prev(...)
+        end
     end
-    if RL._prevOnHyperLinkLButtonUp then
-        RL._prevOnHyperLinkLButtonUp(linkData, flags, x, y)
+    return wrapper, function()
+        active = false
     end
 end
 
@@ -1648,8 +1671,15 @@ function RL.InstallHyperlinkHook()
     if type(EA_ChatWindow) ~= "table" or type(EA_ChatWindow.OnHyperLinkLButtonUp) ~= "function" then
         return
     end
-    RL._prevOnHyperLinkLButtonUp = EA_ChatWindow.OnHyperLinkLButtonUp
-    EA_ChatWindow.OnHyperLinkLButtonUp = OnHyperLinkLButtonUp
+    local prev = EA_ChatWindow.OnHyperLinkLButtonUp
+    local wrapper, deactivate = InstallHyperlinkWrapper(prev)
+    hyperlinkInstall = {
+        wrapper = wrapper,
+        deactivate = deactivate,
+        prev = prev,
+    }
+    RL._prevOnHyperLinkLButtonUp = prev
+    EA_ChatWindow.OnHyperLinkLButtonUp = wrapper
     RL._hyperlinkHooked = true
 end
 
@@ -1657,13 +1687,17 @@ function RL.UninstallHyperlinkHook()
     if not RL._hyperlinkHooked then
         return
     end
-    if type(EA_ChatWindow) == "table"
-        and EA_ChatWindow.OnHyperLinkLButtonUp == OnHyperLinkLButtonUp
-        and RL._prevOnHyperLinkLButtonUp ~= nil
-    then
-        EA_ChatWindow.OnHyperLinkLButtonUp = RL._prevOnHyperLinkLButtonUp
+    local installed = hyperlinkInstall
+    if installed and installed.deactivate then
+        installed.deactivate()
     end
-    RL._prevOnHyperLinkLButtonUp = nil
+    if type(EA_ChatWindow) == "table"
+        and installed
+        and EA_ChatWindow.OnHyperLinkLButtonUp == installed.wrapper
+        and installed.prev ~= nil
+    then
+        EA_ChatWindow.OnHyperLinkLButtonUp = installed.prev
+    end
     RL._hyperlinkHooked = false
 end
 

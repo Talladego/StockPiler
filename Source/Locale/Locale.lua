@@ -46,6 +46,14 @@ local function CoerceWString(val)
     return towstring(tostring(val))
 end
 
+--- A replacement string treats % as a capture marker. Double each percent so
+--- "%2" and a trailing "%" stay literal text instead of raising
+--- "invalid capture index".
+local function LiteralReplacement(value)
+    value = CoerceWString(value)
+    return wstring.gsub(value, L"%%", L"%%%%")
+end
+
 local function ApplyTokens(template, tokens)
     if type(template) ~= "wstring" then
         template = CoerceWString(template)
@@ -58,7 +66,7 @@ local function ApplyTokens(template, tokens)
         local key = tostring(name or "")
         if key ~= "" then
             local needle = L"{" .. towstring(key) .. L"}"
-            out = wstring.gsub(out, needle, CoerceWString(value))
+            out = wstring.gsub(out, needle, LiteralReplacement(value))
         end
     end
     return out
@@ -90,11 +98,13 @@ function Locale.ResolveTemplate(key)
         Locale.SetLanguage(0)
         pack = Locale._pack
     end
-    if type(pack) == "table" and type(pack[key]) == "wstring" then
+    -- Packs are wstrings in game. A plain string is accepted so a rewritten
+    -- catalog (and any already-narrow template) still substitutes tokens.
+    if type(pack) == "table" and (type(pack[key]) == "wstring" or type(pack[key]) == "string") then
         return pack[key]
     end
     local en = EnglishPack()
-    if type(en) == "table" and type(en[key]) == "wstring" then
+    if type(en) == "table" and (type(en[key]) == "wstring" or type(en[key]) == "string") then
         return en[key]
     end
     return nil

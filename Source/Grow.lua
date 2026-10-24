@@ -403,19 +403,23 @@ local function PickBufferGrowCandidate(lines, SM, focusKeys, demand, focusGap)
             end
             local seedReq = 0
             if plantReq > 0 then
+                local SM = StockPiler.SeedMap
                 local sample = StockPiler.Inventory and StockPiler.Inventory.GetSample
                     and StockPiler.Inventory.GetSample(seedUid)
-                if type(sample) == "table" then
+                if SM and SM.ItemSkillReq then
+                    if type(sample) == "table" then
+                        seedReq = tonumber(SM.ItemSkillReq(sample)) or 0
+                    end
+                    if seedReq <= 0 and StockPiler.Items and StockPiler.Items.GetByUid then
+                        local row = StockPiler.Items.GetByUid(seedUid)
+                        if type(row) == "table" then
+                            seedReq = tonumber(SM.ItemSkillReq(row)) or 0
+                        end
+                    end
+                elseif type(sample) == "table" then
                     seedReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
                     if seedReq <= 0 and type(sample.bonuses) == "table" then
                         seedReq = tonumber(sample.bonuses[9]) or 0
-                    end
-                end
-                if seedReq <= 0 and StockPiler.Items and StockPiler.Items.GetByUid then
-                    local row = StockPiler.Items.GetByUid(seedUid)
-                    seedReq = tonumber(row and (row.craftingSkillRequirement or row.skillReq or row.skillLevel)) or 0
-                    if seedReq <= 0 and type(row) == "table" and type(row.bonuses) == "table" then
-                        seedReq = tonumber(row.bonuses[9]) or 0
                     end
                 end
             end
@@ -1274,19 +1278,20 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
                         local needReq = tonumber(s.spec and s.spec.skillLevel) or 0
                         local seedReq = 0
                         local Inv = StockPiler.Inventory
-                        if Inv and Inv.GetSample then
-                            local sample = Inv.GetSample(seedUid)
+                        local sample = Inv and Inv.GetSample and Inv.GetSample(seedUid)
+                        if SM and SM.ItemSkillReq then
                             if type(sample) == "table" then
-                                seedReq = tonumber(sample.craftingSkillRequirement)
-                                    or tonumber(sample.skillReq) or 0
+                                seedReq = tonumber(SM.ItemSkillReq(sample)) or 0
                             end
-                        end
-                        if seedReq <= 0 and StockPiler.Items and StockPiler.Items.GetByUid then
-                            local row = StockPiler.Items.GetByUid(seedUid)
-                            if type(row) == "table" then
-                                seedReq = tonumber(row.skillReq) or tonumber(row.skillLevel)
-                                    or tonumber(row.craftingSkillRequirement) or 0
+                            if seedReq <= 0 and StockPiler.Items and StockPiler.Items.GetByUid then
+                                local row = StockPiler.Items.GetByUid(seedUid)
+                                if type(row) == "table" then
+                                    seedReq = tonumber(SM.ItemSkillReq(row)) or 0
+                                end
                             end
+                        elseif type(sample) == "table" then
+                            seedReq = tonumber(sample.craftingSkillRequirement)
+                                or tonumber(sample.skillReq) or 0
                         end
                         if needReq > 0 and seedReq > 0 and seedReq < needReq then
                             underTier = true

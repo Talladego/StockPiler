@@ -529,6 +529,7 @@ end
 
 function RS.OnHidden()
     RS._open = false
+    RS._fields = nil
     UnregisterEscape()
 end
 
@@ -540,9 +541,12 @@ function RS.OnClose()
 end
 
 function RS.OnLearn()
+    if RS._open ~= true or type(RS._fields) ~= "table" then
+        return false
+    end
     local fields = RS._fields
     local RL = StockPiler.RecipeLink
-    if type(fields) ~= "table" or not (RL and RL.ImportKnownPotion) then
+    if not (RL and RL.ImportKnownPotion) then
         return false
     end
     if LearnEnabled() ~= true then

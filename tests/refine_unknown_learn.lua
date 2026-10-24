@@ -471,6 +471,151 @@ testExpiredPending()
 testKnownBagOnly()
 testKnownCraftingBeforeBags()
 
+armUnknown()
+now = now + 2 -- beyond the default 1.5s lifetime
+applyUnknownConvert()
+LB.OnUpdateProcessed()
+check(savedEmpty(), "expired unknown attempt cannot learn from a later delta")
+
+armUnknown()
+LB.Shutdown()
+eq(SM._pendingRefine, nil, "shutdown cancels pending conversion")
+
+local P2 = 83600
+local S2 = 84100
+
+local function listHas(list, uid)
+    if type(list) ~= "table" then
+        return false
+    end
+    for i = 1, #list do
+        if tonumber(list[i]) == uid then
+            return true
+        end
+    end
+    return false
+end
+
+local function testSiblingHarvestDoesNotStealRefine()
+    reset()
+    slots.main[1] = makeItem(SEED, "Bitter Grumpleaf Seed", 3, 1, {
+        craftingSkillRequirement = 100,
+    })
+    SM.BeginPendingHarvest(1, SEED)
+    slots.main[2] = makeItem(PLANT, "Bitter Grumpleaf", 2, 0, {
+        craftingSkillRequirement = 100,
+    })
+    slots.main[3] = makeItem(P2, "Sweet Grumpleaf", 1, 0, {
+        craftingSkillRequirement = 150,
+    })
+    bump()
+    SM.MarkHarvestLootDirty()
+    check(SM.TryCompletePendingHarvest(true) == true, "crit harvest learns both plants")
+    local bucket = StockPiler.Knowledge.Grows()[tostring(SEED)]
+    check(type(bucket) == "table" and type(bucket.products[tostring(P2)]) == "table",
+        "sweet plant is a harvest product of the bitter seed")
+    check(listHas(SM.GetHarvestSeedUidsForPlant(P2), SEED),
+        "harvest index points the sweet plant at the bitter seed")
+    eq(#SM.GetRefineSeedUidsForPlant(P2), 0, "harvest does not create a refine link")
+    check(listHas(SM.GetHarvestSeedUidsForPlant(P2), SEED),
+        "reverse harvest index stays accurate on the next lookup")
+    now = now + 5
+    check(SM.BeginPendingRefine(slots.main[3]) == true, "refine of the crit plant arms")
+    eq(SM._pendingRefine and SM._pendingRefine.expectedSeedUid, 0,
+        "harvest sibling is not the expected seed")
+    slots.main[3] = nil
+    slots.main[4] = makeItem(S2, "Sweet Grumpleaf Seed", 1, 1, {
+        craftingSkillRequirement = 150,
+    })
+    bump()
+    LB.OnUpdateProcessed()
+    local row = StockPiler.Knowledge.Refines()[tostring(P2)]
+    eq(tonumber(row and row.seedUid), S2, "refine learns the sweet seed")
+    check(SM.IsRefineConvertFailed(P2) ~= true, "a refine that worked is not on cooldown")
+    check(listHas(SM.GetRefineSeedUidsForPlant(P2), S2), "refine index records the learned seed")
+    check(listHas(SM.GetSeedUidsForPlant(P2), S2), "merged lookup includes the refine seed")
+    check(listHas(SM.GetSeedUidsForPlant(P2), SEED), "merged lookup still includes the harvest seed")
+end
+
+local function testKnownPathAcceptsExactNameSeed()
+    reset()
+    local plant = makeItem(P2, "Sweet Grumpleaf", 1, 0, { craftingSkillRequirement = 150 })
+    slots.main[1] = plant
+    slots.main[2] = makeItem(SEED, "Bitter Grumpleaf Seed", 2, 1, {
+        craftingSkillRequirement = 100,
+    })
+    StockPiler.Knowledge.Refines()[tostring(P2)] = {
+        plantUid = P2,
+        refineAttempts = 1,
+        seedUid = SEED,
+        seedOut = { [tostring(SEED)] = { samples = 1, qtySum = 1 } },
+    }
+    SM.InvalidatePlantSeedIndex()
+    begin(plant)
+    eq(SM._pendingRefine and SM._pendingRefine.expectedSeedUid, SEED,
+        "known path watches the observed seed")
+    slots.main[1] = nil
+    slots.main[3] = makeItem(S2, "Sweet Grumpleaf Seed", 1, 1, {
+        craftingSkillRequirement = 150,
+    })
+    bump()
+    LB.OnUpdateProcessed()
+    local row = StockPiler.Knowledge.Refines()[tostring(P2)]
+    eq(tonumber(row and row.seedUid), S2, "exact-name seed replaces the expected seed")
+    check(SM.IsRefineConvertFailed(P2) ~= true, "exact-name gain is not a failed convert")
+    check(listHas(SM.GetRefineSeedUidsForPlant(P2), S2), "refine index follows the new seed")
+end
+
+local function testItemSkillReqTreatsZeroAsMissing()
+    eq(SM.ItemSkillReq({ craftingSkillRequirement = 0, skillReq = 150 }), 150,
+        "zero crafting requirement falls through to skillReq")
+    eq(SM.ItemSkillReq({ craftingSkillRequirement = 0, bonuses = { [9] = 80 } }), 80,
+        "zero requirement uses bonus 9")
+    eq(SM.ItemSkillReq({ craftingSkillRequirement = 40, skillReq = 150 }), 40,
+        "a positive requirement wins")
+end
+
+local function testPlantFeedstockUsesLearnedRequirement()
+    load_module("Source/SkillUp.lua")
+    local plant = P2
+    local seed = S2
+    reset()
+    StockPiler.Account.items[tostring(plant)] = {
+        uniqueID = plant,
+        name = "Sweet Grumpleaf",
+        craftingSkillRequirement = 150,
+    }
+    slots.main[1] = makeItem(seed, "Sweet Grumpleaf Seed", 1, 1, {
+        craftingSkillRequirement = 0,
+        skillReq = 100,
+    })
+    StockPiler.SeedEconomy = {
+        GetSeedBudget = function()
+            return { headroom = 7 }
+        end,
+    }
+    StockPiler.Watch = {
+        GetWatches = function()
+            return {}
+        end,
+        GetGen = function()
+            return 1
+        end,
+    }
+    check(StockPiler.Inventory.GetByUid == nil, "inventory has no GetByUid")
+    local reserve = StockPiler.SkillUp.PlantFeedstockReserve(seed, plant)
+    eq(reserve, 0, "learned plant requirement rejects a lower seed cushion")
+    StockPiler.Account.items[tostring(plant)].craftingSkillRequirement = 100
+    StockPiler.SkillUp._watchReserveCache = nil
+    reserve = StockPiler.SkillUp.PlantFeedstockReserve(seed, plant)
+    eq(reserve, 7, "matching skill requirement keeps the seed cushion")
+end
+
+testSiblingHarvestDoesNotStealRefine()
+testKnownPathAcceptsExactNameSeed()
+testItemSkillReqTreatsZeroAsMissing()
+testPlantFeedstockUsesLearnedRequirement()
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)
