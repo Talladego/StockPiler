@@ -61,6 +61,7 @@ local plantHave = 40
 local watches = {}
 local growPlant = true
 local activeLadder = nil
+local groundCredit = {}
 
 local L1_SEED = 3010001
 local L1_PLANT = 4010001
@@ -166,7 +167,9 @@ StockPiler = {
     },
     Grow = {
         CountEmptyPlots = function() return emptyPlots end,
-        CountSeedPlotCredit = function() return 0 end,
+        CountSeedPlotCredit = function(uid)
+            return tonumber(groundCredit[tonumber(uid) or 0]) or 0
+        end,
     },
     Refine = {
         GetSeedBudget = function(uid)
@@ -303,6 +306,7 @@ local function clearBags()
     counts = {}
     credit = {}
     headroom = {}
+    groundCredit = {}
     refinable = 0
 end
 
@@ -510,6 +514,23 @@ pinTargets({
     floorTarget(),
 })
 eq(US.ShouldHoldEmptyPlots({ why = "climbing" }), false, "a sibling that can plant releases empty plots")
+
+-- Higher seed only in plots: fill leftover empties with L1 (same idea as SkillUp).
+nextFrame()
+cultSkill = 25
+clearBags()
+counts[L1_SEED] = 5
+credit[L1_SEED] = 5
+groundCredit[L25_SEED] = 1
+emptyPlots = 2
+refinable = 0
+bufferOn = true
+bufferMin = 5
+watches = {}
+pinTargets({ floorTarget() })
+local fillLower = US.PickPlantJob()
+eq(fillLower and fillLower.seedUid, L1_SEED, "in-ground L25 still fills empties with L1")
+eq((fillLower and fillLower.plantable) >= 1, true, "L1 filler uses an empty plot")
 
 -- #53: wiped L1 still buys from an enabled plant watch when climb targets are empty.
 nextFrame()

@@ -478,11 +478,13 @@ local function TargetPlantableCount(t)
     local ownedReq = tonumber(owned.skillReq) or 0
     local bagSeeds = tonumber(owned.count) or 0
     local empty = CountEmptyPlots()
-    -- Bag-only "best seed" drops to L1 once the L200 packet is in the ground.
-    -- A higher rung already achieved (bag, plot, or plant) must not be replanted
-    -- from a lower packet.
-    local achieved = BestOwnedReqOnLadder(t.ladder, climbCap)
-    if achieved > ownedReq then
+    -- Bag-only "best seed" drops to L1 once the higher packet is in the ground.
+    -- Block lower planting when a higher rung is still in bags/plants (refine
+    -- those first). In-ground higher alone must NOT idle leftover empties -
+    -- fill them with the best bag seed (often L1) so a failed crit does not
+    -- leave plots unused.
+    local achievedBags = BestOwnedReqOnLadder(t.ladder, climbCap, { excludeGround = true })
+    if achievedBags > ownedReq then
         return 0, owned, climbCap
     end
     -- Destination rung already owned. Keep planting it only while the Cult-floor
@@ -2044,8 +2046,11 @@ end
 
 --- Best owned seed/plant skillReq on a ladder at or below climbCap.
 --- Counts bag and in-ground seeds (plot credit) so status matches seed-buffer plant.
-BestOwnedReqOnLadder = function(ladder, climbCap)
+--- opts.excludeGround: bags/plants only (plantable fill of leftover empty plots).
+BestOwnedReqOnLadder = function(ladder, climbCap, opts)
     climbCap = tonumber(climbCap) or 0
+    opts = type(opts) == "table" and opts or {}
+    local excludeGround = opts.excludeGround == true
     if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" or climbCap < 1 then
         return 0
     end
@@ -2066,7 +2071,7 @@ BestOwnedReqOnLadder = function(ladder, climbCap)
                 have = true
             elseif plantUid > 0 and (tonumber(Inv.CountByUid(plantUid)) or 0) >= 1 then
                 have = true
-            elseif seedUid > 0 and Grow then
+            elseif not excludeGround and seedUid > 0 and Grow then
                 local ground = 0
                 if Grow.CountSeedPlotCredit then
                     ground = tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0

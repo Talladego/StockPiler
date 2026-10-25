@@ -4227,6 +4227,8 @@ function SkillUp.CollectContainerBuyJobs()
     if deficit < 1 then
         return jobs
     end
+    -- Full want-have stays on the job (queue). Buy.IssueOne caps each purchase
+    -- to craft-bag room and resumes when space frees.
     jobs[#jobs + 1] = {
         uid = uid,
         uniqueID = uid,
@@ -4271,7 +4273,9 @@ function SkillUp.MapApoBuyStall(why)
     return "no_vendor_container"
 end
 
---- Notify once per Apo stall reason; clear latch when condition lifts.
+--- Notify once per Apo stall episode; clear latch when SkillUp Apo can brew again
+--- or is toggled off. Reason flips (wait_cult <-> no_vial) must not re-fire chat
+--- every orch/plan tick after selling vials (#48 checklist).
 function SkillUp.MaybeNotifyApoStall(why)
     if SkillUp.ShouldApoBrew() ~= true then
         SkillUp._apoStallLatch = nil
@@ -4281,13 +4285,19 @@ function SkillUp.MaybeNotifyApoStall(why)
     if why == "" then
         why = "need_mats"
     end
-    -- Brew-row "need main + container" and the watch "no vial" block are the
-    -- same shortage. Leaving them distinct reprints both on every tick.
-    if why == "need_mats" and (tonumber(SkillUp.CountApoContainers()) or 0) < 1 then
+    -- No vial: prefer the actionable stall over wait_cult / need_mats so brew-row
+    -- and Watch progress-block do not flip-flop two chat lines every tick.
+    if (tonumber(SkillUp.CountApoContainers()) or 0) < 1
+        and why ~= "craft_bag_full"
+        and why ~= "need_container_vendor"
+        and why ~= "no_vendor_container"
+    then
         why = "no_vial"
     end
     why = SkillUp.MapApoBuyStall(why)
-    if SkillUp._apoStallLatch == why then
+    -- One chat warn per stall episode (any reason), same as UpgradeSeed.MaybeNotifyStall.
+    if SkillUp._apoStallLatch ~= nil then
+        SkillUp._apoStallLatch = why
         return
     end
     SkillUp._apoStallLatch = why
