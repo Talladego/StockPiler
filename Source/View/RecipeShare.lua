@@ -231,16 +231,29 @@ function RS.DescribeSlot(slot, fields)
         qty = 1
     end
     -- Prefer a cultivable twin for the preview when the link carried butcher/vendor.
+    -- The d= name has to be on the probe first: a nameless butcher uid is not in
+    -- Account.items, so IsGrowableSpec would treat the stabilizer as a plant.
+    local carriedForProbe = Carried(fields, uid)
     local SM = StockPiler.SeedMap
     if SM and SM.FindGrowableTwinUid and type(spec) == "table" then
         local probe = spec
-        if (probe.role == nil or probe.role == "" or probe.role == "ingredient") and role ~= "" then
+        local carriedName = type(carriedForProbe) == "table" and carriedForProbe.name or nil
+        local nameMissing = probe.name == nil or ToNarrow(probe.name) == ""
+        local needRole = (probe.role == nil or probe.role == "" or probe.role == "ingredient") and role ~= ""
+        if needRole or (nameMissing and carriedName ~= nil and ToNarrow(carriedName) ~= "") then
             probe = {}
             for k, v in pairs(spec) do
                 probe[k] = v
             end
-            probe.role = role
-            probe.uid = uid > 0 and uid or probe.uid
+            if needRole then
+                probe.role = role
+            end
+            if uid > 0 then
+                probe.uid = uid
+            end
+            if nameMissing and carriedName ~= nil and ToNarrow(carriedName) ~= "" then
+                probe.name = carriedName
+            end
         end
         local plantUid = tonumber(SM.FindGrowableTwinUid(probe)) or 0
         if plantUid > 0 then

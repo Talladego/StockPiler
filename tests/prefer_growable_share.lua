@@ -342,6 +342,98 @@ do
     eq(stabUid, PLANT, "stored recipe stabilizer becomes the plant twin")
 end
 
+-- Real SeedMap: a nameless preview must not pin the butcher uid as growable
+-- when the receiver knows Majestic Goldweed and has never looted the gore.
+do
+    load_module("Source/Knowledge/Items.lua")
+    load_module("Source/Knowledge/SeedMap.lua")
+    local SM = StockPiler.SeedMap
+    StockPiler.Account.items = {
+        [tostring(PLANT)] = {
+            uniqueID = PLANT,
+            name = "Majestic Goldweed",
+            iconNum = 42,
+            kind = "plant",
+            isRefinable = true,
+            itemType = 34,
+            tradeSkill = 4,
+            skillLevel = 200,
+            skillReq = 200,
+            cultivationType = 0,
+            slotType = 1,
+            role = "stabilizer",
+            bonuses = { [1] = 10, [4] = 1 },
+            stability = 10,
+        },
+    }
+    StockPiler.Account.recipes = {}
+    StockPiler.Account.potions = {}
+    local nameless = {
+        uid = BUTCHER,
+        role = "stabilizer",
+        tradeSkill = 4,
+        skillLevel = 200,
+        cultivationType = 0,
+        slotType = 1,
+        bonuses = { [1] = 10, [4] = 1 },
+    }
+    eq(SM.IsGrowableSpec(nameless), true, "nameless unknown butcher uid still guesses growable")
+    local named = {
+        uid = BUTCHER,
+        role = "stabilizer",
+        name = "Brutal Zoic Gore",
+        tradeSkill = 4,
+        skillLevel = 200,
+        cultivationType = 0,
+        slotType = 1,
+        bonuses = { [1] = 10, [4] = 1 },
+    }
+    eq(SM.IsGrowableSpec(named), false, "named butcher is not growable after the nameless probe")
+    eq(SM.FindGrowableTwinUid(named), PLANT, "named butcher resolves Majestic Goldweed")
+
+    local plain = RL.SerializePlain({
+        uid = 9004,
+        name = "Lasting Potion of Discipline",
+        icon = 1,
+        slots = disciplineSlots(BUTCHER, "Brutal Zoic Gore"),
+    })
+    local fields = RL.ParsePlain(plain)
+    check(type(fields) == "table" and type(fields.slots) == "table", "butcher link parses")
+    local stab = nil
+    for i = 1, #(fields and fields.slots or {}) do
+        if tostring(fields.slots[i].role) == "stabilizer" then
+            stab = fields.slots[i]
+            break
+        end
+    end
+    eq(stab and stab.spec and tostring(stab.spec.name), "Brutal Zoic Gore", "ParsePlain copies the link name onto the slot")
+    eq(tonumber(stab and stab.spec and stab.spec.iconNum), 55, "ParsePlain copies the link icon onto the slot")
+    eq(tostring(stab and stab.name), "Brutal Zoic Gore", "ParsePlain copies the link name onto the slot row")
+
+    SM.IsGrowableSpec(nameless)
+    stab.name = nil
+    stab.spec.name = nil
+    local described = Share.DescribeSlot(stab, fields)
+    eq(described.uid, PLANT, "preview swaps the unlooted butcher ingredient to the known plant")
+    eq(tostring(described.name), "Majestic Goldweed", "preview shows the known plant")
+
+    eq(RL.ImportKnownPotion(fields), "imported", "Learn imports after the preview")
+    local learnedUid = nil
+    for _, recipe in pairs(StockPiler.Account.recipes) do
+        if type(recipe) == "table" and tonumber(recipe.outputUid) == 9004
+            and type(recipe.slots) == "table"
+        then
+            for i = 1, #recipe.slots do
+                if tostring(recipe.slots[i].role) == "stabilizer" then
+                    learnedUid = tonumber(recipe.slots[i].uid)
+                end
+            end
+        end
+    end
+    eq(learnedUid, PLANT, "Learn stores the known plant instead of the butcher ingredient")
+    eq(StockPiler.Account.items[tostring(BUTCHER)], nil, "Learn does not store the unlooted butcher item")
+end
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

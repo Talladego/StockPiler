@@ -1642,21 +1642,32 @@ function SM.IsGrowableSpec(spec)
     end
     local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
     local role = tostring(spec.role or "")
+    local nameKey = ToNarrow(spec.name)
+    local knownItem = false
+    if uid > 0 and StockPiler.Items and StockPiler.Items.GetByUid then
+        knownItem = type(StockPiler.Items.GetByUid(uid)) == "table"
+    end
     local cacheKey
     if uid > 0 then
-        cacheKey = tostring(uid) .. ":" .. role
+        -- Name is part of the key. A preview probe with no name must not answer
+        -- a later check that carries "Brutal Zoic Gore" (SpecLooksButchering).
+        cacheKey = tostring(uid) .. ":" .. role .. ":" .. nameKey
     else
         local productKey = SpecProductCacheKey(spec)
         if productKey == "" then
             return IsGrowableSpecUncached(spec) == true
         end
-        cacheKey = "s:" .. productKey .. ":" .. role
+        cacheKey = "s:" .. productKey .. ":" .. role .. ":" .. nameKey
     end
     if _growableCache[cacheKey] ~= nil then
         return _growableCache[cacheKey] == true
     end
     local growable = IsGrowableSpecUncached(spec) == true
-    _growableCache[cacheKey] = growable
+    -- Nameless + unknown uid: SpecLooksButchering cannot see the butcher name,
+    -- so the cult-role guess must not stick for this snapshot.
+    if not (uid > 0 and nameKey == "" and knownItem ~= true) then
+        _growableCache[cacheKey] = growable
+    end
     return growable
 end
 

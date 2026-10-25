@@ -754,6 +754,36 @@ function RL.DecodeItemDetails(encoded)
     return details
 end
 
+--- Copy d= names and icons onto decoded slots. ParsePlain otherwise leaves
+--- spec.name nil, so a butcher uid the receiver has not looted looks growable.
+local function AttachCarriedSlotDetails(slots, details)
+    if type(slots) ~= "table" or type(details) ~= "table" then
+        return
+    end
+    for i = 1, #slots do
+        local slot = slots[i]
+        if type(slot) == "table" then
+            local slotUid = tonumber(slot.uid) or 0
+            local carried = details[slotUid]
+            if type(carried) == "table" then
+                if carried.name ~= nil and ToNarrow(carried.name) ~= "" then
+                    slot.name = carried.name
+                    if type(slot.spec) == "table" then
+                        slot.spec.name = carried.name
+                    end
+                end
+                local carriedIcon = tonumber(carried.icon) or 0
+                if carriedIcon > 0 then
+                    slot.iconNum = carriedIcon
+                    if type(slot.spec) == "table" then
+                        slot.spec.iconNum = carriedIcon
+                    end
+                end
+            end
+        end
+    end
+end
+
 --- Serialize a potion share. fields: uid, name, icon, rarity, iLevel, slots?
 --- The fingerprint is not included; import recomputes it.
 function RL.SerializePlain(fields)
@@ -989,6 +1019,9 @@ function RL.ParsePlain(plain)
         if fields.details == nil then
             return nil
         end
+    end
+    if type(fields.slots) == "table" and type(fields.details) == "table" then
+        AttachCarriedSlotDetails(fields.slots, fields.details)
     end
     return fields
 end
@@ -1405,28 +1438,7 @@ function RL.ImportKnownPotion(fields)
         details = RL.DecodeItemDetails(fields.detailsEncoded)
     end
     if type(details) == "table" then
-        for i = 1, #slots do
-            local slot = slots[i]
-            if type(slot) == "table" then
-                local slotUid = tonumber(slot.uid) or 0
-                local carried = details[slotUid]
-                if type(carried) == "table" then
-                    if carried.name ~= nil and ToNarrow(carried.name) ~= "" then
-                        slot.name = carried.name
-                        if type(slot.spec) == "table" then
-                            slot.spec.name = carried.name
-                        end
-                    end
-                    local carriedIcon = tonumber(carried.icon) or 0
-                    if carriedIcon > 0 then
-                        slot.iconNum = carriedIcon
-                        if type(slot.spec) == "table" then
-                            slot.spec.iconNum = carriedIcon
-                        end
-                    end
-                end
-            end
-        end
+        AttachCarriedSlotDetails(slots, details)
     end
 
     local RS = StockPiler.RecipeSpec
