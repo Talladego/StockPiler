@@ -20,8 +20,13 @@ RecipeTooltip.SEP_LINE = T("recipe.sep")
 
 --- Private row windows. Tooltips.NUM_ROWS stays raised until the next ClearTooltip
 --- so stock clear walks the extra rows. SetTooltipText ignores rows above that count.
-local RECIPE_TOOLTIP_MAX_ROWS = 80
+--- Keep the private pool modest: warming 80 rows made CreateTextOnlyTooltip paint an
+--- empty tip on some clients while Watch (capped at 17) still worked.
+local RECIPE_TOOLTIP_MAX_ROWS = 32
+local RECIPE_TIP_DISPLAY_CAP = 24
 local STOCK_TOOLTIP_ROWS = 17
+-- Fingerprint twins listed under each ingredient (exemplar first).
+local RECIPE_TIP_MAX_MATCHES = 3
 RecipeTooltip._numRows = 17
 RecipeTooltip._raisedRows = nil
 
@@ -210,26 +215,33 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
     if not Tooltips or type(Tooltips.CreateTextOnlyTooltip) ~= "function" then
         return
     end
-    local want = tonumber(maxRows) or #rows
-    if want < #rows then
-        want = #rows
+    -- Cap to the caller's budget (Watch uses 17). Do not expand past maxRows when
+    -- private warmed rows already exceed it - that used to raise NUM_ROWS to 80 and
+    -- leave the Potions recipe tip blank while Watch status still painted.
+    local cap = tonumber(maxRows) or RECIPE_TIP_DISPLAY_CAP
+    if cap < 1 then
+        cap = STOCK_TOOLTIP_ROWS
+    end
+    if cap > RECIPE_TOOLTIP_MAX_ROWS then
+        cap = RECIPE_TOOLTIP_MAX_ROWS
+    end
+    local want = math.min(#rows, cap)
+    if want < 1 then
+        want = 1
     end
     local engineMax = RecipeTooltip.EnsureRows(want)
+    local limit = math.min(want, engineMax, cap)
     InstallClearTooltipHook()
     local stockRows = STOCK_TOOLTIP_ROWS
-    if engineMax > stockRows then
-        RecipeTooltip._raisedRows = engineMax
-        Tooltips.NUM_ROWS = engineMax
+    if limit > stockRows then
+        RecipeTooltip._raisedRows = limit
+        Tooltips.NUM_ROWS = limit
     end
     Tooltips.CreateTextOnlyTooltip(anchorWindow)
     -- ClearTooltip restores the stock count. Raise it again for this draw.
-    if engineMax > stockRows then
-        RecipeTooltip._raisedRows = engineMax
-        Tooltips.NUM_ROWS = engineMax
-    end
-    local limit = engineMax
-    if tonumber(maxRows) and tonumber(maxRows) < limit then
-        limit = tonumber(maxRows)
+    if limit > stockRows then
+        RecipeTooltip._raisedRows = limit
+        Tooltips.NUM_ROWS = limit
     end
     local rowCount = math.min(#rows, limit)
     for i = 1, rowCount do
@@ -240,7 +252,8 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
         Tooltips.SetTooltipText(i, 1, entry.text or L"", false)
         SetRecipeTooltipRowColor(i, entry.color or RecipeTooltipColor(entry.kind, entry.role))
     end
-    for i = rowCount + 1, engineMax do
+    local clearThrough = math.max(limit, stockRows)
+    for i = rowCount + 1, clearThrough do
         Tooltips.SetTooltipText(i, 1, L"", false)
     end
     local tipAnchor = anchor or Tooltips.ANCHOR_WINDOW_RIGHT
@@ -735,7 +748,11 @@ local function AppendIngredientSection(rows, header, stats, role, statsColor, ma
         }
     end
     if type(matches) == "table" then
-        for i = 1, #matches do
+        local n = #matches
+        if n > RECIPE_TIP_MAX_MATCHES then
+            n = RECIPE_TIP_MAX_MATCHES
+        end
+        for i = 1, n do
             AppendMatchNameRow(rows, matches[i], role)
         end
     end
@@ -846,12 +863,16 @@ function RecipeTooltip.Show(mouseoverWindow, recipeData)
         return
     end
     local rows = RecipeTooltip.BuildRows(recipeData)
-    local engineMax = RecipeTooltip.EnsureRows(#rows)
-    TrimRecipeTooltipRows(rows, engineMax)
+    local cap = RECIPE_TIP_DISPLAY_CAP
+    if cap < STOCK_TOOLTIP_ROWS then
+        cap = STOCK_TOOLTIP_ROWS
+    end
+    RecipeTooltip.EnsureRows(math.min(#rows, cap))
+    TrimRecipeTooltipRows(rows, cap)
     RecipeTooltip.ShowColoredRows(
         mouseoverWindow,
         rows,
         Tooltips and Tooltips.ANCHOR_WINDOW_RIGHT,
-        engineMax
+        cap
     )
 end
