@@ -9,6 +9,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Empty plots are released when a seed upgrade is stuck with nothing to plant or refine.
 - A missing basic seed is bought from the merchant again while that plant is still watched.
 - Chat asks you to close the merchant when refining is waiting on it.
+- Shared recipe Learn refreshes ingredient exemplars on an existing fingerprint and stores those mats for tip and grow.
+- Potions-tab recipe hover uses the live recipe slots again when a shared Learn filled them after the list row was built (Watch status tip already looked correct).
 - Bug fixes.
 - Performance improvements.
 

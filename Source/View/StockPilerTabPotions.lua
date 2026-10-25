@@ -168,7 +168,9 @@ local function BuildRecipeDataForPotion(potionName, recipe, potionLevel, potionU
         brewSuccesses = successes,
         successRate = successRate,
         effectKey = effectKey,
-        materials = recipe.slots or {},
+        -- Keep nil when slots are missing so the tip can adopt recipe.slots later.
+        -- `slots or {}` left a detached empty table after shared-import slot refresh.
+        materials = type(recipe.slots) == "table" and recipe.slots or nil,
     }
 end
 
@@ -609,8 +611,15 @@ local function RowDataFromActiveChild()
         if rowIndex and rowIndex > 0 and DoesWindowExist("SPTabPotionsList") then
             local dataIndex = ListBoxGetDataIndex("SPTabPotionsList", rowIndex)
             local listData = StockPilerTabPotions.listData
-            if type(listData) == "table" and dataIndex ~= nil and listData[dataIndex] then
-                return listData[dataIndex]
+            if type(listData) == "table" then
+                local data = dataIndex ~= nil and listData[dataIndex] or nil
+                -- Match Watch: PopulatorIndices can be empty while rows still paint.
+                if data == nil then
+                    data = listData[rowIndex]
+                end
+                if data then
+                    return data
+                end
             end
         end
         if type(WindowGetParent) == "function" then
@@ -915,11 +924,41 @@ end
 function StockPilerTabPotions.OnMouseOverRecipe()
     StockPiler.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
-    if not data or not data.recipeData then
+    if not data then
+        return
+    end
+    local recipeData = data.recipeData
+    -- Shared Learn can refresh Account.recipes slots after the list row was built.
+    -- Rebuild tip payload from the live recipe so Potions matches Watch status.
+    local RS = StockPiler.RecipeSpec
+    local recipe = nil
+    if type(recipeData) == "table" and type(recipeData.recipe) == "table" then
+        recipe = recipeData.recipe
+    end
+    if type(recipe) ~= "table" and RS and RS.GetRecipe and data.recipeSpecKey then
+        recipe = RS.GetRecipe(data.recipeSpecKey)
+    end
+    if type(recipe) == "table" and (type(recipe.slots) ~= "table" or #recipe.slots < 1)
+        and RS and RS.GetRecipe and data.recipeSpecKey
+    then
+        recipe = RS.GetRecipe(data.recipeSpecKey) or recipe
+    end
+    if type(recipe) == "table" and type(recipe.slots) == "table" and #recipe.slots > 0 then
+        recipeData = BuildRecipeDataForPotion(
+            data.baseName or data.name,
+            recipe,
+            data.levelNum or data.rankNum,
+            data.uniqueID,
+            nil
+        )
+        data.recipeData = recipeData
+        data.hasRecipe = recipeData ~= nil
+    end
+    if not recipeData then
         return
     end
     if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.Show then
-        StockPiler.RecipeTooltip.Show(SystemData.ActiveWindow.name, data.recipeData)
+        StockPiler.RecipeTooltip.Show(SystemData.ActiveWindow.name, recipeData)
     end
 end
 

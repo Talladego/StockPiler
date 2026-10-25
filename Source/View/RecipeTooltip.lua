@@ -803,9 +803,14 @@ function RecipeTooltip.BuildRows(recipeData)
     if type(recipe) == "table" and RS and RS.HydrateRecipeSlots then
         RS.HydrateRecipeSlots(recipe)
     end
-    local materials = recipeData.materials
-    if type(materials) ~= "table" and type(recipe) == "table" then
+    -- Prefer live recipe.slots. BuildRecipeDataForPotion used `slots or {}`, so a
+    -- stub import can leave recipeData.materials as an empty table that never
+    -- picks up slots filled later (Watch tip reads recipe.slots and looks fine).
+    local materials = nil
+    if type(recipe) == "table" and type(recipe.slots) == "table" and #recipe.slots > 0 then
         materials = recipe.slots
+    elseif type(recipeData.materials) == "table" and #recipeData.materials > 0 then
+        materials = recipeData.materials
     end
     if type(materials) ~= "table" or #materials == 0 then
         return rows
