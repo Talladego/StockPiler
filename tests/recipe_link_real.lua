@@ -322,6 +322,65 @@ local function testSeparatorDoesNotChangeFingerprint()
     eq(fromTilde, RS.RecipeSpecKey(slots), "separator does not change the fingerprint")
 end
 
+--- Re-importing a link must refresh slot uids when the fingerprint row already
+--- existed with a twin main (Willpower link must not keep Spumepetal exemplars).
+local function testImportRefreshesExistingFingerprintSlots()
+    resetAccount()
+    local slots = makeSlots(5, 7000)
+    local key = RS.RecipeSpecKey(slots)
+    local wrong = RL.DecodeSlots(RL.EncodeSlots(slots))
+    for i = 1, #wrong do
+        if wrong[i].role == "main" then
+            wrong[i].uid = 83507
+            wrong[i].name = "Hurling Spumepetal"
+            if type(wrong[i].spec) == "table" then
+                wrong[i].spec.uid = 83507
+                wrong[i].spec.name = "Hurling Spumepetal"
+            end
+        end
+    end
+    StockPiler.Account.recipes[key] = {
+        recipeSpecKey = key,
+        slots = wrong,
+        outcomes = {},
+        brewAttempts = 0,
+        brewSuccesses = 0,
+        sharedImport = true,
+        unverified = true,
+    }
+    local linkSlots = RL.DecodeSlots(RL.EncodeSlots(slots))
+    for i = 1, #linkSlots do
+        if linkSlots[i].role == "main" then
+            linkSlots[i].uid = 83534
+            linkSlots[i].name = "Bitter Grumpleaf"
+            if type(linkSlots[i].spec) == "table" then
+                linkSlots[i].spec.uid = 83534
+                linkSlots[i].spec.name = "Bitter Grumpleaf"
+            end
+        end
+    end
+    eq(RS.RecipeSpecKey(linkSlots), key, "link shares fingerprint with twin row")
+    local result = RL.ImportKnownPotion({
+        uid = 3001049,
+        name = "Lasting Potion of Discipline",
+        icon = 509,
+        slots = linkSlots,
+    })
+    eq(result, "imported", "discipline import")
+    local row = StockPiler.Account.recipes[key]
+    check(type(row) == "table", "fingerprint row kept")
+    local mainUid, mainName = 0, ""
+    for i = 1, #row.slots do
+        if row.slots[i].role == "main" then
+            mainUid = tonumber(row.slots[i].uid) or 0
+            mainName = tostring(row.slots[i].name or "")
+        end
+    end
+    eq(mainUid, 83534, "import replaces twin main uid")
+    -- Names come from d= details on real links; this harness passes slots only.
+    check(mainName == "Bitter Grumpleaf" or mainName == "", "import main name from link or blank")
+end
+
 roundTrip(5, 1000)
 roundTrip(8, 8000)
 testImportLeavesExistingAlone()
@@ -329,6 +388,7 @@ testMergeClearsMarkerWhenBrewed()
 testMergeKeepsMarkerWithoutBrews()
 testMigrateMergeClearsMarker()
 testSeparatorDoesNotChangeFingerprint()
+testImportRefreshesExistingFingerprintSlots()
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

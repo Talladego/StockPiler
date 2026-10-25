@@ -2,7 +2,7 @@
 -- StockPiler View/CraftButton - floating round craft HUD
 -- Layout Editor + idle drag (WindowSetMovable when LMB would not craft).
 -- Harvest: footer-style Prepare + gameactionbutton. Brew: Macro.CraftClick.
--- RMB: toggle. Scale via /stp button. Growing: pie + optional /stp button timer.
+-- RMB: toggle. Scale via /stp button. Growing: pie + ready flash + optional timer.
 -- Disabled harvest art only when idle (nothing growing / not ready).
 ----------------------------------------------------------------
 
@@ -15,6 +15,7 @@ local ICON_WIN = "StockPilerCraftButtonIcon"
 local FRAME_WIN = "StockPilerCraftButtonFrame"
 local CD_WIN = "StockPilerCraftButtonCooldown"
 local CD_TIMER = "StockPilerCraftButtonCooldownTimer"
+local READY_FLASH = "StockPilerCraftButtonReadyFlash"
 local GROW_TIMER = "StockPilerCraftButtonGrowTimer"
 Button.WINDOW_NAME = WIN
 local ICON_HARVEST = 2486
@@ -23,6 +24,8 @@ local ICON_BREW = 10985
 -- 100% layout (native icon + fitted frame). Runtime sizes = base * scale.
 local BASE_FRAME = 92
 local BASE_ICON = 64
+-- Ready flash matches icon (inside frame rim); source strip frames are 64px.
+local BASE_FLASH = 64
 local FRAME_SLICE = 128
 -- GrowTimer XML size at scale 1.0; WindowSetScale tracks /stp button scale.
 local BASE_TIMER_W = 72
@@ -168,7 +171,35 @@ local function StyleGrowCooldown()
     end
 end
 
-local function ClearGrowCooldown()
+local function StopReadyFlash()
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(READY_FLASH) then
+        return
+    end
+    if type(AnimatedImageStopAnimation) == "function" then
+        pcall(AnimatedImageStopAnimation, READY_FLASH)
+    end
+    if type(WindowSetShowing) == "function" then
+        WindowSetShowing(READY_FLASH, false)
+    end
+end
+
+--- One-shot circular recharge flash (morale EA_MoraleAnim_Recharged), like action bars.
+local function PlayReadyFlash()
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(READY_FLASH) then
+        return
+    end
+    if type(WindowSetShowing) == "function" then
+        WindowSetShowing(READY_FLASH, true)
+    end
+    if type(AnimatedImageStartAnimation) == "function" then
+        -- startFrame, looping, hideWhenComplete, delay
+        pcall(AnimatedImageStartAnimation, READY_FLASH, 0, false, true, 0)
+    end
+end
+
+--- Clear the grow pie. playFlash=true when the pie actually expired (grow ready).
+local function ClearGrowCooldown(playFlash)
+    local flash = playFlash == true and _cdArmed == true
     _cdMax = 0
     _cdRemain = nil
     _cdArmed = false
@@ -179,6 +210,9 @@ local function ClearGrowCooldown()
         if type(WindowSetShowing) == "function" then
             WindowSetShowing(CD_WIN, false)
         end
+    end
+    if flash then
+        PlayReadyFlash()
     end
 end
 
@@ -713,7 +747,7 @@ local function ApplyGrowCooldown(remain)
     if remain == nil or remain <= 0 or type(CooldownDisplaySetCooldown) ~= "function"
         or type(DoesWindowExist) ~= "function" or not DoesWindowExist(CD_WIN)
     then
-        ClearGrowCooldown()
+        ClearGrowCooldown(true)
         return
     end
     local prev = _cdRemain
@@ -747,6 +781,22 @@ local function LayoutCooldown(iconSize)
     if type(WindowClearAnchors) == "function" and type(WindowAddAnchor) == "function" then
         WindowClearAnchors(CD_WIN)
         WindowAddAnchor(CD_WIN, "center", WIN, "center", 0, 0)
+    end
+end
+
+--- Keep the recharge flash the same size as the idle icon (inside the frame).
+local function LayoutReadyFlash(iconSize)
+    if type(DoesWindowExist) ~= "function" or not DoesWindowExist(READY_FLASH) then
+        return
+    end
+    iconSize = math.max(8, tonumber(iconSize) or BASE_FLASH)
+    if type(WindowSetDimensions) == "function" then
+        WindowSetDimensions(READY_FLASH, iconSize, iconSize)
+    end
+    MatchRootScale(READY_FLASH)
+    if type(WindowClearAnchors) == "function" and type(WindowAddAnchor) == "function" then
+        WindowClearAnchors(READY_FLASH)
+        WindowAddAnchor(READY_FLASH, "center", WIN, "center", 0, 0)
     end
 end
 
@@ -796,8 +846,9 @@ local function ApplyIconMotion()
         WindowClearAnchors(ICON_WIN)
         WindowAddAnchor(ICON_WIN, "center", WIN, "center", spec.x, spec.y)
     end
-    -- Pie stays at idle icon size so hover pop does not resize the wipe.
+    -- Pie + ready flash stay at idle icon size so hover pop does not resize them.
     LayoutCooldown(motion.idle.size)
+    LayoutReadyFlash(motion.idle.size)
 end
 
 --- Hotbar Craft macro fired: mirror the HUD press squash briefly (visual only).
@@ -939,7 +990,8 @@ function Button.TickGrowVisuals(opts)
     if growing then
         ApplyGrowCooldown(remain)
     else
-        ClearGrowCooldown()
+        -- Flash only when an armed grow pie actually finishes.
+        ClearGrowCooldown(true)
     end
     UpdateGrowTimerLabel(remain)
     -- Keep drag lock in sync between full SyncAppearance passes.
@@ -1370,7 +1422,8 @@ function Button.Initialize()
     _hovering = false
     _pressed = false
     _macroFlashRemain = nil
-    ClearGrowCooldown()
+    ClearGrowCooldown(false)
+    StopReadyFlash()
     StyleGrowCooldown()
     UpdateGrowTimerLabel(nil)
     SubscribeCraftPerformed()
@@ -1381,7 +1434,8 @@ end
 
 function Button.Shutdown()
     SetHarvestGameAction(false)
-    ClearGrowCooldown()
+    ClearGrowCooldown(false)
+    StopReadyFlash()
     UpdateGrowTimerLabel(nil)
     _hovering = false
     _pressed = false

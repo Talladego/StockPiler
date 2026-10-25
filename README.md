@@ -2,11 +2,11 @@
 
 StockPiler keeps the potions and plants you care about in stock. Watch an item, set how many you want, and let it grow, buy, and brew toward that amount.
 
-**Version 1.1.2**
+**Version 1.1.3**
 
 ## Install
 
-1. Download `StockPiler-1.1.2.zip` from [Releases](https://github.com/Talladego/StockPiler/releases).
+1. Download `StockPiler-1.1.3.zip` from [Releases](https://github.com/Talladego/StockPiler/releases).
 2. Unzip it into `Interface/AddOns/` so the folder is `Interface/AddOns/StockPiler/`.
 3. Reload the UI.
 4. Open the window with `/stp` or `/stockpiler`.

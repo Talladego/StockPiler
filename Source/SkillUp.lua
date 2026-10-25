@@ -179,6 +179,10 @@ function SkillUp.SetCultEnabled(enabled)
     end
     row.skillUpCultEnabled = enabled == true
     SkillUp._latchedCultToggle = enabled == true
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     local Watch = StockPiler.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
@@ -201,6 +205,10 @@ function SkillUp.SetApoEnabled(enabled)
     end
     row.skillUpApoEnabled = enabled == true
     SkillUp._latchedApoToggle = enabled == true
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     local Watch = StockPiler.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
@@ -3947,6 +3955,46 @@ local function PickApoLeftoverResinPlant(apoTier)
     return best
 end
 
+--- True when Apo brew is blocked on resin/stability and a plant can be refined for it.
+--- Plots-full idle used to clear _refineDirty and then forget this work.
+function SkillUp.HasApoResinRefinePlant()
+    if SkillUp.ShouldApoBrew() ~= true then
+        return false
+    end
+    local recipe, why = SkillUp.BuildApoBrewRecipe()
+    if type(recipe) == "table" then
+        return false
+    end
+    if why ~= "need_resin" and why ~= "unstable" then
+        return false
+    end
+    local apoTier = SkillUp.ApoTargetTier()
+    if type(PickApoLeftoverResinPlant(apoTier)) == "table" then
+        return true
+    end
+    local mains = SkillUp.ListApoBagMaterials and SkillUp.ListApoBagMaterials("main") or {}
+    local SM = StockPiler.SeedMap
+    local Inv = StockPiler.Inventory
+    for i = 1, #mains do
+        local main = mains[i]
+        if type(main) == "table" and type(main.spec) == "table"
+            and SM and SM.IsGrowableSpec and SM.IsGrowableSpec(main.spec) == true
+        then
+            local plantUid = tonumber(main.uid) or 0
+            local seedUid = tonumber(main.seedUid) or 0
+            if plantUid > 0 then
+                local bagCount = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid))
+                    or tonumber(main.bagCount) or tonumber(main.count) or 0
+                local uses = ApoResinRefineUses(plantUid, seedUid, main.spec, bagCount, true)
+                if (tonumber(uses) or 0) >= 1 then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 --- When Apo SkillUp needs resin: prefer leftover lower-tier mains, then
 --- surplus of the exact-floor brew main (keep >=1 for brew).
 function SkillUp.AppendApoResinRefineIntents(intents, appendFn)
@@ -4179,6 +4227,8 @@ function SkillUp.CollectContainerBuyJobs()
     if deficit < 1 then
         return jobs
     end
+    -- Full want-have stays on the job (queue). Buy.IssueOne caps each purchase
+    -- to craft-bag room and resumes when space frees.
     jobs[#jobs + 1] = {
         uid = uid,
         uniqueID = uid,
@@ -4223,7 +4273,9 @@ function SkillUp.MapApoBuyStall(why)
     return "no_vendor_container"
 end
 
---- Notify once per Apo stall reason; clear latch when condition lifts.
+--- Notify once per Apo stall episode; clear latch when SkillUp Apo can brew again
+--- or is toggled off. Reason flips (wait_cult <-> no_vial) must not re-fire chat
+--- every orch/plan tick after selling vials (#48 checklist).
 function SkillUp.MaybeNotifyApoStall(why)
     if SkillUp.ShouldApoBrew() ~= true then
         SkillUp._apoStallLatch = nil
@@ -4233,13 +4285,19 @@ function SkillUp.MaybeNotifyApoStall(why)
     if why == "" then
         why = "need_mats"
     end
-    -- Brew-row "need main + container" and the watch "no vial" block are the
-    -- same shortage. Leaving them distinct reprints both on every tick.
-    if why == "need_mats" and (tonumber(SkillUp.CountApoContainers()) or 0) < 1 then
+    -- No vial: prefer the actionable stall over wait_cult / need_mats so brew-row
+    -- and Watch progress-block do not flip-flop two chat lines every tick.
+    if (tonumber(SkillUp.CountApoContainers()) or 0) < 1
+        and why ~= "craft_bag_full"
+        and why ~= "need_container_vendor"
+        and why ~= "no_vendor_container"
+    then
         why = "no_vial"
     end
     why = SkillUp.MapApoBuyStall(why)
-    if SkillUp._apoStallLatch == why then
+    -- One chat warn per stall episode (any reason), same as UpgradeSeed.MaybeNotifyStall.
+    if SkillUp._apoStallLatch ~= nil then
+        SkillUp._apoStallLatch = why
         return
     end
     SkillUp._apoStallLatch = why

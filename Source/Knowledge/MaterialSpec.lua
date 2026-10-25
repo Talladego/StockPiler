@@ -931,7 +931,7 @@ function MS.Matches(itemData, spec)
         return true
     end
     if role == "container" then
-        -- Require slot + skill (SP2). Skill-only matched Fertile Soil (150 Cult Soil)
+        -- Require slot + skill. Skill-only matched Fertile Soil (150 Cult Soil)
         -- after ProductMatches stripped cultivationType.
         local oSlot = tonumber(other.slotType) or 0
         local sSlot = tonumber(spec.slotType) or 0

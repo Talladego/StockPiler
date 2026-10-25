@@ -192,6 +192,9 @@ local function reset()
     P._autoGrowFocusCache = nil
     P._autoGrowFocusKey = nil
     P._fullCacheBase = nil
+    P._memoSettingsHash = nil
+    P._memoSettingsHashClock = nil
+    P._memoSettingsHashToken = nil
     if StockPiler.PlanSnapshot then
         StockPiler.PlanSnapshot._plan = nil
         StockPiler.PlanSnapshot._cacheKey = nil
@@ -374,13 +377,17 @@ local function testSkillPointKeepsCacheKey()
     StockPiler.TradeSkillCaps.CanBrewPotions = function()
         return apo > 0
     end
+    P.OnTradeSkillsChanged()
     local before = P.CacheKeyFromGens()
     cult = 201
     apo = 201
     eq(P.CacheKeyFromGens(), before, "one skill point keeps the plan cache key")
     cult = 0
+    -- Same game tick: the live getter changed, and the skill pulse drops the memo.
+    P.OnTradeSkillsChanged()
     check(P.CacheKeyFromGens() ~= before, "losing cultivation changes the plan cache key")
     cult = 200
+    P.OnTradeSkillsChanged()
 end
 
 local function testBuildFlagsClearOnError()

@@ -6,10 +6,6 @@ StockPiler = StockPiler or {}
 StockPiler.Additives = StockPiler.Additives or {}
 local AD = StockPiler.Additives
 
-local function ToNarrow(text)
-    return StockPiler.Util.ToNarrow(text)
-end
-
 local function CultTypes()
     if GameData and GameData.CultivationTypes then
         return GameData.CultivationTypes
@@ -60,47 +56,6 @@ local function ParseStats(itemData)
     }
 end
 
-local function AdditivesTable()
-    if StockPiler.Knowledge and StockPiler.Knowledge.Additives then
-        return StockPiler.Knowledge.Additives()
-    end
-    return nil
-end
-
-local function StoreRecord(itemData, info, source)
-    local uid = tonumber(itemData.uniqueID) or tonumber(itemData.id) or 0
-    if uid <= 0 then
-        return false, false
-    end
-    local store = AdditivesTable()
-    if type(store) ~= "table" then
-        return false, false
-    end
-    local key = tostring(uid)
-    local isNew = store[key] == nil
-    store[key] = {
-        uniqueID = uid,
-        iconNum = tonumber(itemData.iconNum) or 0,
-        name = itemData.name,
-        nameNarrow = ToNarrow(itemData.name),
-        cultType = info.cultType,
-        role = info.role,
-        growTime = info.growTime,
-        critChance = info.critChance,
-        superCrit = info.superCrit,
-        failChance = info.failChance,
-        skillReq = tonumber(itemData.craftingSkillRequirement) or 0,
-        source = source or "bag",
-    }
-    if StockPiler.Items and StockPiler.Items.StoreItem then
-        StockPiler.Items.StoreItem(itemData, "additive")
-    end
-    if isNew and StockPiler.Knowledge and StockPiler.Knowledge.Touch then
-        StockPiler.Knowledge.Touch("additive")
-    end
-    return true, isNew
-end
-
 function AD.Classify(itemData)
     if type(itemData) ~= "table" then
         return nil
@@ -146,33 +101,13 @@ function AD.Classify(itemData)
     }
 end
 
-function AD.LearnFromItemData(itemData, source)
-    local info = AD.Classify(itemData)
-    if info == nil then
-        return false
-    end
-    local stored = StoreRecord(itemData, info, source)
-    return stored == true
+--- Plot additives stay on the cultivator. Do not write Account.additives or Account.items.
+function AD.LearnFromItemData(_itemData, _source)
+    return false
 end
 
-function AD.LearnFromPlotRow(row)
-    if type(row) ~= "table" then
-        return 0
-    end
-    local n = 0
-    local slots = row.additives or row.Additives
-    if type(slots) ~= "table" then
-        return 0
-    end
-    for _, slot in pairs(slots) do
-        if type(slot) == "table" then
-            local item = slot.item or slot
-            if AD.LearnFromItemData(item, "plot") then
-                n = n + 1
-            end
-        end
-    end
-    return n
+function AD.LearnFromPlotRow(_row)
+    return false
 end
 
 function AD.CultTypeForStage(stageNum)

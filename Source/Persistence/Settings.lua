@@ -491,6 +491,10 @@ function P.ResetSettingsToDefaults()
         end
         P.InvalidateCharacterBucket(char)
     end
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     return P.EnsureSettings()
 end
 

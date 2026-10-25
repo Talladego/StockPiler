@@ -226,6 +226,11 @@ local function RowIsReadyToCraft(row)
         if tostring(row.statusKey or "") == "craft_bag_full" then
             return false
         end
+        -- Synthetic apo brew has no potion uid. LivePotionHave is nil then, so
+        -- RowNeedsMorePotions stays false and auto-load never starts.
+        if PotionOutputUid(row) <= 0 then
+            return true
+        end
         return RowNeedsMorePotions(row) == true
     end
     -- Live bags win over stale plan deficit (prevents over-brew after target met).

@@ -754,6 +754,36 @@ function RL.DecodeItemDetails(encoded)
     return details
 end
 
+--- Copy d= names and icons onto decoded slots. ParsePlain otherwise leaves
+--- spec.name nil, so a butcher uid the receiver has not looted looks growable.
+local function AttachCarriedSlotDetails(slots, details)
+    if type(slots) ~= "table" or type(details) ~= "table" then
+        return
+    end
+    for i = 1, #slots do
+        local slot = slots[i]
+        if type(slot) == "table" then
+            local slotUid = tonumber(slot.uid) or 0
+            local carried = details[slotUid]
+            if type(carried) == "table" then
+                if carried.name ~= nil and ToNarrow(carried.name) ~= "" then
+                    slot.name = carried.name
+                    if type(slot.spec) == "table" then
+                        slot.spec.name = carried.name
+                    end
+                end
+                local carriedIcon = tonumber(carried.icon) or 0
+                if carriedIcon > 0 then
+                    slot.iconNum = carriedIcon
+                    if type(slot.spec) == "table" then
+                        slot.spec.iconNum = carriedIcon
+                    end
+                end
+            end
+        end
+    end
+end
+
 --- Serialize a potion share. fields: uid, name, icon, rarity, iLevel, slots?
 --- The fingerprint is not included; import recomputes it.
 function RL.SerializePlain(fields)
@@ -990,6 +1020,9 @@ function RL.ParsePlain(plain)
             return nil
         end
     end
+    if type(fields.slots) == "table" and type(fields.details) == "table" then
+        AttachCarriedSlotDetails(fields.slots, fields.details)
+    end
     return fields
 end
 
@@ -1201,6 +1234,12 @@ local function PlainForShare(fields)
         Print(T("link.share_need_both"))
         return nil
     end
+    -- Prefer cultivable twins in the payload when known; butcher/vendor only if alone.
+    local Spec = StockPiler.RecipeSpec
+    if Spec and Spec.PreferGrowableSlotExemplars then
+        Spec.PreferGrowableSlotExemplars(slots)
+        fields.slots = slots
+    end
     local plain = RL.SerializePlain(fields)
     if plain == nil or string.find(plain, "slots=", 1, true) == nil then
         Print(T("link.share_no_slots"))
@@ -1399,28 +1438,7 @@ function RL.ImportKnownPotion(fields)
         details = RL.DecodeItemDetails(fields.detailsEncoded)
     end
     if type(details) == "table" then
-        for i = 1, #slots do
-            local slot = slots[i]
-            if type(slot) == "table" then
-                local slotUid = tonumber(slot.uid) or 0
-                local carried = details[slotUid]
-                if type(carried) == "table" then
-                    if carried.name ~= nil and ToNarrow(carried.name) ~= "" then
-                        slot.name = carried.name
-                        if type(slot.spec) == "table" then
-                            slot.spec.name = carried.name
-                        end
-                    end
-                    local carriedIcon = tonumber(carried.icon) or 0
-                    if carriedIcon > 0 then
-                        slot.iconNum = carriedIcon
-                        if type(slot.spec) == "table" then
-                            slot.spec.iconNum = carriedIcon
-                        end
-                    end
-                end
-            end
-        end
+        AttachCarriedSlotDetails(slots, details)
     end
 
     local RS = StockPiler.RecipeSpec
@@ -1430,9 +1448,6 @@ function RL.ImportKnownPotion(fields)
     local rk = tostring(RS.RecipeSpecKey(slots) or "")
     if rk == "" then
         return "failed"
-    end
-    if RL.RecipeIsKnown({ uid = uid, slots = slots }) then
-        return "known"
     end
 
     local out = { uniqueID = uid }
@@ -1467,13 +1482,20 @@ function RL.ImportKnownPotion(fields)
     if quality == "failed" then
         quality = "good"
     end
+    -- Refresh link exemplars even when already known (old imports skipped slot
+    -- updates when the fingerprint row already existed).
+    local alreadyKnown = RL.RecipeIsKnown({ uid = uid, slots = slots }) == true
     if RS.ImportSharedRecipe then
-        local imported = RS.ImportSharedRecipe(uid, slots, { out = out, quality = quality })
+        local imported = RS.ImportSharedRecipe(uid, slots, {
+            out = out,
+            quality = quality,
+            skipRegister = alreadyKnown,
+        })
         if imported ~= "imported" then
             return imported == "known" and "known" or "failed"
         end
         AfterPotionImport()
-        return "imported"
+        return alreadyKnown and "known" or "imported"
     end
 
     local Know = StockPiler.Knowledge
@@ -1500,13 +1522,17 @@ function RL.ImportKnownPotion(fields)
             sharedImport = true,
             unverified = true,
         }
-        if RS.SlimRecipeForStorage then
-            pcall(RS.SlimRecipeForStorage, recipes[rk])
-        end
+    else
+        recipes[rk].slots = slots
     end
-    RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
+    if RS.SlimRecipeForStorage then
+        pcall(RS.SlimRecipeForStorage, recipes[rk])
+    end
+    if alreadyKnown ~= true then
+        RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
+    end
     AfterPotionImport()
-    return "imported"
+    return alreadyKnown and "known" or "imported"
 end
 
 --- Import a chat link or pasted recipe into Known Potions (no watch).

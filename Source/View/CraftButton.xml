@@ -51,6 +51,23 @@
                         </Label>
                     </Windows>
                 </CooldownDisplay>
+                <!-- Grow-ready flash: circular recharge strip over the icon, under the frame. -->
+                <AnimatedImage name="$parentReadyFlash" texture="EA_MoraleAnim_Recharged" fps="24" layer="overlay" handleinput="false" sticky="false" texturescale="1.0">
+                    <Size>
+                        <AbsPoint x="64" y="64"/>
+                    </Size>
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parent">
+                            <AbsPoint x="0" y="0"/>
+                        </Anchor>
+                    </Anchors>
+                    <AnimFrames>
+                        <AnimFrame id="1" x="0" y="0"/>
+                        <AnimFrame id="2" x="64" y="0"/>
+                        <AnimFrame id="3" x="128" y="0"/>
+                        <AnimFrame id="4" x="192" y="0"/>
+                    </AnimFrames>
+                </AnimatedImage>
                 <DynamicImage name="$parentFrame" handleinput="false" texture="EA_TempTargets_d3" slice="frame" textureScale="0.719" layer="overlay">
                     <Size>
                         <AbsPoint x="92" y="92"/>

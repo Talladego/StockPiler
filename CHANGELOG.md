@@ -2,6 +2,14 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.3
+
+- Shared recipes now prefer growable plants over butcher or vendor ingredients when known, and learning a shared recipe updates its ingredient list.
+- AutoBuy now respects craft bag space (keeping one slot free) and prints a chat notice when paused by Reserve, Budget, or a full craft bag.
+- Craft button and action bar macro now flash when a plant finishes growing.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.2
 
 - Fixes broken window title, chat, and tooltip text in 1.1.1.

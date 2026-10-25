@@ -383,7 +383,8 @@ function Watch.SetPriorityTier(recipeKey, tier)
     end
     watch.priorityTier = tier
     -- Soft: priority does not change craftable/demand structure. Callers patch UI
-    -- / focus caches; do not BumpGen (that forces BuildFull via StructuralNonRefineKey).
+    -- / focus caches. SetPriorityTier does not BumpGen (that forces BuildFull via
+    -- StructuralNonRefineKey). SetTarget and SetEnabled still bump generation.
     return watch
 end
 
@@ -812,6 +813,12 @@ function Watch.SetCharacterField(name, value)
         return false
     end
     row[name] = value
+    -- SettingsHash reads these fields. Drop the plan-key memo on the write so
+    -- a same-tick lookup does not keep the previous hash.
+    local Planner = StockPiler.Planner
+    if Planner and Planner.InvalidateSettingsHashMemo then
+        Planner.InvalidateSettingsHashMemo()
+    end
     return true
 end
 
@@ -841,6 +848,7 @@ function Watch.HasAnyAutoGrow()
             end
         end
     end
+    -- Plant watches have no per-row autoGrow flag; an enabled plant watch is AutoGrow.
     if Watch.CountEnabledPlantWatches and Watch.CountEnabledPlantWatches() > 0 then
         return true
     end

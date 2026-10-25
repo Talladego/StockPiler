@@ -419,6 +419,173 @@ end
 Timer.Refresh()
 eq(Timer._refreshSnap, nil, "a paint error still clears the snapshot")
 
+-- Read-only plan lookups must not repeat live trade-skill reads (issue 47).
+StockPiler.Util.CharacterRow = function(create)
+    return StockPiler.Persistence.GetCharacterBucket(create ~= false)
+end
+GameData.TradeSkills = { CULTIVATION = 3, APOTHECARY = 4 }
+GameData.TradeSkillLevels = { [3] = 200, [4] = 200 }
+local planTick = 500
+local planFrame = 4
+function GetGameTime()
+    return planTick
+end
+StockPiler.FrameCounter = planFrame
+local liveReads = 0
+local skillLevel = 200
+function GetTradeSkillLevel()
+    liveReads = liveReads + 1
+    return skillLevel
+end
+load_module("Source/Adapters/TradeSkillCaps.lua")
+load_module("Source/Stores/WatchStore.lua")
+load_module("Source/Stores/PlanSnapshotStore.lua")
+load_module("Source/Planner/Planner.lua")
+local P = StockPiler.Planner
+local Caps = StockPiler.TradeSkillCaps
+local Watch = StockPiler.Watch
+local PS = StockPiler.PlanSnapshot
+local Bus = StockPiler.EventBus
+Bus.Subscribe(StockPiler.Events.TRADE_SKILLS_CHANGED, P.OnTradeSkillsChanged)
+local row = StockPiler.Persistence.GetCharacterBucket(true)
+row.autoGrowEnabled = false
+row.autoBuyEnabled = false
+row.growSeedBufferMin = 5
+row.growSeedBufferEnabled = true
+Caps._lastCult = 0
+Caps._lastApo = 0
+Caps._persistedHydrated = false
+Caps._skillsReady = false
+Caps._cultZeroPulses = 0
+Caps._apoZeroPulses = 0
+P.InvalidateSettingsHashMemo()
+Sch._planDue = false
+liveReads = 0
+local coldKey = P.CacheKeyFromGens()
+eq(liveReads, 5, "a cold cache key performs five trade-skill reads")
+check(P._memoSettingsHash ~= nil, "a cold cache key stores the settings hash")
+check(P._memoSettingsHashClock == "4:500", "the memo clock is the frame and game tick")
+local coldReads = liveReads
+local coldStable = true
+for _ = 1, 40 do
+    if P.CacheKeyFromGens() ~= coldKey then
+        coldStable = false
+    end
+end
+check(coldStable, "repeat cache keys stay stable for the tick")
+eq(liveReads, coldReads, "repeat cache keys in the same tick add no skill reads")
+
+local lookups = 0
+local origKey = P.CacheKeyFromGens
+P.CacheKeyFromGens = function(...)
+    lookups = lookups + 1
+    return origKey(...)
+end
+local nudges = 0
+local prevEnqueue = Sch.EnqueuePlanRebuild
+Sch.EnqueuePlanRebuild = function(opts, ...)
+    if type(opts) == "table" and opts.nudge == true then
+        nudges = nudges + 1
+    end
+    return prevEnqueue(opts, ...)
+end
+Sch._planDue = false
+PS.Set({ rows = {} }, origKey())
+lookups = 0
+local budgetReads = liveReads
+for _ = 1, 1000 do
+    PS.GetOrBuild(false)
+end
+eq(lookups, 1000, "each read-only lookup checks the plan key")
+eq(liveReads, budgetReads, "repeated read-only plan lookups do not read trade skills")
+eq(nudges, 0, "an unchanged plan does not nudge a rebuild")
+P.CacheKeyFromGens = origKey
+Sch.EnqueuePlanRebuild = prevEnqueue
+
+local heldKey = P.CacheKeyFromGens()
+local beforeDirect = liveReads
+eq(Caps.GetCultSkill(), 200, "a positive cultivation getter still reads the engine")
+check(liveReads > beforeDirect, "GetCultSkill still queries the trade-skill API")
+beforeDirect = liveReads
+eq(Caps.GetApoSkill(), 200, "a positive apothecary getter still reads the engine")
+check(liveReads > beforeDirect, "GetApoSkill still queries the trade-skill API")
+beforeDirect = liveReads
+local cultLive = Caps.ReadCultSkillLive()
+local apoLive = Caps.ReadApoSkillLive()
+eq(cultLive, 200, "the direct cultivation reader returns the live level")
+eq(apoLive, 200, "the direct apothecary reader returns the live level")
+check(liveReads >= beforeDirect + 2, "direct live readers still query the trade-skill API")
+local afterDirect = liveReads
+eq(P.CacheKeyFromGens(), heldKey, "direct skill reads do not change the plan cache key")
+eq(liveReads, afterDirect, "direct skill reads do not force another settings-hash read")
+
+skillLevel = 0
+eq(Caps.GetCultSkill(), 200, "one explicit zero keeps the sticky cultivation level")
+local zeroReads = liveReads
+eq(P.CacheKeyFromGens(), heldKey, "a zero reading keeps the plan cache key")
+eq(liveReads, zeroReads, "a zero reading does not reread skills for the plan key")
+skillLevel = 200
+eq(Caps.GetCultSkill(), 200, "cultivation recovers from the zero reading")
+eq(Caps.GetApoSkill(), 200, "apothecary stays available through the zero reading")
+eq(P.CacheKeyFromGens(), heldKey, "recovery keeps the plan cache key")
+eq(planTick, 500, "zero-reading recovery stays on the same game tick")
+eq(StockPiler.FrameCounter, planFrame, "zero-reading recovery stays on the same frame")
+
+P.CacheKeyFromGens()
+check(P._memoSettingsHash ~= nil, "the settings hash is memoized before a watch edit")
+eq(Watch.SetCharacterField("growSeedBufferMin", 12), true, "the seed buffer minimum is stored")
+eq(P._memoSettingsHash, nil, "a watch setting clears the memoized settings hash")
+eq(P._memoSettingsHashClock, nil, "a watch setting clears the memo clock")
+eq(planTick, 500, "the watch setting does not move the game tick")
+eq(StockPiler.FrameCounter, planFrame, "the watch setting does not move the frame")
+local seeded = P.CacheKeyFromGens()
+check(seeded ~= heldKey, "a watch setting changes the cache key on the same tick")
+row.autoBuyEnabled = true
+local bought = P.CacheKeyFromGens()
+check(bought ~= seeded, "a raw watch setting changes the cache key on the same tick")
+eq(planTick, 500, "the raw watch setting stays on the same game tick")
+row.autoBuyEnabled = false
+
+P.CacheKeyFromGens()
+P.InvalidateFocusCaches()
+eq(P._memoSettingsHash, nil, "InvalidateFocusCaches clears the memoized settings hash")
+eq(P._memoSettingsHashClock, nil, "InvalidateFocusCaches clears the memo clock")
+
+local armed = P.CacheKeyFromGens()
+check(P._memoSettingsHash ~= nil, "the hash is memoized before the profession loss")
+skillLevel = 0
+GameData.TradeSkillLevels[3] = 0
+GameData.TradeSkillLevels[4] = 0
+Caps.OnTradeSkillPulse()
+eq(P._memoSettingsHash, nil, "losing a profession clears the memoized settings hash")
+eq(P._memoSettingsHashClock, nil, "losing a profession clears the memo clock")
+eq(planTick, 500, "profession loss stays on the same game tick")
+local lost = P.CacheKeyFromGens()
+check(lost ~= armed, "losing cultivation and apothecary changes the plan cache key")
+eq((tonumber(Caps._lastCult) or 0), 0, "confirmed zeros clear the sticky cultivation level")
+eq((tonumber(Caps._lastApo) or 0), 0, "confirmed zeros clear the sticky apothecary level")
+
+skillLevel = 200
+GameData.TradeSkillLevels[3] = 200
+GameData.TradeSkillLevels[4] = 200
+Caps.OnTradeSkillPulse()
+eq(P._memoSettingsHash, nil, "learning a profession clears the memoized settings hash")
+eq(P._memoSettingsHashClock, nil, "learning a profession clears the memo clock")
+local learned = P.CacheKeyFromGens()
+check(learned ~= lost, "learning a profession changes the plan cache key on the same tick")
+check((tonumber(Caps.GetCultSkill()) or 0) > 0, "learning restores the cultivation getter")
+check((tonumber(Caps.GetApoSkill()) or 0) > 0, "learning restores the apothecary getter")
+
+local fracReads = liveReads
+planTick = 500.9
+eq(P.CacheKeyFromGens(), learned, "a fractional tick inside the same second keeps the cache key")
+eq(liveReads, fracReads, "a fractional tick inside the same second does not reread skills")
+local tickReads = liveReads
+planTick = 501
+P.CacheKeyFromGens()
+check(liveReads > tickReads, "a new game tick reads trade skills again")
+planTick = 500
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

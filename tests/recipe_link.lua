@@ -477,7 +477,7 @@ local function testImportAfterForget()
     eq(result, "imported", "reimport after forget")
     check(type(potions["uid:66"]) == "table", "potion restored")
     eq(recipes[rk].sentinel, "forgot", "forget row kept")
-    eq(recipes[rk].slots, keptSlots, "forget slots not replaced")
+    eq(#recipes[rk].slots, #keptSlots, "forget slot count refreshed from link")
     eq(recipes[rk].outcomes["66"].samples, 3, "forget outcomes not replaced")
     eq(potions["uid:66"].name, "Readd", "new potion gets link name")
 end

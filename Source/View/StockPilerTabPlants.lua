@@ -545,13 +545,33 @@ function StockPilerTabPlants.UpdateRows()
 end
 
 local function RowDataFromSender()
-    local rowIndex = WindowGetId(WindowGetParent(SystemData.ActiveWindow.name))
-    local dataIndex = ListBoxGetDataIndex("SPTabPlantsList", rowIndex)
-    local listData = StockPilerTabPlants.listData
-    if type(listData) ~= "table" or dataIndex == nil then
-        return nil
+    local win = SystemData.ActiveWindow and SystemData.ActiveWindow.name
+    for _ = 1, 6 do
+        if win == nil or win == "" then
+            break
+        end
+        local rowIndex = WindowGetId(win)
+        if rowIndex and rowIndex > 0 and DoesWindowExist("SPTabPlantsList") then
+            local dataIndex = ListBoxGetDataIndex("SPTabPlantsList", rowIndex)
+            local listData = StockPilerTabPlants.listData
+            if type(listData) == "table" then
+                local data = dataIndex ~= nil and listData[dataIndex] or nil
+                -- PopulatorIndices can be empty while rows still paint.
+                if data == nil then
+                    data = listData[rowIndex]
+                end
+                if data then
+                    return data
+                end
+            end
+        end
+        if type(WindowGetParent) == "function" then
+            win = WindowGetParent(win)
+        else
+            break
+        end
     end
-    return listData[dataIndex]
+    return nil
 end
 
 function StockPilerTabPlants.OnToggleWatch()
@@ -736,9 +756,13 @@ function StockPilerTabPlants.OnMouseOverRecipe()
                         end
                         local iconNum = tonumber(p.iconNum) or tonumber(itemData and itemData.iconNum) or 0
                         local rR, rG, rB = ItemRarityNameColor(itemData or p)
+                        local nm = p.name or L""
+                        if type(nm) ~= "wstring" then
+                            nm = towstring(tostring(nm))
+                        end
                         tipRows[#tipRows + 1] = {
                             sort = string.lower(ToNarrow(p.name)),
-                            text = IconMarkup(iconNum) .. (p.name or L""),
+                            text = IconMarkup(iconNum) .. nm,
                             kind = "body",
                             color = { r = rR, g = rG, b = rB },
                         }
@@ -747,12 +771,16 @@ function StockPilerTabPlants.OnMouseOverRecipe()
             end
         elseif type(r) == "table" and type(r.potionNames) == "table" then
             for j = 1, #r.potionNames do
-                local nm = ToNarrow(r.potionNames[j])
+                local raw = r.potionNames[j]
+                local nm = ToNarrow(raw)
                 if nm ~= "" and seen[nm] ~= true then
                     seen[nm] = true
+                    if type(raw) ~= "wstring" then
+                        raw = towstring(tostring(raw))
+                    end
                     tipRows[#tipRows + 1] = {
                         sort = string.lower(nm),
-                        text = r.potionNames[j],
+                        text = raw,
                         kind = "body",
                     }
                 end

@@ -408,15 +408,7 @@ local function AutoTickIntervalSec()
     end
     local Watch = StockPiler.Watch
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true then
-        -- Fast ticks win over the fill-block idle interval. Checking fill
-        -- first forced 5s ticks while empty plots were still waiting (CORE-11).
-        if Sch._autoGrowFast == true then
-            return Sch.AUTO_TICK_SEC
-        end
-        local Orch = StockPiler.Orchestrator
-        if Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true then
-            return Sch.AUTO_TICK_IDLE_SEC
-        end
+        -- Fast ticks already returned above. AutoGrow otherwise uses the idle interval.
         return Sch.AUTO_TICK_IDLE_SEC
     end
     return Sch.AUTO_TICK_SEC
@@ -920,6 +912,12 @@ function Sch.EnqueueBagFlush(needQueue)
 end
 
 function Sch.OnTradeSkillsChanged(payload)
+    -- Clear even for load-time "trade-caps". A learned or dropped profession
+    -- has to change the plan key before the next read-only lookup.
+    local Planner = StockPiler.Planner
+    if Planner and Planner.OnTradeSkillsChanged then
+        Planner.OnTradeSkillsChanged(payload)
+    end
     if type(payload) == "table" and payload.reason == "trade-caps" then
         return
     end

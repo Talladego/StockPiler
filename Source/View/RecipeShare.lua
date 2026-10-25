@@ -230,13 +230,53 @@ function RS.DescribeSlot(slot, fields)
     if qty < 1 then
         qty = 1
     end
+    -- Prefer a cultivable twin for the preview when the link carried butcher/vendor.
+    -- The d= name has to be on the probe first: a nameless butcher uid is not in
+    -- Account.items, so IsGrowableSpec would treat the stabilizer as a plant.
+    local carriedForProbe = Carried(fields, uid)
+    local SM = StockPiler.SeedMap
+    if SM and SM.FindGrowableTwinUid and type(spec) == "table" then
+        local probe = spec
+        local carriedName = type(carriedForProbe) == "table" and carriedForProbe.name or nil
+        local nameMissing = probe.name == nil or ToNarrow(probe.name) == ""
+        local needRole = (probe.role == nil or probe.role == "" or probe.role == "ingredient") and role ~= ""
+        if needRole or (nameMissing and carriedName ~= nil and ToNarrow(carriedName) ~= "") then
+            probe = {}
+            for k, v in pairs(spec) do
+                probe[k] = v
+            end
+            if needRole then
+                probe.role = role
+            end
+            if uid > 0 then
+                probe.uid = uid
+            end
+            if nameMissing and carriedName ~= nil and ToNarrow(carriedName) ~= "" then
+                probe.name = carriedName
+            end
+        end
+        local plantUid = tonumber(SM.FindGrowableTwinUid(probe)) or 0
+        if plantUid > 0 then
+            uid = plantUid
+        end
+    end
     local known = KnownItem(uid)
+    -- Cold receiver: plant uid + d= name from the link (no Account.items yet).
     local carried = Carried(fields, uid)
     local name = nil
     local icon = 0
     if type(known) == "table" then
         name = known.name
         icon = tonumber(known.iconNum) or 0
+    end
+    if (name == nil or ToNarrow(name) == "") and StockPiler.Items and StockPiler.Items.AsItemData then
+        local asItem = StockPiler.Items.AsItemData(uid)
+        if type(asItem) == "table" then
+            name = asItem.name
+            if icon <= 0 then
+                icon = tonumber(asItem.iconNum) or 0
+            end
+        end
     end
     if (name == nil or ToNarrow(name) == "") and type(carried) == "table" then
         name = carried.name
@@ -246,6 +286,12 @@ function RS.DescribeSlot(slot, fields)
     end
     if icon <= 0 then
         icon = tonumber(spec.iconNum or slot.iconNum) or 0
+    end
+    -- Prefer slot/spec name when the link already renamed the exemplar to the plant.
+    if (name == nil or ToNarrow(name) == "") and slot.name ~= nil and ToNarrow(slot.name) ~= "" then
+        name = slot.name
+    elseif (name == nil or ToNarrow(name) == "") and spec.name ~= nil and ToNarrow(spec.name) ~= "" then
+        name = spec.name
     end
     if name == nil or ToNarrow(name) == "" then
         name = T("share.unknown_item", { uid = tostring(uid) })

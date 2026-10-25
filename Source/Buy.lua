@@ -85,6 +85,72 @@ local function BagCountUid(uid)
     return 0
 end
 
+--- Crafting-bag destinations (vials, seeds, resin, ...). Main-bag buys skip the gate.
+local function ItemGoesToCraftBag(item, job)
+    local craftingType = 34
+    if GameData and GameData.ItemTypes and GameData.ItemTypes.CRAFTING ~= nil then
+        craftingType = tonumber(GameData.ItemTypes.CRAFTING) or craftingType
+    end
+    if type(item) == "table" and (tonumber(item.type) or 0) == craftingType then
+        return true
+    end
+    local role = tostring(job and job.role or "")
+    if role == "container" or role == "main" or role == "stabilizer"
+        or role == "ingredient" or role == "stimulant" or role == "goldweed"
+    then
+        return true
+    end
+    return job and job.skillUp == true
+end
+
+--- Max stack for a buy: item.capacity, bag sample capacity, else 40 for vials / 1 other.
+local function ResolveBuyStackCapacity(job, storeItem)
+    local BA = StockPiler.BagAdapter
+    local vialDefault = (BA and tonumber(BA.DEFAULT_VIAL_STACK)) or 40
+    local function fromItem(it)
+        if type(it) ~= "table" then
+            return 0
+        end
+        if BA and BA.ItemStackCapacity then
+            return tonumber(BA.ItemStackCapacity(it, 0)) or 0
+        end
+        return tonumber(it.capacity) or 0
+    end
+    local cap = fromItem(storeItem)
+    if cap < 1 then
+        local uid = tonumber(storeItem and storeItem.uniqueID)
+            or tonumber(job and (job.uid or job.uniqueID))
+            or 0
+        local Inv = StockPiler.Inventory
+        local sample = uid > 0 and Inv and Inv.GetSample and Inv.GetSample(uid)
+        cap = fromItem(sample)
+    end
+    if cap >= 1 then
+        return cap
+    end
+    if job and tostring(job.role or "") == "container" then
+        return vialDefault
+    end
+    return 1
+end
+
+--- How many more units of this craft-bag buy fit without packing the bag full.
+--- nil = occupancy unknown (do not gate).
+local function CraftBagRoomForBuy(job, storeItem)
+    if ItemGoesToCraftBag(storeItem, job) ~= true then
+        return nil
+    end
+    local BA = StockPiler.BagAdapter
+    if not (BA and BA.CraftBagBuyRoom) then
+        return nil
+    end
+    local uid = tonumber(storeItem and storeItem.uniqueID)
+        or tonumber(job and (job.uid or job.uniqueID))
+        or 0
+    local stackCap = ResolveBuyStackCapacity(job, storeItem)
+    return BA.CraftBagBuyRoom(uid, stackCap)
+end
+
 local function IsUidOnCooldown(uid)
     uid = tonumber(uid) or 0
     if uid <= 0 then
@@ -230,6 +296,12 @@ local function OpenLateCostBrass()
         budgetLate = budgetLate + pendingCost
     end
     return reserveLate, budgetLate
+end
+
+--- Open late-confirm brass that still counts against the Budget cap.
+local function OpenLateTotalBrass()
+    local _, budgetLate = OpenLateCostBrass()
+    return budgetLate or 0
 end
 
 --- Credit confirmed cost onto other open attempts whose wallet snapshot still
@@ -505,6 +577,15 @@ local function JobAcquireKey(job, item)
         return "sk:" .. tostring(job.specKey)
     end
     return nil
+end
+
+--- Visit credit key for a buy job. Pass the store row when the uid lives there.
+local function VisitJobKey(job, item)
+    return JobAcquireKey(job, item)
+end
+
+local function ReconcileVisitAcquiredWithBags()
+    SettleVisitAcquiredFromBags()
 end
 
 --- Brass -> compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
@@ -1027,7 +1108,45 @@ local function ChatVisitStop(reason)
     local bought = tonumber(Buy._visitBought) or 0
     local spent = tonumber(Buy._visitSpentBrass) or 0
     local CC = StockPiler.CraftChatAdapter
-    if CC and CC.Print and bought > 0 then
+    -- Reserve/budget often stop before any purchase this visit; still tell the player
+    -- once (same latch as other visit stops). Other reasons keep the bought>0 debug line.
+    if Buy._visitStopReason == "reserve"
+        or Buy._visitStopReason == "budget"
+        or Buy._visitStopReason == "craft_bag"
+    then
+        local T = (StockPiler.Util and StockPiler.Util.T) or StockPiler.T
+        local msg = nil
+        if Buy._visitStopReason == "reserve" then
+            local gold = Buy.GetReserveGold and Buy.GetReserveGold() or 0
+            msg = T and T("buy.blocked.reserve", { gold = tostring(gold) })
+                or (L"<icon02486> AutoBuy paused - gold is at or below your Reserve ("
+                    .. towstring(tostring(gold)) .. L"g).")
+        elseif Buy._visitStopReason == "budget" then
+            local brassPerGold = Buy.BRASS_PER_GOLD or 10000
+            local totalSpent = math.max(
+                spent,
+                (tonumber(Buy.GetSpentBrass and Buy.GetSpentBrass()) or 0)
+                    + (tonumber(OpenLateTotalBrass and OpenLateTotalBrass()) or 0)
+            )
+            local spentGold = math.floor(totalSpent / brassPerGold)
+            local cap = Buy.GetBudgetGold and Buy.GetBudgetGold() or 0
+            msg = T and T("buy.blocked.budget", {
+                spent = tostring(spentGold),
+                gold = tostring(cap),
+            })
+                or (L"<icon02486> AutoBuy paused - Budget reached ("
+                    .. towstring(tostring(spentGold)) .. L"g / "
+                    .. towstring(tostring(cap)) .. L"g).")
+        else
+            msg = T and T("buy.blocked.craft_bag")
+                or L"<icon02486> AutoBuy paused - craft bag full; bought what fit, rest waits for space."
+        end
+        if CC and CC.Print then
+            CC.Print(msg)
+        elseif StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(msg)
+        end
+    elseif CC and CC.Print and bought > 0 then
         CC.Print("AutoBuy: visit stop (" .. Buy._visitStopReason
             .. ") bought=" .. tostring(bought)
             .. " spent=" .. FormatSpentLabel(spent))
@@ -1161,9 +1280,7 @@ local function BeginVisitIfNeeded()
         if StockPiler.Refine and StockPiler.Refine.MarkRefineDue then
             StockPiler.Refine.MarkRefineDue("store-close")
         end
-        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
-            StockPiler.Scheduler.WakeAutoGrow()
-        end
+        Buy.OnVendorClosed()
     end
     Buy._storeWasOpen = open == true
     return open == true
@@ -1237,6 +1354,60 @@ function Buy.InvalidateJobsCache()
     Buy._jobsCacheKey = nil
 end
 
+--- Clear craft-bag stop when a craft-bound job again has room (partial stack or free slot).
+--- Remaining deficit stays on the job (want - have); this visit just continues buying.
+function Buy.TryResumeCraftBagStop(via)
+    if Buy._visitStopReason ~= "craft_bag" then
+        return false
+    end
+    if not Buy.IsEnabled() then
+        return false
+    end
+    local VA = StockPiler.VendorAdapter
+    if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
+        return false
+    end
+    Buy.InvalidateJobsCache()
+    ReconcileVisitAcquiredWithBags()
+    local jobs = Buy.CollectBuyJobs() or {}
+    local hasRoom = false
+    for i = 1, #jobs do
+        local job = jobs[i]
+        if type(job) == "table" and (tonumber(job.deficit) or 0) >= 1 then
+            local item = Buy.FindStoreMatch and select(1, Buy.FindStoreMatch(job))
+            if type(item) == "table" then
+                local key = VisitJobKey(job, item)
+                local uid = tonumber(item.uniqueID) or tonumber(job.seedUid) or tonumber(job.uid) or 0
+                local lateQty = OpenLateQtyForUid(uid)
+                local remaining = (tonumber(job.deficit) or 0) - VisitAcquired(key) - lateQty
+                if remaining >= 1 then
+                    -- Unknown occupancy (nil) must not block resume; only hard zero room does.
+                    local room = CraftBagRoomForBuy(job, item)
+                    if room == nil or (room - VisitAcquired(key) - lateQty) >= 1 then
+                        hasRoom = true
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if hasRoom ~= true then
+        return false
+    end
+    local was = Buy._visitStopReason
+    Buy._visitStopReason = nil
+    Buy.InvalidateJobsCache()
+    LogBuy(string.format(
+        "resume clear-stop was=%s via=%s",
+        tostring(was),
+        tostring(via or "?")
+    ))
+    if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+        StockPiler.Scheduler.WakeAutoBuy()
+    end
+    return true
+end
+
 --- Clear visit money-gate stop when allowance/reserve again permits buying.
 --- Does not wipe lifetime spent (use ResetAllowanceSpent for that).
 function Buy.ClearMoneyGateStop(via)
@@ -1300,6 +1471,17 @@ function Buy.OnMoneySettingsChanged()
         if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
             StockPiler.Scheduler.WakeAutoBuy()
         end
+    end
+end
+
+--- Merchant window closed. Drop the one-shot refine stall tip and resume
+--- planting/refine that was held while SendUseItem would have ended the visit.
+function Buy.OnVendorClosed()
+    if StockPiler.Refine and StockPiler.Refine.ClearBlockedNotify then
+        StockPiler.Refine.ClearBlockedNotify()
+    end
+    if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
+        StockPiler.Scheduler.WakeAutoGrow()
     end
 end
 
@@ -1656,6 +1838,7 @@ function Buy.IssueOne(opId)
     local spent = Buy.GetSpentBrass()
     local reserveBlock = false
     local budgetBlock = false
+    local craftBagBlock = false
 
     -- Every remaining job is on a no-spend cooldown or an open late confirm.
     -- Skip the store walk until the soonest of those waits ends.
@@ -1770,9 +1953,19 @@ function Buy.IssueOne(opId)
                     local reserveLate, budgetLate = OpenLateCostBrass()
                     local maxByReserve = math.floor((money - reserve - reserveLate) / unitCost)
                     local maxByBudget = math.floor((budget - spent - budgetLate) / unitCost)
-                    local qty = math.min(remaining, vendorMax, maxByReserve, maxByBudget)
+                    -- Craft bag: buy only what fits (keep 1 free slot); leftover deficit stays for later.
+                    -- Subtract visit credit not yet visible in bag occupancy so we do not double-fill.
+                    local bagRoom = CraftBagRoomForBuy(job, item)
+                    local maxByBag = remaining
+                    if bagRoom ~= nil then
+                        bagRoom = math.max(0, bagRoom - VisitAcquired(key) - lateQty)
+                        maxByBag = bagRoom
+                    end
+                    local qty = math.min(remaining, vendorMax, maxByReserve, maxByBudget, maxByBag)
                     if qty < 1 then
-                        if maxByReserve < 1 then
+                        if bagRoom ~= nil and bagRoom < 1 then
+                            craftBagBlock = true
+                        elseif maxByReserve < 1 then
                             reserveBlock = true
                         elseif maxByBudget < 1 then
                             budgetBlock = true
@@ -1863,6 +2056,12 @@ function Buy.IssueOne(opId)
     if budgetBlock then
         ChatVisitStop("budget")
         ArmPlanAfterBuyFill("budget")
+        return done(false)
+    end
+    if craftBagBlock then
+        -- Stop this visit; remaining want-have deficit is the queue for later space.
+        ChatVisitStop("craft_bag")
+        ArmPlanAfterBuyFill("craft_bag")
         return done(false)
     end
     -- No free job can buy in this store. Sleep until the soonest cooldown
@@ -2001,6 +2200,10 @@ function Buy.OnInventorySnapshot()
         if Buy._storeWasOpen ~= true then
             WakeBrewAfterBuyFill("late-confirm")
         end
+    end
+    -- Brew/sell freed craft-bag space: resume remaining vial (etc.) deficit.
+    if Buy.TryResumeCraftBagStop and Buy.TryResumeCraftBagStop("inventory") == true then
+        woke = true
     end
     if woke and StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
         StockPiler.Scheduler.WakeAutoBuy()

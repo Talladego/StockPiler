@@ -263,7 +263,8 @@ function ME.MarkForceNotRefinable(uid, reason)
 end
 
 --- True when engine isRefinable must be ignored (not a plant->seed convert).
-function ME.IsForceNotRefinable(specOrItem)
+--- specialMain is an optional same-decision LooksSpecialApoMain result.
+function ME.IsForceNotRefinable(specOrItem, specialMain)
     local uid = UidFrom(specOrItem)
     if uid > 0 then
         if ME.FORCE_NOT_REFINABLE_UID[uid] == true then
@@ -286,7 +287,10 @@ function ME.IsForceNotRefinable(specOrItem)
             end
         end
     end
-    if ME.LooksSpecialApoMain(specOrItem) then
+    if specialMain == nil then
+        specialMain = ME.LooksSpecialApoMain(specOrItem)
+    end
+    if specialMain then
         return true
     end
     return ME.NameLooksForceNotRefinable(NameFrom(specOrItem))

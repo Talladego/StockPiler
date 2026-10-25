@@ -498,6 +498,62 @@ function BA.CraftBagFreeSlots()
     return free
 end
 
+--- Default max stack for Apo vials when item.capacity is missing.
+BA.DEFAULT_VIAL_STACK = 40
+--- Always leave at least this many empty craft-bag slots for brew/harvest.
+BA.CRAFT_BAG_KEEP_FREE = 1
+
+--- Max units per stack from item data (item.capacity). fallback when unknown.
+function BA.ItemStackCapacity(item, fallback)
+    local cap = tonumber(item and item.capacity) or 0
+    if cap >= 1 then
+        return cap
+    end
+    return tonumber(fallback) or 1
+end
+
+--- How many more units of uid fit in the craft bag without using the last
+--- keepFree empty slots. Uses stackCap per stack (bag capacity, else caller
+--- default). Returns nil when craft-bag occupancy is unknown.
+function BA.CraftBagBuyRoom(uid, stackCap, opts)
+    uid = tonumber(uid) or 0
+    stackCap = tonumber(stackCap) or 0
+    if stackCap < 1 then
+        stackCap = 1
+    end
+    local keepFree = tonumber(opts and opts.keepFree)
+    if keepFree == nil then
+        keepFree = tonumber(BA.CRAFT_BAG_KEEP_FREE) or 1
+    end
+    if keepFree < 0 then
+        keepFree = 0
+    end
+    local free = BA.CraftBagFreeSlots()
+    if free == nil then
+        return nil
+    end
+    local partial = 0
+    if uid > 0 then
+        local bag = BA.GetBagTable(BAG_CRAFT)
+        if type(bag) == "table" then
+            for _, item in pairs(bag) do
+                if type(item) == "table" and (tonumber(item.uniqueID) or 0) == uid then
+                    local have = tonumber(item.stackCount) or tonumber(item.Count) or 0
+                    local cap = BA.ItemStackCapacity(item, stackCap)
+                    if have < cap then
+                        partial = partial + (cap - have)
+                    end
+                end
+            end
+        end
+    end
+    local newSlots = free - keepFree
+    if newSlots < 0 then
+        newSlots = 0
+    end
+    return partial + (newSlots * stackCap)
+end
+
 --- Find a bag slot holding seedUid. Cached by Inventory snapGen; InvalidateCache on structure change.
 function BA.FindSeedSlot(uid)
     uid = tonumber(uid) or 0

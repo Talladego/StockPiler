@@ -20,8 +20,13 @@ RecipeTooltip.SEP_LINE = T("recipe.sep")
 
 --- Private row windows. Tooltips.NUM_ROWS stays raised until the next ClearTooltip
 --- so stock clear walks the extra rows. SetTooltipText ignores rows above that count.
-local RECIPE_TOOLTIP_MAX_ROWS = 80
+--- Keep the private pool modest: warming 80 rows made CreateTextOnlyTooltip paint an
+--- empty tip on some clients while Watch (capped at 17) still worked.
+local RECIPE_TOOLTIP_MAX_ROWS = 32
+local RECIPE_TIP_DISPLAY_CAP = 24
 local STOCK_TOOLTIP_ROWS = 17
+-- Fingerprint twins listed under each ingredient (exemplar first).
+local RECIPE_TIP_MAX_MATCHES = 3
 RecipeTooltip._numRows = 17
 RecipeTooltip._raisedRows = nil
 
@@ -210,26 +215,33 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
     if not Tooltips or type(Tooltips.CreateTextOnlyTooltip) ~= "function" then
         return
     end
-    local want = tonumber(maxRows) or #rows
-    if want < #rows then
-        want = #rows
+    -- Cap to the caller's budget (Watch uses 17). Do not expand past maxRows when
+    -- private warmed rows already exceed it - that used to raise NUM_ROWS to 80 and
+    -- leave the Potions recipe tip blank while Watch status still painted.
+    local cap = tonumber(maxRows) or RECIPE_TIP_DISPLAY_CAP
+    if cap < 1 then
+        cap = STOCK_TOOLTIP_ROWS
+    end
+    if cap > RECIPE_TOOLTIP_MAX_ROWS then
+        cap = RECIPE_TOOLTIP_MAX_ROWS
+    end
+    local want = math.min(#rows, cap)
+    if want < 1 then
+        want = 1
     end
     local engineMax = RecipeTooltip.EnsureRows(want)
+    local limit = math.min(want, engineMax, cap)
     InstallClearTooltipHook()
     local stockRows = STOCK_TOOLTIP_ROWS
-    if engineMax > stockRows then
-        RecipeTooltip._raisedRows = engineMax
-        Tooltips.NUM_ROWS = engineMax
+    if limit > stockRows then
+        RecipeTooltip._raisedRows = limit
+        Tooltips.NUM_ROWS = limit
     end
     Tooltips.CreateTextOnlyTooltip(anchorWindow)
     -- ClearTooltip restores the stock count. Raise it again for this draw.
-    if engineMax > stockRows then
-        RecipeTooltip._raisedRows = engineMax
-        Tooltips.NUM_ROWS = engineMax
-    end
-    local limit = engineMax
-    if tonumber(maxRows) and tonumber(maxRows) < limit then
-        limit = tonumber(maxRows)
+    if limit > stockRows then
+        RecipeTooltip._raisedRows = limit
+        Tooltips.NUM_ROWS = limit
     end
     local rowCount = math.min(#rows, limit)
     for i = 1, rowCount do
@@ -240,7 +252,8 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
         Tooltips.SetTooltipText(i, 1, entry.text or L"", false)
         SetRecipeTooltipRowColor(i, entry.color or RecipeTooltipColor(entry.kind, entry.role))
     end
-    for i = rowCount + 1, engineMax do
+    local clearThrough = math.max(limit, stockRows)
+    for i = rowCount + 1, clearThrough do
         Tooltips.SetTooltipText(i, 1, L"", false)
     end
     local tipAnchor = anchor or Tooltips.ANCHOR_WINDOW_RIGHT
@@ -481,9 +494,51 @@ local function ItemMatchesSpec(itemData, spec)
     return false
 end
 
-local function SortMatchList(list, exemplarUid)
+local function MatchIsGrowable(itemData, role)
+    local SM = StockPiler.SeedMap
+    if type(itemData) ~= "table" or not (SM and SM.IsGrowableSpec) then
+        return false
+    end
+    local uid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+    local probe = itemData
+    if uid > 0 and StockPiler.Items and StockPiler.Items.ToSpec then
+        local live = StockPiler.Items.ToSpec(uid)
+        if type(live) == "table" then
+            probe = live
+        end
+    end
+    if type(probe) ~= "table" then
+        return false
+    end
+    if (probe.role == nil or probe.role == "" or probe.role == "ingredient")
+        and role ~= nil and role ~= ""
+    then
+        probe = {
+            uid = uid > 0 and uid or tonumber(probe.uid) or 0,
+            uniqueID = uid,
+            name = probe.name or itemData.name,
+            role = role,
+            bonuses = probe.bonuses,
+            cultivationType = probe.cultivationType,
+            slotType = probe.slotType,
+            tradeSkill = probe.tradeSkill,
+            skillLevel = probe.skillLevel,
+            isRefinable = probe.isRefinable,
+        }
+    end
+    return SM.IsGrowableSpec(probe) == true
+end
+
+--- Growable twins first (Majestic Goldweed over Zoic Gore); exemplar as tiebreak.
+local function SortMatchList(list, exemplarUid, role)
     exemplarUid = tonumber(exemplarUid) or 0
+    role = tostring(role or "")
     table.sort(list, function(a, b)
+        local ag = MatchIsGrowable(a, role)
+        local bg = MatchIsGrowable(b, role)
+        if ag ~= bg then
+            return ag
+        end
         local au = tonumber(a and a.uniqueID) or 0
         local bu = tonumber(b and b.uniqueID) or 0
         if exemplarUid > 0 then
@@ -503,11 +558,11 @@ local function SortMatchList(list, exemplarUid)
     end)
 end
 
---- Cache key: knowledge + bag snap + recipe fingerprint (bag butcher twins).
-local _matchCacheKey = nil
-local _matchCacheBySlot = nil
+--- Match cache: one map per knowledge+bag generation, keyed by recipe fingerprint.
+local _matchCacheGen = nil
+local _matchCacheByFp = {}
 
-local function KnownMatchesCacheKey(materials)
+local function MatchCacheGen()
     local knowGen = 0
     if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
         knowGen = tonumber(StockPiler.Knowledge.GetGen()) or 0
@@ -516,12 +571,15 @@ local function KnownMatchesCacheKey(materials)
     if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
         snapGen = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
     end
-    local fp = ""
+    return tostring(knowGen) .. "|" .. tostring(snapGen)
+end
+
+local function MatchCacheFp(materials)
     local RS = StockPiler.RecipeSpec
     if RS and RS.RecipeSpecKey then
-        fp = tostring(RS.RecipeSpecKey(materials) or "")
+        return tostring(RS.RecipeSpecKey(materials) or "")
     end
-    return tostring(knowGen) .. "|" .. tostring(snapGen) .. "|" .. fp
+    return ""
 end
 
 local function SampleHasCraftingBonus(sample)
@@ -601,9 +659,14 @@ local function CollectKnownMatchesBySlot(materials)
     if type(materials) ~= "table" then
         return bySlot
     end
-    local cacheKey = KnownMatchesCacheKey(materials)
-    if cacheKey ~= "" and cacheKey == _matchCacheKey and type(_matchCacheBySlot) == "table" then
-        return _matchCacheBySlot
+    local gen = MatchCacheGen()
+    if gen ~= _matchCacheGen then
+        _matchCacheGen = gen
+        _matchCacheByFp = {}
+    end
+    local fp = MatchCacheFp(materials)
+    if fp ~= "" and type(_matchCacheByFp[fp]) == "table" then
+        return _matchCacheByFp[fp]
     end
 
     local infos = {}
@@ -668,7 +731,9 @@ local function CollectKnownMatchesBySlot(materials)
     end
 
     for i = 1, #infos do
-        SortMatchList(infos[i].matches, infos[i].exemplarUid)
+        local info = infos[i]
+        local role = tostring((info.slot and info.slot.role) or (info.spec and info.spec.role) or "")
+        SortMatchList(info.matches, info.exemplarUid, role)
     end
     -- A first hover can run before CraftItemInfo arrives. Do not keep that
     -- empty slot, or the next hover would paint the same blank stabilizer.
@@ -688,12 +753,8 @@ local function CollectKnownMatchesBySlot(materials)
             break
         end
     end
-    if cacheable then
-        _matchCacheKey = cacheKey
-        _matchCacheBySlot = bySlot
-    else
-        _matchCacheKey = nil
-        _matchCacheBySlot = nil
+    if cacheable and fp ~= "" then
+        _matchCacheByFp[fp] = bySlot
     end
     return bySlot
 end
@@ -703,7 +764,15 @@ local function AppendMatchNameRow(rows, itemData, role)
         return
     end
     local name = itemData.name
-    if name == nil or name == L"" then
+    if name == nil then
+        return
+    end
+    -- Shared Learn / Account.items often store narrow string names; bag samples
+    -- are wstrings. IconMarkup is always wstring, so coerce before concat.
+    if type(name) ~= "wstring" then
+        name = towstring(tostring(name))
+    end
+    if name == L"" then
         return
     end
     local r, g, b = 255, 255, 255
@@ -735,7 +804,11 @@ local function AppendIngredientSection(rows, header, stats, role, statsColor, ma
         }
     end
     if type(matches) == "table" then
-        for i = 1, #matches do
+        local n = #matches
+        if n > RECIPE_TIP_MAX_MATCHES then
+            n = RECIPE_TIP_MAX_MATCHES
+        end
+        for i = 1, n do
             AppendMatchNameRow(rows, matches[i], role)
         end
     end
@@ -786,9 +859,14 @@ function RecipeTooltip.BuildRows(recipeData)
     if type(recipe) == "table" and RS and RS.HydrateRecipeSlots then
         RS.HydrateRecipeSlots(recipe)
     end
-    local materials = recipeData.materials
-    if type(materials) ~= "table" and type(recipe) == "table" then
+    -- Prefer live recipe.slots. BuildRecipeDataForPotion used `slots or {}`, so a
+    -- stub import can leave recipeData.materials as an empty table that never
+    -- picks up slots filled later (Watch tip reads recipe.slots and looks fine).
+    local materials = nil
+    if type(recipe) == "table" and type(recipe.slots) == "table" and #recipe.slots > 0 then
         materials = recipe.slots
+    elseif type(recipeData.materials) == "table" and #recipeData.materials > 0 then
+        materials = recipeData.materials
     end
     if type(materials) ~= "table" or #materials == 0 then
         return rows
@@ -846,12 +924,16 @@ function RecipeTooltip.Show(mouseoverWindow, recipeData)
         return
     end
     local rows = RecipeTooltip.BuildRows(recipeData)
-    local engineMax = RecipeTooltip.EnsureRows(#rows)
-    TrimRecipeTooltipRows(rows, engineMax)
+    local cap = RECIPE_TIP_DISPLAY_CAP
+    if cap < STOCK_TOOLTIP_ROWS then
+        cap = STOCK_TOOLTIP_ROWS
+    end
+    RecipeTooltip.EnsureRows(math.min(#rows, cap))
+    TrimRecipeTooltipRows(rows, cap)
     RecipeTooltip.ShowColoredRows(
         mouseoverWindow,
         rows,
         Tooltips and Tooltips.ANCHOR_WINDOW_RIGHT,
-        engineMax
+        cap
     )
 end
