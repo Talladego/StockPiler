@@ -1088,27 +1088,25 @@ end
 --- One chat line when refine work is waiting and the merchant window is the block.
 --- Returns true only on the first notice. ClearBlockedNotify arms it again.
 function Refine.MaybeNotifyBlocked()
-    local allow, why = Refine.ShouldAllowRefineNow()
-    if allow == true or why ~= "vendor-open" then
-        Refine._blockedVendorNotified = false
-        return false
-    end
-    local ignore = { ignoreVendor = true }
-    local waiting = Refine.ShouldAllowRefineNow(ignore) == true
-        and #(Refine.CollectIntents(ignore) or {}) > 0
-    if waiting ~= true then
+    local VA = StockPiler.VendorAdapter
+    if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
         Refine._blockedVendorNotified = false
         return false
     end
     if Refine._blockedVendorNotified == true then
         return false
     end
-    Refine._blockedVendorNotified = true
+    local ignore = { ignoreVendor = true }
+    -- CollectIntents already applies ShouldAllowRefineNow(ignore).
+    if #(Refine.CollectIntents(ignore) or {}) == 0 then
+        return false
+    end
     local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
         or L"<icon02486> Refine stalled - close the merchant window to continue."
     if StockPiler.Debug and StockPiler.Debug.Print then
         StockPiler.Debug.Print(msg)
     end
+    Refine._blockedVendorNotified = true
     return true
 end
 
@@ -1118,9 +1116,6 @@ end
 
 function Refine.CollectIntents(opts)
     opts = type(opts) == "table" and opts or {}
-    if Refine.IsEnabled() ~= true then
-        return {}
-    end
     if Refine.ShouldAllowRefineNow(opts) ~= true then
         return {}
     end

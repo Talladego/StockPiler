@@ -1375,12 +1375,12 @@ end
 
 --- True/false when known from spec or learned item; nil when never observed.
 --- MaterialExceptions can force false when the engine lies (Squig Bits, etc.).
-function SM.ResolveIsRefinable(spec)
+function SM.ResolveIsRefinable(spec, specialMain)
     if type(spec) ~= "table" then
         return nil
     end
     local ME = StockPiler.MaterialExceptions
-    if ME and ME.IsForceNotRefinable and ME.IsForceNotRefinable(spec) == true then
+    if ME and ME.IsForceNotRefinable and ME.IsForceNotRefinable(spec, specialMain) == true then
         return false
     end
     if spec.isRefinable ~= nil then
@@ -1577,13 +1577,14 @@ local function IsGrowableSpecUncached(spec)
     -- Unlinked hybrid/liniment specials: growable only when a related seed resolves
     -- (Eternal / infertile / Bloodseed). Dungeon drops (Primal / Daemonic) stay non-growable.
     local ME = StockPiler.MaterialExceptions
-    if ME and ME.LooksSpecialApoMain and ME.LooksSpecialApoMain(spec) == true then
+    local specialMain = ME and ME.LooksSpecialApoMain and ME.LooksSpecialApoMain(spec) == true
+    if specialMain == true then
         local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
         local seedUid = type(seed) == "table"
             and (tonumber(seed.uniqueID) or tonumber(seed.uid) or 0) or 0
         return seedUid > 0
     end
-    local refinable = SM.ResolveIsRefinable(spec)
+    local refinable = SM.ResolveIsRefinable(spec, specialMain)
     if refinable == false then
         return false
     end
@@ -1594,10 +1595,13 @@ local function IsGrowableSpecUncached(spec)
     -- Bottled Rat Spittle / scales match as "plants" until LooksButcher runs -
     -- their learned isRefinable==false must win over the cult-role heuristic.
     local plantUid = SM.FindPlantUidForSpec and tonumber(SM.FindPlantUidForSpec(spec)) or 0
-    if plantUid > 0 then
+    local specUid = tonumber(spec.uid) or tonumber(spec.uniqueID) or 0
+    -- The bound uid was checked above. A different resolved plant still needs a check.
+    if plantUid > 0 and plantUid ~= specUid then
         local plantRef = SM.ResolveIsRefinable({
             uid = plantUid,
             uniqueID = plantUid,
+            name = spec.name,
             role = role,
         })
         if plantRef == false then

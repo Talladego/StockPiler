@@ -302,6 +302,16 @@ eq(bagScans, 1, "a cached miss does not scan bags again")
 StockPiler.MaterialSpec.ProductMatches = origMatch
 StockPiler.MaterialSpec.ProductKey = origKey
 
+local dbReads = 0
+GetDatabaseItemData = function()
+    dbReads = dbReads + 1
+    return nil
+end
+dbReads = 0
+local unknown = { uid = 70000001, role = "main", incomplete = true }
+eq(SM.IsGrowableSpec(unknown), true, "an unknown main still uses the cult-role guess")
+eq(dbReads, 1, "an unknown uid reads the item database once")
+
 StockPiler.Knowledge.GetGen = function()
     return 4
 end

@@ -333,6 +333,72 @@ eq(Orch.HasAutoGrowWork({
     refineDirty = true,
 }), false, "without apo resin refine a full quiet garden is not work")
 
+-- Closed merchant skips the refine gate. An open merchant runs it once.
+local gates = 0
+local enables = 0
+local gate = Refine.ShouldAllowRefineNow
+local enabledFn = Refine.IsEnabled
+Refine.ShouldAllowRefineNow = function(...)
+    gates = gates + 1
+    return gate(...)
+end
+Refine.IsEnabled = function(...)
+    enables = enables + 1
+    return enabledFn(...)
+end
+storeOpen = false
+resetNotify()
+Refine.MaybeNotifyBlocked()
+eq(gates, 0, "a closed merchant does not check the refine gate")
+eq(enables, 0, "a closed merchant does not check refine enabled")
+storeOpen = true
+shouldBrew = true
+surplus = 3
+items = { plantItem(42, 50) }
+resetNotify()
+gates = 0
+enables = 0
+eq(Refine.MaybeNotifyBlocked(), true, "open merchant with work still notifies once")
+eq(gates, 1, "an open merchant checks the refine gate once")
+eq(enables, 1, "an open merchant checks refine enabled once")
+local latchedGates = gates
+local latchedEnables = enables
+eq(Refine.MaybeNotifyBlocked(), false, "a latched notice does not ask the gate again")
+eq(gates, latchedGates, "a latched notice adds no refine gate check")
+eq(enables, latchedEnables, "a latched notice adds no refine enabled check")
+Refine.ShouldAllowRefineNow = gate
+Refine.IsEnabled = enabledFn
+
+-- Known pending or dirty refine does not scan bags for an Apo resin plant.
+local resin = 0
+local hasResin = SkillUp.HasApoResinRefinePlant
+SkillUp.HasApoResinRefinePlant = function(...)
+    resin = resin + 1
+    return hasResin(...)
+end
+Orch._fillBlocked = false
+Refine._refineDirty = true
+resin = 0
+eq(Orch.HasAutoGrowWork({
+    respectFillBlock = true,
+    refineDirty = true,
+}), true, "dirty refine is auto-grow work")
+eq(resin, 0, "dirty refine does not scan for apo resin")
+Refine._refineDirty = false
+StockPiler.RefinePipeline = {
+    HasOutstanding = function()
+        return true
+    end,
+}
+resin = 0
+eq(Orch.HasAutoGrowWork({
+    respectFillBlock = true,
+    refineDirty = true,
+}), true, "outstanding refine is auto-grow work")
+eq(resin, 0, "outstanding refine does not scan for apo resin")
+SkillUp.HasApoResinRefinePlant = hasResin
+StockPiler.RefinePipeline = nil
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)
