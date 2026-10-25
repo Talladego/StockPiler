@@ -11,6 +11,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Chat asks you to close the merchant when refining is waiting on it.
 - Shared recipe Learn refreshes ingredient exemplars on an existing fingerprint and stores those mats for tip and grow.
 - Potions-tab recipe hover uses the live recipe slots again when a shared Learn filled them after the list row was built (Watch status tip already looked correct).
+- Recipe tips no longer blank after Learn when ingredient names are plain strings from shared storage.
 - Bug fixes.
 - Performance improvements.
 

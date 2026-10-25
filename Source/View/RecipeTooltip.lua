@@ -716,7 +716,15 @@ local function AppendMatchNameRow(rows, itemData, role)
         return
     end
     local name = itemData.name
-    if name == nil or name == L"" then
+    if name == nil then
+        return
+    end
+    -- Shared Learn / Account.items often store narrow string names; bag samples
+    -- are wstrings. IconMarkup is always wstring, so coerce before concat.
+    if type(name) ~= "wstring" then
+        name = towstring(tostring(name))
+    end
+    if name == L"" then
         return
     end
     local r, g, b = 255, 255, 255
