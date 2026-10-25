@@ -434,6 +434,190 @@ StockPiler.Initialize()
 StockPiler.EventBus.Fire("vendor-updated", {})
 eq(vendorCalls, 2, "init after shutdown listens again")
 
+load_module("Source/Adapters/BagAdapter.lua")
+local BA = StockPiler.BagAdapter
+GetCraftingItemData = function()
+    return {
+        [1] = { uniqueID = 9, stackCount = 10, capacity = 40 },
+        [2] = { uniqueID = 1, stackCount = 1 },
+        [3] = { uniqueID = 2, stackCount = 1 },
+        [4] = {},
+    }
+end
+eq(BA.CraftBagBuyRoom(9, 40), 30, "a partial stack still has craft-bag room after the free slot")
+GetCraftingItemData = function()
+    return {
+        [1] = { uniqueID = 1, stackCount = 1 },
+        [2] = { uniqueID = 2, stackCount = 1 },
+    }
+end
+eq(BA.CraftBagBuyRoom(8, 40), 0, "a full craft bag leaves no buy room")
+GetCraftingItemData = nil
+DataUtils = nil
+eq(BA.CraftBagBuyRoom(8, 40), nil, "unknown craft-bag occupancy does not invent a room")
+
+load_module("Source/Buy.lua")
+local Buy = StockPiler.Buy
+StockPiler.Watch = StockPiler.Watch or {}
+StockPiler.Watch.IsAutoBuyEnabled = function()
+    return true
+end
+if StockPiler.TradeSkillCaps then
+    StockPiler.TradeSkillCaps.CanAutoBuy = function()
+        return true
+    end
+end
+StockPiler.VendorAdapter = {
+    IsStoreOpen = function()
+        return true
+    end,
+    IsBuybackView = function()
+        return false
+    end,
+    GetPlayerMoneyBrass = function()
+        return 1000000
+    end,
+}
+local budgetLine = nil
+StockPiler.T = function(key, tokens)
+    if key == "buy.blocked.budget" and type(tokens) == "table" then
+        budgetLine = tostring(tokens.spent) .. "/" .. tostring(tokens.gold)
+        return budgetLine
+    end
+    return tostring(key)
+end
+local chat = {}
+StockPiler.CraftChatAdapter = {
+    Print = function(msg)
+        chat[#chat + 1] = tostring(msg)
+    end,
+}
+Buy._visitStopReason = nil
+Buy._visitSpentBrass = 0
+Buy._visitBought = 0
+Buy._visitPurchases = 0
+Buy._pendingBuy = nil
+Buy._lateBuyAttempts = {}
+Buy._nextBuyAfter = 0
+Buy._planArmedAfterFill = false
+Buy.GetSpentBrass = function()
+    return 500000
+end
+Buy.GetBudgetGold = function()
+    return 50
+end
+Buy.GetReserveGold = function()
+    return 10
+end
+Buy.CollectBuyJobs = function()
+    return {
+        {
+            uid = 77,
+            deficit = 2,
+            role = "potion",
+            acquireKey = "budget-job",
+        },
+    }
+end
+Buy.FindStoreMatch = function()
+    return { uniqueID = 77, type = 1, slotNum = 3, name = "Herb" }, 100
+end
+eq(Buy.IssueOne("budget-probe"), false, "a spent lifetime budget stops the visit")
+eq(Buy._visitStopReason, "budget", "the visit stops on budget")
+eq(Buy._visitSpentBrass, 0, "this visit has not spent brass")
+eq(budgetLine, "50/50", "the budget notice uses lifetime spend")
+eq(chat[#chat], "50/50", "the budget chat line is the lifetime spend")
+
+local resumeJobs = {}
+local resumeWakes = 0
+StockPiler.Scheduler = StockPiler.Scheduler or {}
+StockPiler.Scheduler.WakeAutoBuy = function()
+    resumeWakes = resumeWakes + 1
+end
+Buy.CollectBuyJobs = function()
+    return resumeJobs
+end
+Buy.FindStoreMatch = function(job)
+    if job.id == "other" then
+        return nil, 0
+    end
+    if job.id == "done" then
+        return { uniqueID = 11, type = 34, slotNum = 1, capacity = 40 }, 10
+    end
+    if job.id == "room" then
+        return { uniqueID = 12, type = 34, slotNum = 2, capacity = 40 }, 10
+    end
+    return nil, 0
+end
+Buy._visitAcquired = { done = 2 }
+Buy._visitCreditLedger = {}
+Buy._visitBagSeen = {}
+Buy._lateBuyAttempts = {}
+resumeJobs = {
+    { id = "other", uid = 99, deficit = 4, role = "container", acquireKey = "other" },
+}
+Buy._visitStopReason = "craft_bag"
+eq(Buy.TryResumeCraftBagStop("snap"), false, "an unmatched vendor job does not resume")
+eq(Buy._visitStopReason, "craft_bag", "an unmatched job leaves the craft-bag stop")
+resumeJobs = {
+    { id = "other", uid = 99, deficit = 4, role = "container", acquireKey = "other" },
+    { id = "done", uid = 11, deficit = 2, role = "container", acquireKey = "done" },
+}
+eq(Buy.TryResumeCraftBagStop("snap"), false, "a visit-satisfied job does not resume")
+eq(Buy._visitStopReason, "craft_bag", "a satisfied job leaves the craft-bag stop")
+GetCraftingItemData = function()
+    return {
+        [1] = { uniqueID = 1, stackCount = 1 },
+        [2] = { uniqueID = 2, stackCount = 1 },
+    }
+end
+resumeJobs = {
+    { id = "room", uid = 12, deficit = 3, role = "container", acquireKey = "room" },
+}
+eq(Buy.TryResumeCraftBagStop("snap"), false, "a full craft bag does not resume")
+GetCraftingItemData = function()
+    return {
+        [1] = { uniqueID = 12, stackCount = 1, capacity = 40 },
+        [2] = {},
+        [3] = {},
+    }
+end
+local wakesBefore = resumeWakes
+eq(Buy.TryResumeCraftBagStop("snap"), true, "craft-bag room resumes the visit")
+eq(Buy._visitStopReason, nil, "resume clears the craft-bag stop")
+eq(resumeWakes, wakesBefore + 1, "resume wakes autobuy once")
+
+load_module("Source/SkillUp.lua")
+local SU = StockPiler.SkillUp
+local apoOn = true
+SU.ShouldApoBrew = function()
+    return apoOn == true
+end
+SU.CountApoContainers = function()
+    return 0
+end
+SU.ShouldApoBuyContainer = function()
+    return false
+end
+local stallPrints = 0
+StockPiler.Debug = StockPiler.Debug or {}
+StockPiler.Debug.Print = function()
+    stallPrints = stallPrints + 1
+end
+SU._apoStallLatch = nil
+SU.MaybeNotifyApoStall("wait_cult")
+eq(stallPrints, 1, "the first apo stall prints once")
+eq(SU._apoStallLatch ~= nil, true, "the apo stall latches")
+SU.MaybeNotifyApoStall("need_mats")
+eq(stallPrints, 1, "a later stall reason does not print again")
+apoOn = false
+SU.MaybeNotifyApoStall("need_mats")
+eq(SU._apoStallLatch, nil, "turning apo off clears the stall latch")
+eq(stallPrints, 1, "clearing the latch does not print")
+apoOn = true
+SU.MaybeNotifyApoStall("wait_cult")
+eq(stallPrints, 2, "a new stall episode prints once")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

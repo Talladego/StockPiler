@@ -85,7 +85,7 @@ local function BagCountUid(uid)
     return 0
 end
 
---- Crafting-bag destinations (vials, seeds, resin, …). Main-bag buys skip the gate.
+--- Crafting-bag destinations (vials, seeds, resin, ...). Main-bag buys skip the gate.
 local function ItemGoesToCraftBag(item, job)
     local craftingType = 34
     if GameData and GameData.ItemTypes and GameData.ItemTypes.CRAFTING ~= nil then
@@ -296,6 +296,12 @@ local function OpenLateCostBrass()
         budgetLate = budgetLate + pendingCost
     end
     return reserveLate, budgetLate
+end
+
+--- Open late-confirm brass that still counts against the Budget cap.
+local function OpenLateTotalBrass()
+    local _, budgetLate = OpenLateCostBrass()
+    return budgetLate or 0
 end
 
 --- Credit confirmed cost onto other open attempts whose wallet snapshot still
@@ -571,6 +577,15 @@ local function JobAcquireKey(job, item)
         return "sk:" .. tostring(job.specKey)
     end
     return nil
+end
+
+--- Visit credit key for a buy job. Pass the store row when the uid lives there.
+local function VisitJobKey(job, item)
+    return JobAcquireKey(job, item)
+end
+
+local function ReconcileVisitAcquiredWithBags()
+    SettleVisitAcquiredFromBags()
 end
 
 --- Brass -> compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
@@ -1099,7 +1114,7 @@ local function ChatVisitStop(reason)
         or Buy._visitStopReason == "budget"
         or Buy._visitStopReason == "craft_bag"
     then
-        local T = StockPiler.Util and StockPiler.Util.T
+        local T = (StockPiler.Util and StockPiler.Util.T) or StockPiler.T
         local msg = nil
         if Buy._visitStopReason == "reserve" then
             local gold = Buy.GetReserveGold and Buy.GetReserveGold() or 0
@@ -1108,7 +1123,12 @@ local function ChatVisitStop(reason)
                     .. towstring(tostring(gold)) .. L"g).")
         elseif Buy._visitStopReason == "budget" then
             local brassPerGold = Buy.BRASS_PER_GOLD or 10000
-            local spentGold = math.floor(spent / brassPerGold)
+            local totalSpent = math.max(
+                spent,
+                (tonumber(Buy.GetSpentBrass and Buy.GetSpentBrass()) or 0)
+                    + (tonumber(OpenLateTotalBrass and OpenLateTotalBrass()) or 0)
+            )
+            local spentGold = math.floor(totalSpent / brassPerGold)
             local cap = Buy.GetBudgetGold and Buy.GetBudgetGold() or 0
             msg = T and T("buy.blocked.budget", {
                 spent = tostring(spentGold),
@@ -1348,17 +1368,26 @@ function Buy.TryResumeCraftBagStop(via)
         return false
     end
     Buy.InvalidateJobsCache()
+    ReconcileVisitAcquiredWithBags()
     local jobs = Buy.CollectBuyJobs() or {}
     local hasRoom = false
     for i = 1, #jobs do
         local job = jobs[i]
         if type(job) == "table" and (tonumber(job.deficit) or 0) >= 1 then
             local item = Buy.FindStoreMatch and select(1, Buy.FindStoreMatch(job))
-            -- Unknown occupancy (nil) must not block resume; only hard zero room does.
-            local room = CraftBagRoomForBuy(job, item)
-            if room == nil or room >= 1 then
-                hasRoom = true
-                break
+            if type(item) == "table" then
+                local key = VisitJobKey(job, item)
+                local uid = tonumber(item.uniqueID) or tonumber(job.seedUid) or tonumber(job.uid) or 0
+                local lateQty = OpenLateQtyForUid(uid)
+                local remaining = (tonumber(job.deficit) or 0) - VisitAcquired(key) - lateQty
+                if remaining >= 1 then
+                    -- Unknown occupancy (nil) must not block resume; only hard zero room does.
+                    local room = CraftBagRoomForBuy(job, item)
+                    if room == nil or (room - VisitAcquired(key) - lateQty) >= 1 then
+                        hasRoom = true
+                        break
+                    end
+                end
             end
         end
     end

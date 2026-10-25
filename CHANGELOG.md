@@ -5,11 +5,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 ## 1.1.3
 
 - Shared recipes now prefer growable plants over butcher or vendor ingredients when known, and learning a shared recipe updates its ingredient list.
+- AutoBuy now respects craft bag space (keeping one slot free) and prints a chat notice when paused by Reserve, Budget, or a full craft bag.
 - Craft button and action bar macro now flash when a plant finishes growing.
-- AutoBuy prints a one-line chat notice when a vendor visit stops on Reserve or Budget (including when nothing was bought yet).
-- AutoBuy caps craft-bag buys to what fits (item stack capacity, vials default to 40) and keeps one free slot; remaining need waits until you free space.
-- Skill up Apo stall chat no longer spams when stall reasons flip (for example no vial vs waiting on Cult).
-- Upgrade Seeds fills leftover empty plots with lower seeds (for example L1) after planting a higher rung, instead of leaving plots idle.
 - Bug fixes.
 - Performance improvements.
 
