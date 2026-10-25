@@ -13,6 +13,7 @@
             <Dependency name="EA_ChatWindow" />
             <Dependency name="EASystem_Tooltips" />
             <Dependency name="EA_ActionBars" />
+            <Dependency name="EA_MoraleWindow" />
             <Dependency name="EA_CultivationWindow" />
             <Dependency name="EA_CraftingSystem" />
             <Dependency name="LibSlash" optional="true" />

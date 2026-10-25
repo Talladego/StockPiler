@@ -2,6 +2,7 @@
 -- Craft macro harvest countdown.
 -- Growing: stock Action...Cooldown wipe + Action...CooldownTimer text ("149s"),
 -- same centered timer slot abilities use (m_Windows[3]).
+-- Grow ready: stock OverlayFlash (m_Windows[4], EA_ActionBarAnim_Recharged).
 -- Ready plant / brew icons: Action...Count (m_Windows[7]), lower-right.
 -- Floating-button optional timer: /stp button timer (CraftButton).
 -- User wait (buy vials/mats, garden idle): 75% red tint on Craft macro + HUD
@@ -21,6 +22,7 @@ local STACK_COUNT_TEXT = 7
 -- ea_actionbars actionbutton.lua window indices
 local COOLDOWN = 2
 local COOLDOWN_TIMER = 3
+local FLASH_ANIM = 4
 local ACTION_BUTTON_BASE_ICON = 0
 -- Match floating CraftButton grow wipe (black @ 50%).
 local CD_TINT = { r = 0, g = 0, b = 0, a = 0.5 }
@@ -796,23 +798,48 @@ local function PaintCooldownTimer(button, remain)
     end
 end
 
-local function ClearGrowCooldownOnButton(button)
-    local cd = CooldownFrame(button)
-    if type(cd) ~= "table" then
-        PaintCooldownTimer(button, nil)
+--- Same one-shot flash ActionButton plays when an ability cooldown expires.
+local function PlayActionReadyFlash(button)
+    local flash = button and button.m_Windows and button.m_Windows[FLASH_ANIM]
+    if type(flash) ~= "table" then
         return
     end
-    local name = cd.GetName and cd:GetName() or nil
-    if name and name ~= "" then
+    if type(flash.StartAnimation) == "function" then
+        -- startFrame, looping, hideWhenComplete, delay (stock ActionButton path)
+        pcall(flash.StartAnimation, flash, 0, false, true, 0)
+        return
+    end
+    local name = flash.GetName and flash:GetName() or nil
+    if name == nil or name == "" or type(AnimatedImageStartAnimation) ~= "function" then
+        return
+    end
+    if type(WindowSetShowing) == "function" then
+        WindowSetShowing(name, true)
+    end
+    pcall(AnimatedImageStartAnimation, name, 0, false, true, 0)
+end
+
+--- Clear the grow wipe. playFlash: fire stock OverlayFlash if this slot had a pie.
+local function ClearGrowCooldownOnButton(button, playFlash)
+    local cd = CooldownFrame(button)
+    local name = nil
+    if type(cd) == "table" and cd.GetName then
+        name = cd:GetName()
+    end
+    local wasArmed = name ~= nil and name ~= "" and growCdArmed[name] == true
+    if name ~= nil and name ~= "" then
         growCdArmed[name] = nil
-        if type(CooldownDisplaySetCooldown) == "function" then
+        if type(cd) == "table" and type(CooldownDisplaySetCooldown) == "function" then
             pcall(CooldownDisplaySetCooldown, name, 0, 0)
         end
     end
-    if cd.Show then
+    if type(cd) == "table" and cd.Show then
         cd:Show(false)
     end
     PaintCooldownTimer(button, nil)
+    if playFlash == true and wasArmed then
+        PlayActionReadyFlash(button)
+    end
 end
 
 local function StyleGrowCooldown(cd, button)
@@ -836,7 +863,8 @@ end
 local function UpdateGrowCooldown(button, remain)
     remain = tonumber(remain)
     if remain == nil or remain <= 0 then
-        ClearGrowCooldownOnButton(button)
+        -- Flash when this craft slot's grow pie ends (same cue as ability ready).
+        ClearGrowCooldownOnButton(button, true)
         return
     end
     local cd = CooldownFrame(button)
@@ -952,7 +980,7 @@ function Timer.Paint(button)
         if LabelName(label, button) ~= nil and fitted[LabelName(label, button)] == true then
             RestoreLabel(label, button)
         end
-        ClearGrowCooldownOnButton(button)
+        ClearGrowCooldownOnButton(button, false)
         return
     end
     local overlayText = nil
@@ -977,10 +1005,11 @@ function Timer.Paint(button)
     end
     UpdateGrowCooldown(button, growSeconds)
     if growSeconds == nil and Timer._cdArmed == true then
+        -- Leave growCdArmed names for sibling craft slots still clearing this
+        -- pass so each can play the stock ready flash. Per-slot clear owns it.
         Timer._cdMax = 0
         Timer._cdRemain = nil
         Timer._cdArmed = false
-        growCdArmed = {}
     end
     -- User block: 75% red tint on enabled icon (harvest or brew latch). Re-apply
     -- each paint so stock UpdateEnabledState cannot leave grey/white on top.
@@ -1205,6 +1234,6 @@ function Timer.Shutdown()
         if label and fitted[LabelName(label, button) or ""] == true then
             RestoreLabel(label, button)
         end
-        ClearGrowCooldownOnButton(button)
+        ClearGrowCooldownOnButton(button, false)
     end)
 end
