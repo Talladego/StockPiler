@@ -664,7 +664,19 @@ function StockPiler.OnSlash(input)
     Print(T("boot.unknown_cmd"))
 end
 
+local function ClearBootBusTokens()
+    local Bus = StockPiler.EventBus
+    local tokens = StockPiler._bootBusTokens
+    if Bus and Bus.Unsubscribe and type(tokens) == "table" then
+        for i = 1, #tokens do
+            Bus.Unsubscribe(tokens[i])
+        end
+    end
+    StockPiler._bootBusTokens = nil
+end
+
 function StockPiler.Initialize()
+    ClearBootBusTokens()
     StockPiler.Persistence.EnsureSettings()
     if StockPiler.Perf and StockPiler.Perf.SetEnabled then
         StockPiler.Perf.SetEnabled(false)
@@ -783,9 +795,13 @@ function StockPiler.Initialize()
     if Bus and Bus.Subscribe and E and E.VENDOR_UPDATED
         and StockPiler.Buy and StockPiler.Buy.OnStoreUpdated
     then
-        Bus.Subscribe(E.VENDOR_UPDATED, function(payload)
+        local token = Bus.Subscribe(E.VENDOR_UPDATED, function(payload)
             StockPiler.Buy.OnStoreUpdated(type(payload) == "table" and payload or { refreshLists = true })
         end)
+        if token then
+            StockPiler._bootBusTokens = StockPiler._bootBusTokens or {}
+            StockPiler._bootBusTokens[#StockPiler._bootBusTokens + 1] = token
+        end
     end
     if StockPiler.Brew and StockPiler.Brew.RegisterEventHandlers then
         StockPiler.Brew.RegisterEventHandlers()
@@ -826,6 +842,7 @@ function StockPiler.Initialize()
 end
 
 function StockPiler.Shutdown()
+    ClearBootBusTokens()
     if StockPiler.RecipeTooltip and StockPiler.RecipeTooltip.Shutdown then
         StockPiler.RecipeTooltip.Shutdown()
     end

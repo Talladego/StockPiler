@@ -94,6 +94,8 @@ end
 
 local _reporting = false
 local _seenErr = {}
+local _seenErrCount = 0
+local SEEN_ERR_CAP = 200
 local _chatErrOnce = false
 function D.ReportProtectedCallFailure(context, err, quiet)
     if _reporting == true then
@@ -104,7 +106,12 @@ function D.ReportProtectedCallFailure(context, err, quiet)
     local key = msg
     local first = _seenErr[key] ~= true
     if first then
+        if _seenErrCount >= SEEN_ERR_CAP then
+            _seenErr = {}
+            _seenErrCount = 0
+        end
         _seenErr[key] = true
+        _seenErrCount = _seenErrCount + 1
     end
     pcall(function()
         if quiet == true then

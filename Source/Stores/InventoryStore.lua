@@ -428,6 +428,9 @@ function Inv.GetSample(uid)
     if type(sample) == "table" then
         return sample
     end
+    if Inv._ready == true and (tonumber(Inv._countByUid[uid]) or 0) <= 0 then
+        return nil
+    end
     if type(Inv._itemBySlot) == "table" then
         for _, slots in pairs(Inv._itemBySlot) do
             if type(slots) == "table" then

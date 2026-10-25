@@ -1479,6 +1479,7 @@ function Refine.IssueOne(intent, opId)
             tostring(intent.plantUid or 0),
             tostring(intent.slot or 0)
         ))
+        Refine.InvalidateIntentCache()
         return done(false)
     end
     local plantUid = tonumber(intent.plantUid) or tonumber(item.uniqueID) or 0

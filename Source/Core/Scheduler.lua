@@ -408,15 +408,7 @@ local function AutoTickIntervalSec()
     end
     local Watch = StockPiler.Watch
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true then
-        -- Fast ticks win over the fill-block idle interval. Checking fill
-        -- first forced 5s ticks while empty plots were still waiting (CORE-11).
-        if Sch._autoGrowFast == true then
-            return Sch.AUTO_TICK_SEC
-        end
-        local Orch = StockPiler.Orchestrator
-        if Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true then
-            return Sch.AUTO_TICK_IDLE_SEC
-        end
+        -- Fast ticks already returned above. AutoGrow otherwise uses the idle interval.
         return Sch.AUTO_TICK_IDLE_SEC
     end
     return Sch.AUTO_TICK_SEC

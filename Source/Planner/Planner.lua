@@ -611,7 +611,7 @@ local function WarmSpecHaveCacheForWatches()
     return WarmSpecHaveCache(CollectWatchedHaveSpecs())
 end
 
---- Frame-slice WarmHave: frame 1 collects + CountByUid; frame 2 bag-passes pending.
+--- Frame-slice WarmHave: frame 1 builds the pending list; frame 2 bag-passes it.
 local function BeginWarmHaveSlice()
     Planner._warmHaveSlice = nil
     if HoldHaveCacheQuiet() then

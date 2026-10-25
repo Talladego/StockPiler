@@ -203,10 +203,6 @@ function Know.Potions()
     return Know.GetTable("potions")
 end
 
-function Know.Additives()
-    return Know.GetTable("additives")
-end
-
 --- Session-only vendor sightings. Persisting served no purpose: AutoBuy matches
 --- the open store; Items.StoreItem already seeds Account.items for fingerprints.
 function Know.VendorItems()

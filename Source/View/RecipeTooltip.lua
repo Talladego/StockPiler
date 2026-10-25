@@ -558,11 +558,11 @@ local function SortMatchList(list, exemplarUid, role)
     end)
 end
 
---- Cache key: knowledge + bag snap + recipe fingerprint (bag butcher twins).
-local _matchCacheKey = nil
-local _matchCacheBySlot = nil
+--- Match cache: one map per knowledge+bag generation, keyed by recipe fingerprint.
+local _matchCacheGen = nil
+local _matchCacheByFp = {}
 
-local function KnownMatchesCacheKey(materials)
+local function MatchCacheGen()
     local knowGen = 0
     if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
         knowGen = tonumber(StockPiler.Knowledge.GetGen()) or 0
@@ -571,12 +571,15 @@ local function KnownMatchesCacheKey(materials)
     if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
         snapGen = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
     end
-    local fp = ""
+    return tostring(knowGen) .. "|" .. tostring(snapGen)
+end
+
+local function MatchCacheFp(materials)
     local RS = StockPiler.RecipeSpec
     if RS and RS.RecipeSpecKey then
-        fp = tostring(RS.RecipeSpecKey(materials) or "")
+        return tostring(RS.RecipeSpecKey(materials) or "")
     end
-    return tostring(knowGen) .. "|" .. tostring(snapGen) .. "|" .. fp
+    return ""
 end
 
 local function SampleHasCraftingBonus(sample)
@@ -656,9 +659,14 @@ local function CollectKnownMatchesBySlot(materials)
     if type(materials) ~= "table" then
         return bySlot
     end
-    local cacheKey = KnownMatchesCacheKey(materials)
-    if cacheKey ~= "" and cacheKey == _matchCacheKey and type(_matchCacheBySlot) == "table" then
-        return _matchCacheBySlot
+    local gen = MatchCacheGen()
+    if gen ~= _matchCacheGen then
+        _matchCacheGen = gen
+        _matchCacheByFp = {}
+    end
+    local fp = MatchCacheFp(materials)
+    if fp ~= "" and type(_matchCacheByFp[fp]) == "table" then
+        return _matchCacheByFp[fp]
     end
 
     local infos = {}
@@ -745,12 +753,8 @@ local function CollectKnownMatchesBySlot(materials)
             break
         end
     end
-    if cacheable then
-        _matchCacheKey = cacheKey
-        _matchCacheBySlot = bySlot
-    else
-        _matchCacheKey = nil
-        _matchCacheBySlot = nil
+    if cacheable and fp ~= "" then
+        _matchCacheByFp[fp] = bySlot
     end
     return bySlot
 end

@@ -498,6 +498,20 @@ local function StampIncompleteMainEffect(recipe)
     if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
         return
     end
+    local needsStamp = false
+    for i = 1, #recipe.slots do
+        local slot = recipe.slots[i]
+        local spec = ResolveSlotSpec(slot)
+        if type(spec) == "table" and tostring(spec.role or (slot and slot.role) or "") == "main" then
+            if spec.incomplete == true or (tonumber(spec.effectId) or 0) <= 0 then
+                needsStamp = true
+                break
+            end
+        end
+    end
+    if needsStamp ~= true then
+        return
+    end
     local MS = StockPiler.MaterialSpec
     local B = MS and MS.CraftBonusRefs and MS.CraftBonusRefs()
     local effectRef = (B and B.EFFECT) or 6
@@ -3112,9 +3126,10 @@ function RS.ImportSharedRecipe(uid, slots, meta)
         if (tonumber(row.activeOutcomeUid) or 0) <= 0 then
             row.activeOutcomeUid = uid
         end
-        if row.sharedImport == true or row.unverified == true
-            or (tonumber(row.brewAttempts) or 0) <= 0
-        then
+        if (tonumber(row.brewSuccesses) or 0) > 0 then
+            row.sharedImport = nil
+            row.unverified = nil
+        elseif (tonumber(row.brewSuccesses) or 0) <= 0 and (tonumber(row.brewAttempts) or 0) <= 0 then
             row.sharedImport = true
             row.unverified = true
         end

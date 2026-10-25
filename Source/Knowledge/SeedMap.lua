@@ -1491,7 +1491,7 @@ local function SpecLooksButchering(spec)
     return false
 end
 
---- Goldweed-class stabilizer fingerprint: MULTIPLIER bonus present (SP2 SpecHasGoldweedMultiplier).
+--- Goldweed-class stabilizer fingerprint: MULTIPLIER bonus present.
 function SM.SpecHasGoldweedMultiplier(spec)
     if type(spec) ~= "table" or type(spec.bonuses) ~= "table" then
         return false
@@ -1685,69 +1685,64 @@ local function SearchGrowProducerUid(spec)
             return
         end
         if MS.ProductMatches(itemData, spec) == true then
-            bestUid = considerUid
+            if bestUid <= 0 or considerUid < bestUid then
+                bestUid = considerUid
+            end
         end
     end
 
-    -- 1) Live bags
+    -- 1) Live bags. Scan the whole tier so the lowest matching uid wins.
     local Inv = StockPiler.Inventory
     if Inv and Inv.ForEachItem then
         Inv.ForEachItem(function(item)
-            if type(item) == "table" and bestUid <= 0 then
+            if type(item) == "table" then
                 considerItem(item, item.uniqueID or item.uniqueId or item.uid)
             end
         end)
     end
+    if bestUid > 0 then
+        return bestUid
+    end
 
     -- 2) Learned Items store
-    if bestUid <= 0 then
-        local items = nil
-        if StockPiler.Account and type(StockPiler.Account.items) == "table" then
-            items = StockPiler.Account.items
-        elseif StockPiler.Knowledge and StockPiler.Knowledge.Items then
-            items = StockPiler.Knowledge.Items()
-        end
-        if type(items) == "table" then
-            for uidKey, row in pairs(items) do
-                if bestUid > 0 then
-                    break
-                end
-                if type(row) == "table" then
-                    local kind = tostring(row.kind or "")
-                    if kind ~= "seed" and kind ~= "spore" and kind ~= "resin" then
-                        local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
-                        local asItem = nil
-                        if StockPiler.Items and StockPiler.Items.AsItemData then
-                            asItem = StockPiler.Items.AsItemData(rowUid)
-                        end
-                        considerItem(asItem or row, rowUid)
+    local items = nil
+    if StockPiler.Account and type(StockPiler.Account.items) == "table" then
+        items = StockPiler.Account.items
+    elseif StockPiler.Knowledge and StockPiler.Knowledge.Items then
+        items = StockPiler.Knowledge.Items()
+    end
+    if type(items) == "table" then
+        for uidKey, row in pairs(items) do
+            if type(row) == "table" then
+                local kind = tostring(row.kind or "")
+                if kind ~= "seed" and kind ~= "spore" and kind ~= "resin" then
+                    local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+                    local asItem = nil
+                    if StockPiler.Items and StockPiler.Items.AsItemData then
+                        asItem = StockPiler.Items.AsItemData(rowUid)
                     end
+                    considerItem(asItem or row, rowUid)
                 end
             end
         end
     end
+    if bestUid > 0 then
+        return bestUid
+    end
 
     -- 3) Grows product tables
-    if bestUid <= 0 then
-        local grows = GrowsTable()
-        if type(grows) == "table" then
-            for _, bucket in pairs(grows) do
-                if bestUid > 0 then
-                    break
-                end
-                if type(bucket) == "table" and type(bucket.products) == "table" then
-                    for plantKey, _ in pairs(bucket.products) do
-                        if bestUid > 0 then
-                            break
-                        end
-                        local plantUid = tonumber(plantKey) or 0
-                        if plantUid > 0 then
-                            local sample = BagSample(plantUid)
-                            if type(sample) == "table" then
-                                considerItem(sample, plantUid)
-                            elseif StockPiler.Items and StockPiler.Items.AsItemData then
-                                considerItem(StockPiler.Items.AsItemData(plantUid), plantUid)
-                            end
+    local grows = GrowsTable()
+    if type(grows) == "table" then
+        for _, bucket in pairs(grows) do
+            if type(bucket) == "table" and type(bucket.products) == "table" then
+                for plantKey, _ in pairs(bucket.products) do
+                    local plantUid = tonumber(plantKey) or 0
+                    if plantUid > 0 then
+                        local sample = BagSample(plantUid)
+                        if type(sample) == "table" then
+                            considerItem(sample, plantUid)
+                        elseif StockPiler.Items and StockPiler.Items.AsItemData then
+                            considerItem(StockPiler.Items.AsItemData(plantUid), plantUid)
                         end
                     end
                 end
