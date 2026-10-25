@@ -173,6 +173,18 @@ local function ResolveSlotSpec(slot)
     if type(slot.spec) == "table" then
         uid = uid > 0 and uid or (tonumber(slot.spec.uid) or tonumber(slot.spec.uniqueID) or 0)
     end
+    -- Complete authored specs (chat-link / saved recipes) keep their bonuses so
+    -- RecipeSpecKey stays stable after StoreSharedSlotItems. Incomplete stubs
+    -- still prefer live Items.ToSpec below.
+    if type(slot.spec) == "table"
+        and slot.spec.incomplete ~= true
+        and SpecShowsBonus(slot.spec)
+    then
+        if slot.role then
+            slot.spec.role = slot.role
+        end
+        return slot.spec
+    end
     -- Prefer live Items.ToSpec so incomplete/zero brew-learn stubs get real bonuses.
     if uid > 0 and StockPiler.Items and StockPiler.Items.ToSpec then
         local live = StockPiler.Items.ToSpec(uid)
@@ -2934,6 +2946,60 @@ local function RecipeCanDominate(recipe)
     return true
 end
 
+--- Persist link slot exemplars into Account.items so tip/grow bind the shared
+--- uids (Bitter Grumpleaf) instead of the first ProductMatches twin in bags.
+local function StoreSharedSlotItems(slots)
+    if type(slots) ~= "table" or not (StockPiler.Items and StockPiler.Items.StoreItem) then
+        return
+    end
+    local craftType = 34
+    if GameData and GameData.ItemTypes and GameData.ItemTypes.CRAFTING then
+        craftType = GameData.ItemTypes.CRAFTING
+    end
+    for i = 1, #slots do
+        local slot = slots[i]
+        if type(slot) == "table" then
+            local uid = tonumber(slot.uid) or tonumber(slot.boundUid) or 0
+            local spec = type(slot.spec) == "table" and slot.spec or nil
+            if uid <= 0 and type(spec) == "table" then
+                uid = tonumber(spec.uid) or tonumber(spec.boundUid) or 0
+            end
+            if uid > 0 then
+                local craftingBonus = {}
+                local bonuses = type(spec) == "table" and spec.bonuses or nil
+                if type(bonuses) == "table" then
+                    for ref, val in pairs(bonuses) do
+                        local nref = tonumber(ref) or 0
+                        if nref > 0 then
+                            craftingBonus[#craftingBonus + 1] = {
+                                bonusReference = nref,
+                                bonusValue = tonumber(val) or 0,
+                            }
+                        end
+                    end
+                end
+                local payload = {
+                    uniqueID = uid,
+                    name = slot.name or (spec and spec.name) or nil,
+                    iconNum = tonumber(slot.iconNum) or (spec and tonumber(spec.iconNum)) or 0,
+                    type = craftType,
+                    itemType = craftType,
+                    tradeSkill = spec and tonumber(spec.tradeSkill) or 0,
+                    craftingSkillRequirement = spec and tonumber(spec.skillLevel) or 0,
+                    skillLevel = spec and tonumber(spec.skillLevel) or 0,
+                    cultivationType = spec and tonumber(spec.cultivationType) or 0,
+                    slotType = spec and tonumber(spec.slotType) or 0,
+                    craftingBonus = craftingBonus,
+                }
+                if spec and tonumber(spec.effectId) and tonumber(spec.effectId) > 0 then
+                    payload.effectId = tonumber(spec.effectId)
+                end
+                pcall(StockPiler.Items.StoreItem, payload, "mat")
+            end
+        end
+    end
+end
+
 --- Drop dangling / dominated alternate fingerprints on potions.
 --- Removes keys missing from recipes, and role-subset keys of a richer sibling.
 --- Never drop fingerprints still referenced by any character's watch.
@@ -2944,6 +3010,8 @@ function RS.ImportSharedRecipe(uid, slots, meta)
     if uid <= 0 or type(slots) ~= "table" or #slots < 1 or not RS.RecipeSpecKey then
         return "failed"
     end
+    -- Fingerprint from the link slots before writing Account.items. Storing mats
+    -- first would let ResolveSlotSpec rewrite the key via Items.ToSpec.
     local rk = tostring(RS.RecipeSpecKey(slots) or "")
     if rk == "" then
         return "failed"
@@ -2953,7 +3021,8 @@ function RS.ImportSharedRecipe(uid, slots, meta)
     if type(recipes) ~= "table" then
         return "failed"
     end
-    if type(recipes[rk]) ~= "table" then
+    local row = recipes[rk]
+    if type(row) ~= "table" then
         recipes[rk] = {
             recipeSpecKey = rk,
             slots = slots,
@@ -2972,11 +3041,30 @@ function RS.ImportSharedRecipe(uid, slots, meta)
             sharedImport = true,
             unverified = true,
         }
-        if RS.SlimRecipeForStorage then
-            pcall(RS.SlimRecipeForStorage, recipes[rk])
+        row = recipes[rk]
+    else
+        -- Same fingerprint: always refresh exemplars from the link (uids/names).
+        -- Old code skipped this when the row existed, so a prior twin recipe kept
+        -- wrong mains (e.g. Spumepetal) under Willpower / Discipline imports.
+        row.slots = slots
+        if (tonumber(row.outputUid) or 0) <= 0 then
+            row.outputUid = uid
+        end
+        if (tonumber(row.activeOutcomeUid) or 0) <= 0 then
+            row.activeOutcomeUid = uid
+        end
+        if row.sharedImport == true or row.unverified == true
+            or (tonumber(row.brewAttempts) or 0) <= 0
+        then
+            row.sharedImport = true
+            row.unverified = true
         end
     end
-    if RS.RegisterKnownPotion then
+    if RS.SlimRecipeForStorage then
+        pcall(RS.SlimRecipeForStorage, row)
+    end
+    StoreSharedSlotItems(row.slots or slots)
+    if meta.skipRegister ~= true and RS.RegisterKnownPotion then
         local out = meta.out
         if type(out) ~= "table" then
             out = { uniqueID = uid }

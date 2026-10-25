@@ -334,7 +334,8 @@ for i = 1, #(learned.slots or {}) do
         learnedMain = learned.slots[i]
     end
 end
-check(StockPiler.Account.items[1001] == nil and StockPiler.Account.items["1001"] == nil, "the ingredient is not in Account.items")
+local storedMat = StockPiler.Account.items[1001] or StockPiler.Account.items["1001"]
+check(type(storedMat) == "table", "learn stores ingredient exemplars in Account.items")
 check(type(learnedMain) == "table" and string.find(tostring(learnedMain.name), "Herb", 1, true) ~= nil, "a learned slot keeps the carried name")
 eq(tonumber(learnedMain and learnedMain.iconNum), 5001, "a learned slot keeps the carried icon")
 local reshare = RL.SerializePlain({
@@ -357,7 +358,7 @@ local hoverText = ""
 for i = 1, #hoverRows do
     hoverText = hoverText .. tostring(hoverRows[i].text)
 end
-check(string.find(hoverText, "Herb", 1, true) ~= nil, "hover shows a learned ingredient that is not in Account.items")
+check(string.find(hoverText, "Herb", 1, true) ~= nil, "hover shows the learned ingredient name")
 
 learned.brewSuccesses = 4
 learned.outcomes = { ["9001"] = { samples = 3 } }

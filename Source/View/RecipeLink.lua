@@ -1431,9 +1431,6 @@ function RL.ImportKnownPotion(fields)
     if rk == "" then
         return "failed"
     end
-    if RL.RecipeIsKnown({ uid = uid, slots = slots }) then
-        return "known"
-    end
 
     local out = { uniqueID = uid }
     if fields.name ~= nil and ToNarrow(fields.name) ~= "" then
@@ -1467,13 +1464,20 @@ function RL.ImportKnownPotion(fields)
     if quality == "failed" then
         quality = "good"
     end
+    -- Refresh link exemplars even when already known (old imports skipped slot
+    -- updates when the fingerprint row already existed).
+    local alreadyKnown = RL.RecipeIsKnown({ uid = uid, slots = slots }) == true
     if RS.ImportSharedRecipe then
-        local imported = RS.ImportSharedRecipe(uid, slots, { out = out, quality = quality })
+        local imported = RS.ImportSharedRecipe(uid, slots, {
+            out = out,
+            quality = quality,
+            skipRegister = alreadyKnown,
+        })
         if imported ~= "imported" then
             return imported == "known" and "known" or "failed"
         end
         AfterPotionImport()
-        return "imported"
+        return alreadyKnown and "known" or "imported"
     end
 
     local Know = StockPiler.Knowledge
@@ -1500,13 +1504,17 @@ function RL.ImportKnownPotion(fields)
             sharedImport = true,
             unverified = true,
         }
-        if RS.SlimRecipeForStorage then
-            pcall(RS.SlimRecipeForStorage, recipes[rk])
-        end
+    else
+        recipes[rk].slots = slots
     end
-    RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
+    if RS.SlimRecipeForStorage then
+        pcall(RS.SlimRecipeForStorage, recipes[rk])
+    end
+    if alreadyKnown ~= true then
+        RS.RegisterKnownPotion(uid, out, rk, quality, { linkImport = true })
+    end
     AfterPotionImport()
-    return "imported"
+    return alreadyKnown and "known" or "imported"
 end
 
 --- Import a chat link or pasted recipe into Known Potions (no watch).
