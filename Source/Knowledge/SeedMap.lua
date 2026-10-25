@@ -1660,37 +1660,13 @@ function SM.IsGrowableSpec(spec)
     return growable
 end
 
---- Resolve plant uid for fingerprint specs (no bound uid) via ProductMatches.
-function SM.FindPlantUidForSpec(spec)
-    if type(spec) ~= "table" then
-        return 0
-    end
-    -- Resin / byproduct mats are never cultivable plants (even with bound uid).
-    if SM.IsHarvestByproduct(spec) then
-        return 0
-    end
-    -- Apo containers (vials/flasks) bind a uid but are never plants to refine/grow.
-    if tostring(spec.role or "") == "container" then
-        return 0
-    end
-    local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
-    if uid > 0 then
-        return uid
-    end
+--- Scan bags / Account.items / grows for a cultivable ProductMatches twin.
+--- Skips butcher/vendor names (LooksButcher) unless goldweed/gobswort.
+local function SearchGrowProducerUid(spec)
     local MS = StockPiler.MaterialSpec
-    if not (MS and MS.ProductMatches) then
+    if type(spec) ~= "table" or not (MS and MS.ProductMatches) then
         return 0
     end
-    local cacheKey = SpecProductCacheKey(spec)
-    local gen = PlantUidCacheGen()
-    if SM._plantUidCacheSnap ~= gen then
-        SM._plantUidCache = {}
-        SM._plantUidCacheSnap = gen
-    end
-    if cacheKey ~= "" and SM._plantUidCache[cacheKey] ~= nil then
-        return tonumber(SM._plantUidCache[cacheKey]) or 0
-    end
-
     local bestUid = 0
     local function considerItem(itemData, considerUid)
         considerUid = tonumber(considerUid) or 0
@@ -1768,8 +1744,76 @@ function SM.FindPlantUidForSpec(spec)
         end
     end
 
+    return bestUid
+end
+
+--- Resolve plant uid for fingerprint specs (no bound uid) via ProductMatches.
+function SM.FindPlantUidForSpec(spec)
+    if type(spec) ~= "table" then
+        return 0
+    end
+    -- Resin / byproduct mats are never cultivable plants (even with bound uid).
+    if SM.IsHarvestByproduct(spec) then
+        return 0
+    end
+    -- Apo containers (vials/flasks) bind a uid but are never plants to refine/grow.
+    if tostring(spec.role or "") == "container" then
+        return 0
+    end
+    local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
+    if uid > 0 then
+        return uid
+    end
+    local cacheKey = SpecProductCacheKey(spec)
+    local gen = PlantUidCacheGen()
+    if SM._plantUidCacheSnap ~= gen then
+        SM._plantUidCache = {}
+        SM._plantUidCacheSnap = gen
+    end
+    if cacheKey ~= "" and SM._plantUidCache[cacheKey] ~= nil then
+        return tonumber(SM._plantUidCache[cacheKey]) or 0
+    end
+
+    local bestUid = SearchGrowProducerUid(spec)
     if cacheKey ~= "" then
         SM._plantUidCache[cacheKey] = bestUid
+    end
+    return bestUid
+end
+
+--- Prefer a cultivable plant twin over butcher/vendor ProductMatches twins.
+--- Returns the current uid when it is already growable, a known plant twin when
+--- one exists, or 0 when butcher/vendor is the only option (caller keeps it).
+function SM.FindGrowableTwinUid(spec)
+    if type(spec) ~= "table" then
+        return 0
+    end
+    if SM.IsHarvestByproduct(spec) then
+        return 0
+    end
+    if tostring(spec.role or "") == "container" then
+        return 0
+    end
+    local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
+    if uid > 0 and SM.IsGrowableSpec(spec) == true then
+        return uid
+    end
+
+    local cacheKey = SpecProductCacheKey(spec)
+    local gen = PlantUidCacheGen()
+    if SM._growTwinCacheSnap ~= gen then
+        SM._growTwinCache = {}
+        SM._growTwinCacheSnap = gen
+    end
+    local twinKey = cacheKey ~= "" and ("g:" .. cacheKey) or ""
+    if twinKey ~= "" and SM._growTwinCache[twinKey] ~= nil then
+        return tonumber(SM._growTwinCache[twinKey]) or 0
+    end
+
+    local bestUid = SearchGrowProducerUid(spec)
+    -- Bound butcher uid must not win: SearchGrowProducerUid already skips LooksButcher.
+    if twinKey ~= "" then
+        SM._growTwinCache[twinKey] = bestUid
     end
     return bestUid
 end

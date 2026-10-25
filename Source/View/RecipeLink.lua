@@ -1201,6 +1201,12 @@ local function PlainForShare(fields)
         Print(T("link.share_need_both"))
         return nil
     end
+    -- Prefer cultivable twins in the payload when known; butcher/vendor only if alone.
+    local Spec = StockPiler.RecipeSpec
+    if Spec and Spec.PreferGrowableSlotExemplars then
+        Spec.PreferGrowableSlotExemplars(slots)
+        fields.slots = slots
+    end
     local plain = RL.SerializePlain(fields)
     if plain == nil or string.find(plain, "slots=", 1, true) == nil then
         Print(T("link.share_no_slots"))

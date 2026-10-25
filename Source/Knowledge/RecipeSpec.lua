@@ -2946,6 +2946,62 @@ local function RecipeCanDominate(recipe)
     return true
 end
 
+--- Rewrite slot exemplars to a cultivable twin when one is known.
+--- Fingerprint stays the same (uid-agnostic). Butcher/vendor kept when alone.
+function RS.PreferGrowableSlotExemplars(slots)
+    if type(slots) ~= "table" then
+        return slots
+    end
+    local SM = StockPiler.SeedMap
+    if not (SM and SM.FindGrowableTwinUid) then
+        return slots
+    end
+    for i = 1, #slots do
+        local slot = slots[i]
+        if type(slot) == "table" then
+            local spec = type(slot.spec) == "table" and slot.spec or slot
+            if type(spec) == "table" then
+                local role = tostring(slot.role or spec.role or "")
+                if role ~= "" and (spec.role == nil or spec.role == "" or spec.role == "ingredient") then
+                    spec.role = role
+                end
+                local plantUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+                local curUid = tonumber(slot.uid) or tonumber(spec.uid) or tonumber(spec.boundUid) or 0
+                if plantUid > 0 and plantUid ~= curUid then
+                    slot.uid = plantUid
+                    if type(slot.spec) == "table" then
+                        slot.spec.uid = plantUid
+                        slot.spec.boundUid = nil
+                    end
+                    local known = nil
+                    if StockPiler.Items and StockPiler.Items.AsItemData then
+                        known = StockPiler.Items.AsItemData(plantUid)
+                    end
+                    if type(known) ~= "table" and StockPiler.Items and StockPiler.Items.GetByUid then
+                        known = StockPiler.Items.GetByUid(plantUid)
+                    end
+                    if type(known) == "table" then
+                        if known.name ~= nil then
+                            slot.name = known.name
+                            if type(slot.spec) == "table" then
+                                slot.spec.name = known.name
+                            end
+                        end
+                        local icon = tonumber(known.iconNum) or 0
+                        if icon > 0 then
+                            slot.iconNum = icon
+                            if type(slot.spec) == "table" then
+                                slot.spec.iconNum = icon
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return slots
+end
+
 --- Persist link slot exemplars into Account.items so tip/grow bind the shared
 --- uids (Bitter Grumpleaf) instead of the first ProductMatches twin in bags.
 local function StoreSharedSlotItems(slots)
@@ -3016,6 +3072,9 @@ function RS.ImportSharedRecipe(uid, slots, meta)
     if rk == "" then
         return "failed"
     end
+    -- Prefer cultivable twins for display/grow (Majestic Goldweed over Zoic Gore).
+    -- RecipeSpecKey is uid-agnostic, so this does not change rk.
+    RS.PreferGrowableSlotExemplars(slots)
     local Know = StockPiler.Knowledge
     local recipes = Know and Know.Recipes and Know.Recipes() or nil
     if type(recipes) ~= "table" then

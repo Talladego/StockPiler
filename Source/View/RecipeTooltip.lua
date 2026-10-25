@@ -494,9 +494,51 @@ local function ItemMatchesSpec(itemData, spec)
     return false
 end
 
-local function SortMatchList(list, exemplarUid)
+local function MatchIsGrowable(itemData, role)
+    local SM = StockPiler.SeedMap
+    if type(itemData) ~= "table" or not (SM and SM.IsGrowableSpec) then
+        return false
+    end
+    local uid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+    local probe = itemData
+    if uid > 0 and StockPiler.Items and StockPiler.Items.ToSpec then
+        local live = StockPiler.Items.ToSpec(uid)
+        if type(live) == "table" then
+            probe = live
+        end
+    end
+    if type(probe) ~= "table" then
+        return false
+    end
+    if (probe.role == nil or probe.role == "" or probe.role == "ingredient")
+        and role ~= nil and role ~= ""
+    then
+        probe = {
+            uid = uid > 0 and uid or tonumber(probe.uid) or 0,
+            uniqueID = uid,
+            name = probe.name or itemData.name,
+            role = role,
+            bonuses = probe.bonuses,
+            cultivationType = probe.cultivationType,
+            slotType = probe.slotType,
+            tradeSkill = probe.tradeSkill,
+            skillLevel = probe.skillLevel,
+            isRefinable = probe.isRefinable,
+        }
+    end
+    return SM.IsGrowableSpec(probe) == true
+end
+
+--- Growable twins first (Majestic Goldweed over Zoic Gore); exemplar as tiebreak.
+local function SortMatchList(list, exemplarUid, role)
     exemplarUid = tonumber(exemplarUid) or 0
+    role = tostring(role or "")
     table.sort(list, function(a, b)
+        local ag = MatchIsGrowable(a, role)
+        local bg = MatchIsGrowable(b, role)
+        if ag ~= bg then
+            return ag
+        end
         local au = tonumber(a and a.uniqueID) or 0
         local bu = tonumber(b and b.uniqueID) or 0
         if exemplarUid > 0 then
@@ -681,7 +723,9 @@ local function CollectKnownMatchesBySlot(materials)
     end
 
     for i = 1, #infos do
-        SortMatchList(infos[i].matches, infos[i].exemplarUid)
+        local info = infos[i]
+        local role = tostring((info.slot and info.slot.role) or (info.spec and info.spec.role) or "")
+        SortMatchList(info.matches, info.exemplarUid, role)
     end
     -- A first hover can run before CraftItemInfo arrives. Do not keep that
     -- empty slot, or the next hover would paint the same blank stabilizer.

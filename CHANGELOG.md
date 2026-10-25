@@ -12,6 +12,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Shared recipe Learn refreshes ingredient exemplars on an existing fingerprint and stores those mats for tip and grow.
 - Potions-tab recipe hover uses the live recipe slots again when a shared Learn filled them after the list row was built (Watch status tip already looked correct).
 - Recipe tips no longer blank after Learn when ingredient names are plain strings from shared storage.
+- Shared recipes prefer a cultivable twin (for example Majestic Goldweed) over butcher or vendor equivalents when one is known; cold receivers still get the plant name from the link.
 - Bug fixes.
 - Performance improvements.
 
