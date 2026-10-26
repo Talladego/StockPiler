@@ -6,6 +6,21 @@ StockPiler = StockPiler or {}
 StockPiler.Additives = StockPiler.Additives or {}
 local AD = StockPiler.Additives
 
+--- GetCraftingItems clears the normal backpack dirty flag. Put a pending
+--- flag back, including when the call errors or returns nil. Never clear a
+--- flag that the call itself raised.
+local function RestorePendingItemsDirty(hadItemsDirty)
+    if hadItemsDirty ~= true then
+        return
+    end
+    if type(_G.GameData) ~= "table" or type(_G.GameData.Player) ~= "table" then
+        return
+    end
+    if _G.GameData.Player.itemsDirty ~= true then
+        _G.GameData.Player.itemsDirty = true
+    end
+end
+
 local function CultTypes()
     if GameData and GameData.CultivationTypes then
         return GameData.CultivationTypes
@@ -198,7 +213,10 @@ function AD.FindBestInCraftBag(cultType, opts)
         bag = Inv._itemBySlot.craft
     end
     if type(bag) ~= "table" and DataUtils and DataUtils.GetCraftingItems then
+        local player = _G.GameData and _G.GameData.Player
+        local hadItemsDirty = type(player) == "table" and player.itemsDirty == true
         local ok, items = pcall(DataUtils.GetCraftingItems)
+        RestorePendingItemsDirty(hadItemsDirty)
         if ok then
             bag = items
         end

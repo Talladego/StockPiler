@@ -21,6 +21,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - A material you can grow is not treated as something you must buy when the recipe names a butcher ingredient. Brew still uses that butcher ingredient first when it is in your bags.
 - A recipe tip shows a repeated ingredient once, with a count, instead of repeating the whole section.
 - AutoGrow keeps planting when watches show Shared materials (craftable covers the bottle gap but AutoBrew will not claim those mats).
+- Zoning while cultivation is active no longer leaves backpack items or mounts unusable.
 - Performance improvements.
 
 ## 1.1.3

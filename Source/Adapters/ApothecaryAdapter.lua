@@ -14,6 +14,36 @@ local function TryQuiet(label, fn, ...)
     return StockPiler.Util.TryCallQuiet(label, fn, ...)
 end
 
+--- Crafting-bag reads go through GetCraftingItems, which clears the normal
+--- backpack dirty flag. Restore a pending flag after the read, including
+--- when the call errors. Inventory reads are left unchanged.
+local function CaptureItemsDirty()
+    local player = _G.GameData and _G.GameData.Player
+    return type(player) == "table" and player.itemsDirty == true
+end
+
+local function RestorePendingItemsDirty(hadItemsDirty)
+    if hadItemsDirty ~= true then
+        return
+    end
+    if type(_G.GameData) ~= "table" or type(_G.GameData.Player) ~= "table" then
+        return
+    end
+    if _G.GameData.Player.itemsDirty ~= true then
+        _G.GameData.Player.itemsDirty = true
+    end
+end
+
+local function ReadCraftBackpack(bagType)
+    local hadItemsDirty = CaptureItemsDirty()
+    local ok, items = pcall(EA_Window_Backpack.GetItemsFromBackpack, bagType)
+    RestorePendingItemsDirty(hadItemsDirty)
+    if ok ~= true then
+        return nil
+    end
+    return items
+end
+
 local function RemoveEntry(apo, slot, backpack, seen)
     if slot == nil or backpack == nil then
         return false
@@ -1022,7 +1052,13 @@ function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)
     if type(EA_Window_Backpack) == "table"
         and type(EA_Window_Backpack.GetItemsFromBackpack) == "function"
     then
-        local okItems, items = pcall(EA_Window_Backpack.GetItemsFromBackpack, bagType)
+        local okItems, items
+        if tonumber(bagType) == tonumber(AA.CraftingBackpackType()) then
+            items = ReadCraftBackpack(bagType)
+            okItems = true
+        else
+            okItems, items = pcall(EA_Window_Backpack.GetItemsFromBackpack, bagType)
+        end
         local item = okItems and type(items) == "table" and items[bagSlot] or nil
         if type(item) == "table" and AA.ItemIsAllowedInSlot(item, craftSlot) ~= true then
             if StockPiler.Debug and StockPiler.Debug.LogOp then
@@ -1111,7 +1147,12 @@ function AA.GetSlottedItem(craftingSlot)
         if ok and type(slots) == "table" then
             local entry = slots[craftingSlot]
             if type(entry) == "table" and entry.slot and entry.backpack then
-                local bag = EA_Window_Backpack.GetItemsFromBackpack(entry.backpack)
+                local bag
+                if tonumber(entry.backpack) == tonumber(AA.CraftingBackpackType()) then
+                    bag = ReadCraftBackpack(entry.backpack)
+                else
+                    bag = EA_Window_Backpack.GetItemsFromBackpack(entry.backpack)
+                end
                 local item = type(bag) == "table" and bag[entry.slot] or nil
                 if type(item) == "table" and (tonumber(item.uniqueID) or 0) > 0 then
                     return item
@@ -1125,7 +1166,13 @@ function AA.GetSlottedItem(craftingSlot)
             if cd.sourceSlot ~= nil and type(EA_Window_Backpack) == "table"
                 and type(EA_Window_Backpack.GetItemsFromBackpack) == "function"
             then
-                local bag = EA_Window_Backpack.GetItemsFromBackpack(cd.sourceBackpack or AA.CraftingBackpackType())
+                local sourceBackpack = cd.sourceBackpack or AA.CraftingBackpackType()
+                local bag
+                if tonumber(sourceBackpack) == tonumber(AA.CraftingBackpackType()) then
+                    bag = ReadCraftBackpack(sourceBackpack)
+                else
+                    bag = EA_Window_Backpack.GetItemsFromBackpack(sourceBackpack)
+                end
                 local fromBag = type(bag) == "table" and bag[cd.sourceSlot] or nil
                 if type(fromBag) == "table" and (tonumber(fromBag.uniqueID) or 0) > 0 then
                     return fromBag
