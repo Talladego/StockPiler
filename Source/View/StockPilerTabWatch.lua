@@ -822,6 +822,24 @@ local function HasSkillUpWatchStatus()
     return US and US.ShouldShowWatchStatus and US.ShouldShowWatchStatus() == true
 end
 
+--- Eye-on placeholders keep statusText as a dash. LiveRecount will not fill
+--- an empty statusKey, so those rows stay "-" until a full plan rebuild.
+local function RowsHaveComputedStatus(list)
+    if type(list) ~= "table" then
+        return false
+    end
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table"
+            and row._optimisticWatch ~= true
+            and tostring(row.statusKey or "") ~= ""
+        then
+            return true
+        end
+    end
+    return false
+end
+
 local function BuildVisibleList(opts)
     opts = type(opts) == "table" and opts or {}
     local prevList = StockPilerTabWatch.listData
@@ -853,6 +871,12 @@ local function BuildVisibleList(opts)
     local cacheStale = PS and PS.GetCacheKey and PS.GetCacheKey() == nil
     local preferPrev = (cacheStale == true or holdBuild == true)
         and type(prevList) == "table" and #prevList > 0
+    -- A stale plan that already computed status beats the placeholder list.
+    -- Keeping the placeholders left Status and Craftable as "-" until an
+    -- AutoGrow toggle rebuilt the plan and replaced listData.
+    if preferPrev and RowsHaveComputedStatus(rows) and not RowsHaveComputedStatus(prevList) then
+        preferPrev = false
+    end
     if preferPrev then
         PatchWatchRowsLiveCounts(prevList)
         BindSortedList(prevList)
@@ -1863,6 +1887,13 @@ function StockPilerTabWatch.FlushPendingListRebind()
     if StockPilerTabWatch._pendingListRebind ~= true then
         return false
     end
+    -- Off Watch the ListBox is hidden. Leave the flag so the tab switch rebinds
+    -- potion and plant rows that were eyed on the other tabs.
+    local onWatch = StockPilerWindow
+        and StockPilerWindow.SelectedTab == StockPilerWindow.TABS_WATCH
+    if onWatch ~= true then
+        return false
+    end
     local Brew = StockPiler.Brew
     local Orch = StockPiler.Orchestrator
     if (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
@@ -1882,7 +1913,9 @@ function StockPilerTabWatch.FlushPendingListRebind()
     end
     local indices = SPTabWatchList and SPTabWatchList.PopulatorIndices
     local hasPopulated = type(indices) == "table" and next(indices) ~= nil
-    if hasPopulated then
+    local boundCount = tonumber(StockPilerTabWatch._lastBoundListCount)
+    -- Populated but short: an off-tab eye add grew listData. Rebind that length.
+    if hasPopulated and boundCount ~= nil and boundCount == listCount then
         StockPilerTabWatch._pendingListRebind = nil
         return false
     end
@@ -1943,6 +1976,166 @@ local function RebindWatchListBox(order)
     if StockPilerTabWatch.UpdateRows then
         StockPilerTabWatch.UpdateRows({ keepVisible = true })
     end
+    -- ListBox finishes cloning row windows after this frame and clears icon,
+    -- priority, and Brew. Paint those again once the rows exist.
+    StockPilerTabWatch._chromeRepaintFrame = (tonumber(StockPiler.FrameCounter) or 0) + 1
+end
+
+function StockPilerTabWatch.FlushChromeRepaint()
+    local due = tonumber(StockPilerTabWatch._chromeRepaintFrame) or 0
+    if due <= 0 then
+        return
+    end
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    if frame < due then
+        return
+    end
+    StockPilerTabWatch._chromeRepaintFrame = nil
+    if not DoesWindowExist("SPTabWatchList") then
+        return
+    end
+    if not DoesWindowExist("StockPilerWindow") or WindowGetShowing("StockPilerWindow") ~= true then
+        return
+    end
+    if StockPilerWindow and StockPilerWindow.SelectedTab ~= StockPilerWindow.TABS_WATCH then
+        return
+    end
+    StockPilerTabWatch._rowPaintKey = nil
+    StockPilerTabWatch._rowIconNum = nil
+    if StockPilerTabWatch.UpdateRows then
+        StockPilerTabWatch.UpdateRows({ keepVisible = true, forceQuietPaint = true })
+    end
+end
+
+--- Tab click onto Watch: avoid LiveRecount + ListBox rebind when rows are already bound.
+--- Full Refresh is reserved for empty/stale ListBox (first open, after clear, etc.).
+function StockPilerTabWatch.PaintTabSwitch()
+    if not DoesWindowExist(TAB_ROOT) then
+        return
+    end
+    -- Showing the list clears icon, priority, and Brew while labels stick.
+    -- A matching paint key would skip those, so force a full row write now
+    -- and again next frame after the list finishes showing.
+    StockPilerTabWatch._rowPaintKey = nil
+    StockPilerTabWatch._rowIconNum = nil
+    StockPilerTabWatch._chromeRepaintFrame = (tonumber(StockPiler.FrameCounter) or 0) + 1
+    UpdateSortHeaders()
+    StockPilerTabWatch.RefreshSkillGates()
+    local listData = StockPilerTabWatch.listData
+    local listCount = type(listData) == "table" and #listData or 0
+    local indices = SPTabWatchList and SPTabWatchList.PopulatorIndices
+    local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+    local boundCount = tonumber(StockPilerTabWatch._lastBoundListCount)
+    -- Eye toggle on Potions/Plants grows listData and sets _pendingListRebind.
+    -- An already-populated ListBox must still SetDisplayOrder or the new row
+    -- stays invisible until some later full refresh.
+    local planForStatus = StockPiler.PlanSnapshot and StockPiler.PlanSnapshot.Get
+        and StockPiler.PlanSnapshot.Get()
+    local planRowsForStatus = type(planForStatus) == "table" and planForStatus.rows or nil
+    -- Already-populated placeholders skip Refresh, so a tab round-trip never
+    -- replaced the dash status. Refresh once the plan actually has status.
+    local statusStuck = listCount > 0
+        and not RowsHaveComputedStatus(listData)
+        and RowsHaveComputedStatus(planRowsForStatus)
+    local needsRebind = StockPilerTabWatch._pendingListRebind == true
+        or (boundCount ~= nil and boundCount ~= listCount)
+        or (listCount > 0 and not hasPopulated)
+        or statusStuck
+    if needsRebind then
+        StockPilerTabWatch.Refresh({ forcePlan = false })
+        UpdateEnableCheckbox()
+        UpdateAdditivesCheckbox()
+        UpdateAutoBuyCheckbox()
+        if StockPilerTabWatch.RefreshAutoBuyMoneyUi then
+            StockPilerTabWatch.RefreshAutoBuyMoneyUi()
+        end
+        if StockPilerTabWatch.RefreshHudButtonUi then
+            StockPilerTabWatch.RefreshHudButtonUi()
+        end
+        return
+    end
+    if listCount > 0 and hasPopulated then
+        -- In-place chrome only - BuildVisibleList LiveRecount was the tab-switch hitch.
+        StockPilerTabWatch.UpdateRows({ keepVisible = true })
+        UpdateEnableCheckbox()
+        UpdateAdditivesCheckbox()
+        UpdateAutoBuyCheckbox()
+        if StockPilerTabWatch.RefreshAutoBuyMoneyUi then
+            StockPilerTabWatch.RefreshAutoBuyMoneyUi()
+        end
+        if StockPilerTabWatch.RefreshHudButtonUi then
+            StockPilerTabWatch.RefreshHudButtonUi()
+        end
+        return
+    end
+    StockPilerTabWatch.Refresh({ forcePlan = false })
+end
+
+--- Plan rebuild can still be the previous snapshot. Keep every enabled potion
+--- and plant watch on the list so an eye-on shows up before that rebuild lands.
+local function AppendMissingEnabledWatches()
+    local list = StockPilerTabWatch.listData
+    if type(list) ~= "table" then
+        list = {}
+        StockPilerTabWatch.listData = list
+    end
+    local Watch = StockPiler.Watch
+    if not Watch then
+        return
+    end
+    local added = false
+    local function hasPlant(key)
+        for i = 1, #list do
+            if RowMatchesPlantKey(list[i], key) then
+                return true
+            end
+        end
+        return false
+    end
+    local function hasPotion(key)
+        for i = 1, #list do
+            local row = list[i]
+            if type(row) == "table" and row.kind ~= "plant" and row.isPlantWatch ~= true
+                and RowMatchesPotionKey(row, key)
+            then
+                return true
+            end
+        end
+        return false
+    end
+    local plants = Watch.GetPlantWatches and Watch.GetPlantWatches()
+    if type(plants) == "table" then
+        for key, watch in pairs(plants) do
+            if type(watch) == "table" and watch.enabled == true and hasPlant(key) ~= true then
+                local stub = BuildOptimisticPlantWatchRow(key)
+                if type(stub) == "table" then
+                    list[#list + 1] = stub
+                    added = true
+                end
+            end
+        end
+    end
+    local potions = Watch.GetWatches and Watch.GetWatches()
+    if type(potions) == "table" then
+        for key, watch in pairs(potions) do
+            if type(watch) == "table" and watch.enabled == true and hasPotion(key) ~= true then
+                local stub = BuildOptimisticPotionWatchRow(key)
+                if type(stub) == "table" then
+                    list[#list + 1] = stub
+                    added = true
+                end
+            end
+        end
+    end
+    if added ~= true then
+        return
+    end
+    StockPilerTabWatch.displayOrder = {}
+    for i = 1, #list do
+        StockPilerTabWatch.displayOrder[i] = i
+    end
+    StockPilerTabWatch._pendingListRebind = true
+    StockPilerTabWatch._rowPaintKey = nil
 end
 
 function StockPilerTabWatch.Refresh(opts)
@@ -1955,6 +2148,7 @@ function StockPilerTabWatch.Refresh(opts)
     local prevOrder = StockPilerTabWatch.displayOrder
     local prevBoundCount = tonumber(StockPilerTabWatch._lastBoundListCount)
     BuildVisibleList(opts)
+    AppendMissingEnabledWatches()
     if not DoesWindowExist("SPTabWatchList") then
         return
     end
@@ -2691,9 +2885,10 @@ function StockPilerTabWatch.OnRowNameRightClick()
     end
 end
 
+--- Checkbox / chip tips: above the control (stock User Settings ANCHOR_WINDOW_TOP).
 local function Tip(text)
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, text)
-    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
 end
 
 local function TipTradeSkill(skillId)
@@ -3595,7 +3790,16 @@ function StockPilerTabWatch.OnMouseOverIcon()
     then
         return
     end
-    Tip(data.name or (isPlant and T("ui.item_fallback") or T("ui.potion_fallback")))
+    -- Name-only fallback: same variable anchor bags use for item tips (not settings TOP).
+    Tooltips.CreateTextOnlyTooltip(
+        SystemData.ActiveWindow.name,
+        data.name or (isPlant and T("ui.item_fallback") or T("ui.potion_fallback"))
+    )
+    if StockPiler.Inventory and StockPiler.Inventory.AnchorLikeBagItemTooltip then
+        StockPiler.Inventory.AnchorLikeBagItemTooltip()
+    elseif Tooltips.AnchorTooltip then
+        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
+    end
 end
 
 function StockPilerTabWatch.OnMouseOverName()
@@ -3637,10 +3841,11 @@ function StockPilerTabWatch.OnMouseOverStatus()
         end
     end
 
+    -- Long status tip: below the cell so it does not cover the Watch list.
     RT.ShowColoredRows(
         SystemData.ActiveWindow.name,
         tipRows,
-        Tooltips.ANCHOR_WINDOW_TOP,
+        Tooltips.ANCHOR_WINDOW_BOTTOM,
         engineMax
     )
 end

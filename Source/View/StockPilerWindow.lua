@@ -361,9 +361,16 @@ function StockPilerWindow.Initialize()
     StockPilerWindow.BeginOpenPaint()
 end
 
-function StockPilerWindow.RefreshActiveTab()
+function StockPilerWindow.RefreshActiveTab(caller)
+    caller = tostring(caller or "unknown")
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("refreshTab", caller)
+    end
     if StockPiler.Perf and StockPiler.Perf.Begin then
         StockPiler.Perf.Begin("RefreshWatch")
+    end
+    if StockPiler.Perf and StockPiler.Perf.Mark then
+        StockPiler.Perf.Mark("RefreshWatch." .. caller)
     end
     local tab = StockPilerWindow.Tabs[StockPilerWindow.SelectedTab]
     if tab and tab.refresh then
@@ -397,7 +404,7 @@ function StockPilerWindow.FlushPendingListRepopulate()
     StockPilerWindow._repopulatePending = false
     -- First-open / tab-show must bind ListBox now. Remarking dirty left Watch empty
     -- until a later flush that settle/prewarm often skipped.
-    StockPilerWindow.RefreshActiveTab()
+    StockPilerWindow.RefreshActiveTab("list-repop")
 end
 
 --- Show only SelectedTab's child; hide the others. Recovers stacked tab chrome
@@ -479,6 +486,25 @@ local function WatchListHasPaintedRow()
     return WindowGetShowing("SPTabWatchListRow1") == true
 end
 
+--- Placeholder rows (empty statusKey) are not a finished login paint.
+local function WatchListNeedsRealRows()
+    local list = StockPilerTabWatch and StockPilerTabWatch.listData
+    if type(list) ~= "table" or #list < 1 then
+        return true
+    end
+    local sawReal = false
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" and row._optimisticWatch ~= true
+            and tostring(row.statusKey or "") ~= ""
+        then
+            sawReal = true
+            break
+        end
+    end
+    return sawReal ~= true
+end
+
 local function WatchHasContent()
     local Watch = StockPiler.Watch
     if Watch and Watch.CountEnabled and (tonumber(Watch.CountEnabled()) or 0) > 0 then
@@ -515,6 +541,8 @@ function StockPilerWindow.BeginOpenPaint()
     StockPilerWindow._openPaintGaveUp = false
     StockPilerWindow._openPaintAttempts = 0
     StockPilerWindow._openPaintDidRefresh = false
+    StockPilerWindow._openPaintChromePending = true
+    StockPilerWindow._openPaintPlanWaits = 0
     StockPilerWindow._openPaintShownFrame = tonumber(StockPiler.FrameCounter) or 0
     StockPilerWindow._openPaintNeedKick = true
     if StockPiler.Ui then
@@ -570,7 +598,7 @@ function StockPilerWindow.FlushOpenPaint()
     end
     local selected = StockPilerWindow.SelectedTab
     if selected ~= StockPilerWindow.TABS_WATCH then
-        StockPilerWindow.RefreshActiveTab()
+        StockPilerWindow.RefreshActiveTab("open-paint-other")
         StockPilerWindow._openPaintPending = false
         return
     end
@@ -592,25 +620,54 @@ function StockPilerWindow.FlushOpenPaint()
     if StockPilerTabWatch and type(StockPilerTabWatch.listData) == "table" then
         listCount = #StockPilerTabWatch.listData
     end
-    -- A row left over from the settle paint is not "done". Reload-while-open
-    -- used to stop here and keep the pre-latch status until /stp dumpall.
+    -- A shown row is not done: login used to stop on placeholder dashes
+    -- (no icon, priority, status, or Brew) until a tab round-trip.
     if StockPilerWindow._openPaintDidRefresh == true
+        and StockPilerWindow._openPaintChromePending ~= true
+        and WatchListNeedsRealRows() ~= true
         and (WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()))
     then
         StockPilerWindow._openPaintPending = false
         return
     end
-    StockPilerWindow._openPaintDidRefresh = true
-    if StockPilerTabWatch and StockPilerTabWatch.Refresh then
-        StockPilerTabWatch.Refresh({ forceRebind = true, forcePlan = false })
-    else
-        StockPilerWindow.RefreshActiveTab()
+    local needsReal = WatchListNeedsRealRows()
+    if StockPilerWindow._openPaintDidRefresh ~= true or needsReal == true then
+        StockPilerWindow._openPaintDidRefresh = true
+        if StockPilerTabWatch and StockPilerTabWatch.Refresh then
+            StockPilerTabWatch.Refresh({ forceRebind = true, forcePlan = false })
+        else
+            StockPilerWindow.RefreshActiveTab("open-paint-watch")
+        end
+        if WatchListNeedsRealRows() == true then
+            local waits = (tonumber(StockPilerWindow._openPaintPlanWaits) or 0) + 1
+            StockPilerWindow._openPaintPlanWaits = waits
+            if waits < 40 then
+                StockPilerWindow._openPaintAttempts = attempts - 1
+                StockPilerWindow._openPaintChromePending = true
+                return
+            end
+        end
+        -- ListBox clones row windows a frame after SetDisplayOrder and drops
+        -- labels set on the bind frame. Paint chrome on the next pass.
+        StockPilerWindow._openPaintChromePending = true
+        return
+    end
+    if StockPilerWindow._openPaintChromePending == true then
+        StockPilerWindow._openPaintChromePending = false
+        if StockPilerTabWatch then
+            StockPilerTabWatch._rowPaintKey = nil
+            if StockPilerTabWatch.UpdateRows then
+                StockPilerTabWatch.UpdateRows({ keepVisible = true, forceQuietPaint = true })
+            end
+        end
     end
     listCount = 0
     if StockPilerTabWatch and type(StockPilerTabWatch.listData) == "table" then
         listCount = #StockPilerTabWatch.listData
     end
-    if WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()) then
+    if WatchListNeedsRealRows() ~= true
+        and (WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()))
+    then
         StockPilerWindow._openPaintPending = false
         return
     end
@@ -903,7 +960,7 @@ function StockPilerWindow.SelectTab(tabNumber, opts)
     end
     if opts.deferRefresh == true then
         if StockPiler.Ui and StockPiler.Ui.MarkWatchUiDirty then
-            StockPiler.Ui.MarkWatchUiDirty()
+            StockPiler.Ui.MarkWatchUiDirty("select-tab-defer")
         end
         local parentOpen = DoesWindowExist("StockPilerWindow")
             and WindowGetShowing("StockPilerWindow") == true
@@ -917,8 +974,32 @@ function StockPilerWindow.SelectTab(tabNumber, opts)
         StockPilerWindow.RequestListRepopulate()
         return
     end
-    StockPilerWindow.RefreshActiveTab()
-    StockPilerWindow.RequestListRepopulate()
+    -- One refresh only. RefreshActiveTab + RequestListRepopulate used to run
+    -- RefreshWatch twice per click (libperf RefreshWatch.select-tab + list-repop
+    -- ~150ms each). Re-arm list-repop only when Watch still has no PopulatorIndices.
+    if tabNumber == StockPilerWindow.TABS_WATCH
+        and StockPilerTabWatch
+        and StockPilerTabWatch.PaintTabSwitch
+    then
+        StockPilerTabWatch.PaintTabSwitch()
+        StockPilerWindow.RefreshFooterButtons()
+        if StockPiler.Perf and StockPiler.Perf.Tally then
+            StockPiler.Perf.Tally("refreshTab", "select-tab-watch")
+        end
+    else
+        StockPilerWindow.RefreshActiveTab("select-tab")
+    end
+    if tabNumber == StockPilerWindow.TABS_WATCH then
+        local indices = SPTabWatchList and SPTabWatchList.PopulatorIndices
+        local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+        local listCount = 0
+        if StockPilerTabWatch and type(StockPilerTabWatch.listData) == "table" then
+            listCount = #StockPilerTabWatch.listData
+        end
+        if listCount > 0 and not hasPopulated then
+            StockPilerWindow.RequestListRepopulate()
+        end
+    end
 end
 
 function StockPilerWindow.OnLButtonUpTab()

@@ -465,6 +465,7 @@ StockPiler.Locale.Packs[LANG] = {
     ["recipe.level"] = L"Level {level}",
     ["recipe.yield"] = L"Yield: {yield} per success",
     ["recipe.success"] = L"Success: {pct}% ({ok}/{att})",
+    ["recipe.slot_qty"] = L"{header} x{count}",
     ["recipe.sep"] = L"----------------------------------------",
 
     -- Material tip labels (NeedLabelParts)

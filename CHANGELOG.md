@@ -7,6 +7,10 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
 - Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
 - Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows.
+- Watch finishes painting status, icons, priority, and Brew after login and when you open the tab. A potion or plant you just mark watched shows up immediately.
+- Tooltips no longer keep a leftover "Right-click opens the StockPiler window" line. Checkbox tips open upward, recipe and Watch status tips open downward, and item tips sit like bag tips.
+- A material you can grow is not treated as something you must buy when the recipe names a butcher ingredient. Brew still uses that butcher ingredient first when it is in your bags.
+- A recipe tip shows a repeated ingredient once, with a count, instead of repeating the whole section.
 - Performance improvements.
 
 ## 1.1.3

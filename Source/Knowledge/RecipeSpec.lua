@@ -666,6 +666,12 @@ local function HydrateRecipeSlots(recipe)
     for i = 1, #recipe.slots do
         ResolveSlotSpec(recipe.slots[i])
     end
+    -- Butcher/vendor exemplars (Brutal Zoic Gore) flip Shared -> Buy materials
+    -- because ContestedBuyOnlyKind treats the slot as non-growable. Rewrite to a
+    -- cultivable twin when known (Majestic Goldweed); fingerprint unchanged.
+    if RS.PreferGrowableSlotExemplars then
+        RS.PreferGrowableSlotExemplars(recipe.slots)
+    end
     StampIncompleteMainEffect(recipe)
 end
 
@@ -745,7 +751,12 @@ local function MaterialsToSpecSlots(materials)
             end
         end
     end
-    return MergeSlotsByFingerprint(slots)
+    local merged = MergeSlotsByFingerprint(slots)
+    -- Brew/board capture can bind Zoic Gore; store the cultivable twin when known.
+    if RS.PreferGrowableSlotExemplars then
+        RS.PreferGrowableSlotExemplars(merged)
+    end
+    return merged
 end
 
 local function SpecStabilityTotal(slots)

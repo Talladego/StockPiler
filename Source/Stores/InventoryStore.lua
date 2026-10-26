@@ -843,7 +843,17 @@ function Inv.ResolvePotionItemData(potionKey, uid, existing)
     return best or existing
 end
 
+--- Same screen-edge placement bags use (CreateItemTooltip → ANCHOR_WINDOW_VARIABLE).
+function Inv.AnchorLikeBagItemTooltip()
+    if not (Tooltips and type(Tooltips.AnchorTooltip) == "function") then
+        return
+    end
+    -- ignoreStaticPlacementOption=true matches CreateItemTooltip / backpack slots.
+    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
+end
+
 --- Full stock item tooltip. opts.allowWithoutUse: materials/plants (no Use bonus).
+--- Anchors like EA_Window_Backpack.MouseOverEquipmentSlot (CreateItemTooltip).
 function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
     if type(itemData) ~= "table" or type(Tooltips) ~= "table"
         or type(Tooltips.CreateItemTooltip) ~= "function"
@@ -859,6 +869,12 @@ function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
         return false
     end
     local win = anchorWindow or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
+    -- Same args as backpackutils: RIGHT + ENABLE_COMPARISON; CreateItemTooltip then
+    -- rewrites the anchor to ANCHOR_WINDOW_VARIABLE (quadrant-aware).
+    local disableComparison = Tooltips.ENABLE_COMPARISON
+    if disableComparison == nil then
+        disableComparison = false
+    end
     local ok
     if StockPiler.Debug and StockPiler.Debug.TryCallQuiet then
         ok = StockPiler.Debug.TryCallQuiet(
@@ -867,10 +883,22 @@ function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
             data,
             win,
             Tooltips.ANCHOR_WINDOW_RIGHT,
+            disableComparison,
+            nil,
+            nil,
             false
         )
     else
-        ok = pcall(Tooltips.CreateItemTooltip, data, win, Tooltips.ANCHOR_WINDOW_RIGHT, false)
+        ok = pcall(
+            Tooltips.CreateItemTooltip,
+            data,
+            win,
+            Tooltips.ANCHOR_WINDOW_RIGHT,
+            disableComparison,
+            nil,
+            nil,
+            false
+        )
     end
     return ok == true
 end

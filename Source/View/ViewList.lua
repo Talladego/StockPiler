@@ -310,10 +310,11 @@ function VL.SetButtonTextColorAll(windowName, r, g, b)
     end
 end
 
+--- Short settings / chrome tips: above the control (stock User Settings).
 function VL.Tip(text)
     if Tooltips and Tooltips.CreateTextOnlyTooltip then
         Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, text)
-        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
     end
 end
 
@@ -364,7 +365,8 @@ function VL.ShowTextTip(anchorWin, text, anchor)
         return
     end
     Tooltips.CreateTextOnlyTooltip(anchorWin or SystemData.ActiveWindow.name, text)
-    Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)
+    -- Default matches SettingsWindowTabbed.CreateAutoTooltip (above the control).
+    Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_TOP)
 end
 
 --- Live text tooltip shell: state table with _liveWindow/_liveAnchor/_liveFp.

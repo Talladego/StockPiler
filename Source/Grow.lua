@@ -1641,6 +1641,9 @@ function Grow.PickPlantCandidate()
 
     -- Stocked plan: no bottle gap, no plant watch, no fresh upgrade target.
     -- Do not bag-walk demand or seed lines, and do not queue WarmHave.
+    if Perf and Perf.Mark then
+        Perf.Mark("PickPlant.lackDemand")
+    end
     if PlanRowsLackPlantDemand() == true then
         local SkillUp = StockPiler.SkillUp
         if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
@@ -1674,6 +1677,9 @@ function Grow.PickPlantCandidate()
     end
 
     -- Never sync WarmHave.miss on Orch frames - cacheOnly + FrameWork prewarm.
+    if Perf and Perf.Mark then
+        Perf.Mark("PickPlant.demand")
+    end
     local demand = RS.BuildBalancedSpecDemand
         and RS.BuildBalancedSpecDemand({ cacheOnly = true })
         or nil
@@ -1687,6 +1693,9 @@ function Grow.PickPlantCandidate()
         end
         demand = nil
     end
+    if Perf and Perf.Mark then
+        Perf.Mark("PickPlant.watchOrder")
+    end
     local watches = CollectPlantWatchOrder(RS)
     local maxGap = 0
     for i = 1, #watches do
@@ -1697,6 +1706,9 @@ function Grow.PickPlantCandidate()
     end
     local needsRefine = false
     if Grow._plantDemandCold ~= true then
+        if Perf and Perf.Mark then
+            Perf.Mark("PickPlant.liftLoop")
+        end
         for i = 1, #watches do
             local watch = watches[i]
             local job, why = PickCraftableLiftJobForWatch(watch, SM, RS, demand)

@@ -1164,6 +1164,9 @@ function Refine.CollectIntents(opts)
     local seenBuffer = {}
 
     -- 1) Seed-buffer (bootstrap when brew deficit 0 but buffer short)
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.seedBuffer")
+    end
     if bufferOn and RS and RS.CollectAutoGrowSeedLines then
         local lines = RS.CollectAutoGrowSeedLines() or {}
         for i = 1, #lines do
@@ -1199,6 +1202,9 @@ function Refine.CollectIntents(opts)
     end
 
     -- 1b) Upgrade Seed: refine family upgrade plants / buffer for climb line.
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.upgradeSeed")
+    end
     local UpgradeSeed = StockPiler.UpgradeSeed
     if UpgradeSeed and UpgradeSeed.AppendRefineIntents then
         UpgradeSeed.AppendRefineIntents(intents, function(line, reason, uses, budget)
@@ -1207,6 +1213,9 @@ function Refine.CollectIntents(opts)
     end
 
     -- 1c) SkillUp Cult: refine plants back to seeds to fill empty plots.
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.skillUp")
+    end
     local SkillUp = StockPiler.SkillUp
     if SkillUp and SkillUp.AppendRefineIntents then
         SkillUp.AppendRefineIntents(intents, function(line, reason, uses, budget)
@@ -1222,6 +1231,9 @@ function Refine.CollectIntents(opts)
 
     -- 2) Plant-need / 3) Resin-need share one demand snapshot (warm-cache hit is free).
     -- Orch decision hold / plant quiet: cacheOnly - never WarmHave.miss on this frame.
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.demand")
+    end
     local demand = nil
     if RS and RS.BuildBalancedSpecDemand then
         local Sch = StockPiler.Scheduler
@@ -1240,6 +1252,9 @@ function Refine.CollectIntents(opts)
     end
 
     -- 2) Plant-need
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.plantNeed")
+    end
     if type(demand) == "table" then
         for _, row in pairs(demand) do
             if type(row) == "table" and type(row.spec) == "table"

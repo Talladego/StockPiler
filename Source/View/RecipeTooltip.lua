@@ -30,6 +30,49 @@ local RECIPE_TIP_MAX_MATCHES = 3
 RecipeTooltip._numRows = 17
 RecipeTooltip._raisedRows = nil
 
+--- Direct wipe of private DefaultTooltipRowN labels (stock ClearTooltip only
+--- walks Tooltips.NUM_ROWS). Used so craft-button / long tip leftovers cannot
+--- ghost under the next tip of any kind (recipe, watch, bag, vendor, …).
+local function WipePrivateRowLabels(fromRow, toRow)
+    fromRow = tonumber(fromRow) or 0
+    toRow = tonumber(toRow) or 0
+    if fromRow < 1 or toRow < fromRow then
+        return
+    end
+    if type(DoesWindowExist) ~= "function" or type(LabelSetText) ~= "function" then
+        return
+    end
+    local maxWidth = (Tooltips and tonumber(Tooltips.MAX_WIDTH)) or 400
+    local cols = (Tooltips and tonumber(Tooltips.NUM_COLUMNS)) or 2
+    for rowNum = fromRow, toRow do
+        local rowName = "DefaultTooltipRow" .. tostring(rowNum)
+        if DoesWindowExist(rowName) then
+            for colNum = 1, cols do
+                local colName = rowName .. "Col" .. tostring(colNum) .. "Text"
+                if DoesWindowExist(colName) then
+                    LabelSetText(colName, L"")
+                    if type(WindowSetDimensions) == "function" then
+                        WindowSetDimensions(colName, maxWidth, 0)
+                    end
+                    if type(LabelSetTextColor) == "function" then
+                        LabelSetTextColor(colName, 255, 255, 255)
+                    end
+                end
+            end
+            if type(WindowSetDimensions) == "function" then
+                local rowX = maxWidth
+                if type(WindowGetDimensions) == "function" then
+                    local w = WindowGetDimensions(rowName)
+                    if tonumber(w) and tonumber(w) > 0 then
+                        rowX = tonumber(w)
+                    end
+                end
+                WindowSetDimensions(rowName, rowX, 0)
+            end
+        end
+    end
+end
+
 local function InstallClearTooltipHook()
     if RecipeTooltip._origClearTooltip or not Tooltips or type(Tooltips.ClearTooltip) ~= "function" then
         return
@@ -41,15 +84,22 @@ local function InstallClearTooltipHook()
     STOCK_TOOLTIP_ROWS = stockRows
     RecipeTooltip._origClearTooltip = Tooltips.ClearTooltip
     Tooltips.ClearTooltip = function(...)
+        -- Private DefaultTooltipRowN windows outlive a short tip. Raise NUM_ROWS so
+        -- stock clear walks them; otherwise craft-button footer text (RMB hint)
+        -- ghosts below the next tip background (any DefaultTooltip consumer).
         local raised = tonumber(RecipeTooltip._raisedRows) or 0
-        if raised > stockRows then
-            Tooltips.NUM_ROWS = raised
+        local privateMax = tonumber(RecipeTooltip._numRows) or stockRows
+        local clearMax = math.max(raised, privateMax, stockRows)
+        if clearMax > stockRows then
+            Tooltips.NUM_ROWS = clearMax
         end
         local r = { RecipeTooltip._origClearTooltip(...) }
-        if raised > stockRows then
+        if clearMax > stockRows then
+            -- Belt: stock clear can miss rows if NUM_ROWS raced; wipe by name.
+            WipePrivateRowLabels(stockRows + 1, clearMax)
             Tooltips.NUM_ROWS = stockRows
-            RecipeTooltip._raisedRows = nil
         end
+        RecipeTooltip._raisedRows = nil
         return unpack(r)
     end
 end
@@ -252,11 +302,24 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
         Tooltips.SetTooltipText(i, 1, entry.text or L"", false)
         SetRecipeTooltipRowColor(i, entry.color or RecipeTooltipColor(entry.kind, entry.role))
     end
-    local clearThrough = math.max(limit, stockRows)
+    -- Wipe every private row we ever created, not only stock/limit. Leftover text
+    -- on row N>_NUM_ROWS paints below the tip box (ghost craft RMB / WarBoard lines).
+    local clearThrough = math.max(limit, stockRows, engineMax)
+    if clearThrough > stockRows then
+        Tooltips.NUM_ROWS = clearThrough
+    end
     for i = rowCount + 1, clearThrough do
         Tooltips.SetTooltipText(i, 1, L"", false)
     end
-    local tipAnchor = anchor or Tooltips.ANCHOR_WINDOW_RIGHT
+    if limit > stockRows then
+        RecipeTooltip._raisedRows = limit
+        Tooltips.NUM_ROWS = limit
+    else
+        Tooltips.NUM_ROWS = stockRows
+        RecipeTooltip._raisedRows = nil
+    end
+    -- Long recipe / status tips default below the anchor window.
+    local tipAnchor = anchor or Tooltips.ANCHOR_WINDOW_BOTTOM
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(tipAnchor)
     -- New DefaultTooltipRowN windows report 0 text height until the next frame.
@@ -299,7 +362,27 @@ local function TrimRecipeTooltipRows(rows, limit)
             or prev.kind == "negative"
     end
 
-    -- Prefer dropping optional meta (yield / success) before any separators.
+    -- Extra fingerprint-match names go first. Keep one body row per section so
+    -- the ingredient line itself is not stripped to get under the row cap.
+    while #rows > limit do
+        local removed = false
+        for i = #rows, 1, -1 do
+            local r = rows[i]
+            if type(r) == "table" and r.kind == "body" then
+                local prev = rows[i - 1]
+                if type(prev) == "table" and prev.kind == "body" then
+                    table.remove(rows, i)
+                    removed = true
+                    break
+                end
+            end
+        end
+        if not removed then
+            break
+        end
+    end
+
+    -- Optional meta (yield / success / level) before separators.
     for i = #rows, 1, -1 do
         if #rows <= limit then
             return rows
@@ -325,24 +408,6 @@ local function TrimRecipeTooltipRows(rows, limit)
         end
     end
 
-    -- Drop extra match name rows (keep at least one body per ingredient section).
-    while #rows > limit do
-        local removed = false
-        for i = #rows, 1, -1 do
-            local r = rows[i]
-            if r.kind == "body" then
-                local prev = rows[i - 1]
-                if prev and prev.kind == "body" then
-                    table.remove(rows, i)
-                    removed = true
-                    break
-                end
-            end
-        end
-        if not removed then
-            break
-        end
-    end
     return rows
 end
 
@@ -814,8 +879,8 @@ local function AppendIngredientSection(rows, header, stats, role, statsColor, ma
     end
 end
 
---- Recipe tip rows: title/meta, then one section per perCraft unit.
---- Each section lists all known fingerprint-matching ingredients (rarity tint).
+--- Recipe tip rows: title/meta, then one section per recipe slot.
+--- perCraft > 1 is shown as "… - Stabilizer x2" (not duplicated sections).
 function RecipeTooltip.BuildRows(recipeData)
     if type(recipeData) ~= "table" then
         return {}
@@ -904,15 +969,19 @@ function RecipeTooltip.BuildRows(recipeData)
         local slot, spec = ResolveSlot(materials[i])
         if type(slot) == "table" then
             local header, stats, role = SlotHeaderAndStats(slot, spec, tipContext)
-            local matches = matchesBySlot[i]
             local copies = math.max(1, tonumber(slot.perCraft) or 1)
-            for _ = 1, copies do
-                if sectionShown > 0 then
-                    RecipeTooltip.AppendSeparator(rows)
-                end
-                sectionShown = sectionShown + 1
-                AppendIngredientSection(rows, header, stats, role, statsColor, matches)
+            if copies > 1 and header ~= nil and header ~= L"" then
+                header = T("recipe.slot_qty", {
+                    header = header,
+                    count = tostring(copies),
+                })
             end
+            local matches = matchesBySlot[i]
+            if sectionShown > 0 then
+                RecipeTooltip.AppendSeparator(rows)
+            end
+            sectionShown = sectionShown + 1
+            AppendIngredientSection(rows, header, stats, role, statsColor, matches)
         end
     end
     return rows
@@ -933,7 +1002,7 @@ function RecipeTooltip.Show(mouseoverWindow, recipeData)
     RecipeTooltip.ShowColoredRows(
         mouseoverWindow,
         rows,
-        Tooltips and Tooltips.ANCHOR_WINDOW_RIGHT,
+        Tooltips and Tooltips.ANCHOR_WINDOW_BOTTOM,
         cap
     )
 end

@@ -918,7 +918,11 @@ function StockPilerTabPotions.OnMouseOverIcon()
         return
     end
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, data.name or T("ui.potion_fallback"))
-    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+    if StockPiler.Inventory and StockPiler.Inventory.AnchorLikeBagItemTooltip then
+        StockPiler.Inventory.AnchorLikeBagItemTooltip()
+    elseif Tooltips.AnchorTooltip then
+        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
+    end
 end
 
 function StockPilerTabPotions.OnMouseOverRecipe()

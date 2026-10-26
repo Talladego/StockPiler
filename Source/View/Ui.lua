@@ -355,12 +355,19 @@ local function TryWatchLiveCatchup(opts)
         return false
     end
     if opts.forceRecount == true then
-        Planner.LiveRecount({
-            invalidateStamps = true,
-            allowWarmHave = true,
-            syncSnapshot = true,
-            forceRecountCraftable = true,
-        })
+        local Inv = StockPiler.Inventory
+        local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+        local frame = tonumber(StockPiler.FrameCounter) or 0
+        local already = Planner.ForcedRecountMatches
+            and Planner.ForcedRecountMatches(snap, frame) == true
+        if already ~= true then
+            Planner.LiveRecount({
+                invalidateStamps = true,
+                allowWarmHave = true,
+                syncSnapshot = true,
+                forceRecountCraftable = true,
+            })
+        end
     else
         Planner.LiveRecount({
             allowWarmHave = false,
@@ -435,6 +442,11 @@ local function RequestForcedWatchRecount(_reason)
         return
     end
     Ui._forceRecountPendingSnapGen = snapGen
+    -- Warm Have before the recount job so forceRecount does not WarmHave.miss.
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.RequestCachePrewarm then
+        Sch.RequestCachePrewarm("force-watch-recount")
+    end
     local FW = StockPiler.FrameWork
     local genKey = snapGen > 0 and snapGen or ((tonumber(Ui._forceRecountOnceGen) or 0) + 1)
     Ui._forceRecountOnceGen = genKey
@@ -589,8 +601,11 @@ function Ui.ClearWatchTipCaches()
     end
 end
 
-function Ui.MarkWatchUiDirty()
+function Ui.MarkWatchUiDirty(reason)
     Ui._watchUiDirty = true
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("watchDirty", tostring(reason or "ui"))
+    end
 end
 
 function Ui.RequestFooterRefresh()
@@ -858,12 +873,20 @@ function Ui.FlushWatchUiIfDirty()
             end
             -- Post-brew / bag snap while session stays loaded: recount craftable too
             -- (manual Brew used to leave Craftable stuck until hold expired).
-            StockPiler.Planner.LiveRecount({
-                invalidateStamps = true,
-                allowWarmHave = true,
-                syncSnapshot = true,
-                forceRecountCraftable = true,
-            })
+            -- Skip when SyncWatchLiveCountsAfterBrew already forced this snapGen+frame.
+            local Inv = StockPiler.Inventory
+            local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+            local frame = tonumber(StockPiler.FrameCounter) or 0
+            local already = StockPiler.Planner.ForcedRecountMatches
+                and StockPiler.Planner.ForcedRecountMatches(snap, frame) == true
+            if already ~= true then
+                StockPiler.Planner.LiveRecount({
+                    invalidateStamps = true,
+                    allowWarmHave = true,
+                    syncSnapshot = true,
+                    forceRecountCraftable = true,
+                })
+            end
             if StockPilerTabWatch.UpdateRows then
                 StockPilerTabWatch.UpdateRows({ keepVisible = true })
             end
@@ -939,7 +962,7 @@ function Ui.FlushWatchUiIfDirty()
     Ui._watchUiLastPlanGen = planGen
     Ui._watchUiLastBrewKey = brewKey
     if StockPilerWindow and StockPilerWindow.RefreshActiveTab then
-        StockPilerWindow.RefreshActiveTab()
+        StockPilerWindow.RefreshActiveTab("ui-flush")
     end
     if OpenPaintActive() then
         local watchVisible = IsWatchTabVisible()
@@ -953,7 +976,25 @@ function Ui.FlushWatchUiIfDirty()
         then
             populated = true
         end
-        if (not watchVisible) or populated then
+        local chromePending = StockPilerWindow._openPaintChromePending == true
+        local needsReal = false
+        if StockPilerTabWatch and type(StockPilerTabWatch.listData) == "table" then
+            local list = StockPilerTabWatch.listData
+            needsReal = #list < 1
+            if needsReal ~= true then
+                needsReal = true
+                for i = 1, #list do
+                    local row = list[i]
+                    if type(row) == "table" and row._optimisticWatch ~= true
+                        and tostring(row.statusKey or "") ~= ""
+                    then
+                        needsReal = false
+                        break
+                    end
+                end
+            end
+        end
+        if (not watchVisible) or (populated and chromePending ~= true and needsReal ~= true) then
             StockPilerWindow._openPaintPending = false
         else
             if listCount > 0 and StockPilerTabWatch and DoesWindowExist("SPTabWatchList") then

@@ -2379,9 +2379,9 @@ function Brew.TryPerform(opId)
             local session = GetSession()
             SkillUp.NoteApoAttempt({ skillUp = session and session.skillUp == true })
         end
-        if StockPiler.Scheduler and StockPiler.Scheduler.EnqueueBagFlush then
-            StockPiler.Scheduler.EnqueueBagFlush(true)
-        end
+        -- Do not EnqueueBagFlush here. The craft already emits inventory slot
+        -- events; a coalesced flush landed ~2s later on the next brew and ran
+        -- a second WarmHave + craftable recount on the perform frame.
         -- Grey immediately; ForceBrewUiRefresh re-lits when busy clears.
         ForceBrewUiRefresh()
     end

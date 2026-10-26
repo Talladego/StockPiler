@@ -866,11 +866,18 @@ end
 -- Growable / slot classification (stub-safe)
 ----------------------------------------------------------------
 
+--- True when the slot can progress via AutoGrow: exemplar is cultivable, or a
+--- known cult twin exists (e.g. Majestic Goldweed for Brutal Zoic Gore). Used by
+--- ContestedBuyOnlyKind / RecipeSlotPlanEntry so Buy materials never blocks a
+--- watch that can plant instead. Brew still prefers non-growable bag picks.
 local function SpecIsGrowable(spec, role)
     if role == "container" then
         return false
     end
     local SM = StockPiler.SeedMap
+    if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
+        return false
+    end
     if SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
         return true
     end
@@ -878,8 +885,13 @@ local function SpecIsGrowable(spec, role)
     if MS and MS.IsGrowable and MS.IsGrowable(spec) == true then
         return true
     end
-    if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
-        return false
+    -- Fingerprint may bind a butcher/vendor exemplar; a ProductMatches cult twin
+    -- still means we can grow rather than Buy-block the watch.
+    if SM and SM.FindGrowableTwinUid then
+        local twin = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+        if twin > 0 then
+            return true
+        end
     end
     return false
 end
@@ -1006,9 +1018,40 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
     local function FillPlantEntry(plantUidHint)
         entry.kind = "plant"
         local SM = StockPiler.SeedMap
+        local growTwin = 0
+        if SM and SM.FindGrowableTwinUid then
+            growTwin = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+        end
+        -- Prefer cult twin plant uid over butcher bound exemplar for seed/refine.
+        local plantProbe = spec
+        if growTwin > 0 and (tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0) ~= growTwin then
+            plantProbe = {
+                uid = growTwin,
+                uniqueID = growTwin,
+                boundUid = growTwin,
+                role = spec.role,
+                name = spec.name,
+                level = spec.level,
+                rarity = spec.rarity,
+                incomplete = spec.incomplete,
+            }
+            local MS = MaterialSpec()
+            if MS and MS.FromItemData and StockPiler.Items and StockPiler.Items.AsItemData then
+                local sample = StockPiler.Items.AsItemData(growTwin)
+                if type(sample) == "table" then
+                    local twinSpec = MS.FromItemData(sample, role)
+                    if type(twinSpec) == "table" then
+                        plantProbe = twinSpec
+                    end
+                end
+            end
+        end
         local seed = nil
         if SM and SM.ResolveSeedForSpec then
-            seed = SM.ResolveSeedForSpec(spec)
+            seed = SM.ResolveSeedForSpec(plantProbe)
+            if type(seed) ~= "table" and plantProbe ~= spec then
+                seed = SM.ResolveSeedForSpec(spec)
+            end
         end
         if type(seed) == "table" then
             entry.seed = seed
@@ -1017,14 +1060,19 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
         else
             entry.plantUid = 0
         end
+        -- Hint is the cult twin from the non-growable branch. growTwin covers
+        -- the same case when the slot was already classified plant. Butcher
+        -- bound uid is only a last resort.
         plantUidHint = tonumber(plantUidHint) or 0
         if (tonumber(entry.plantUid) or 0) <= 0 then
             if plantUidHint > 0 then
                 entry.plantUid = plantUidHint
+            elseif growTwin > 0 then
+                entry.plantUid = growTwin
             else
                 entry.plantUid = SpecBoundUid(spec)
                 if entry.plantUid <= 0 and SM and SM.FindPlantUidForSpec then
-                    entry.plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+                    entry.plantUid = tonumber(SM.FindPlantUidForSpec(plantProbe)) or 0
                 end
             end
         end
@@ -2417,27 +2465,40 @@ local function ScheduleDemandPrewarm(reason)
     if AutoGrowWantsDemand() ~= true then
         return
     end
-    Planner._demandPrewarmDue = true
     reason = reason or "focus-demand"
+    local FW = StockPiler.FrameWork
+    -- Already queued: do not re-enqueue (same snapGen would restart after finish).
+    if FW and FW.IsActive and FW.IsActive("prewarm-demand") == true then
+        Planner._demandPrewarmDue = true
+        return
+    end
+    local dueKey = FullCacheKey("demand-prewarm")
+    if Planner._demandPrewarmDue == true and Planner._demandPrewarmDueKey == dueKey then
+        return
+    end
     local Sch = StockPiler.Scheduler
+    if Sch and Sch._pendingPrewarmAfterQuiet == true then
+        Planner._demandPrewarmDue = true
+        Planner._demandPrewarmDueKey = dueKey
+        return
+    end
+    Planner._demandPrewarmDue = true
+    Planner._demandPrewarmDueKey = dueKey
     if Sch and Sch.RequestDemandPrewarm then
         Sch.RequestDemandPrewarm(reason)
     elseif Sch and Sch.RequestCachePrewarm then
         Sch.RequestCachePrewarm(reason)
-    end
-    local FW = StockPiler.FrameWork
-    if FW and FW.IsActive and FW.IsActive("prewarm-demand") == true then
-        return
-    end
-    if Sch and Sch._pendingPrewarmAfterQuiet == true then
-        return
     end
     if not (FW and FW.EnqueueDemand) and Sch then
         Sch._planDue = true
     end
 end
 
-local function InvalidateFocusCaches()
+local function InvalidateFocusCaches(reason)
+    reason = tostring(reason or "focus")
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("focusInv", reason)
+    end
     ClearSettingsHashMemo()
     Planner._autoGrowFocusCache = nil
     Planner._autoGrowFocusKey = nil
@@ -2452,11 +2513,11 @@ local function InvalidateFocusCaches()
     Planner._craftBagFreeCached = nil
     -- Stocked potion rows clear demand without a plan rebuild. Prewarm it back
     -- so potion lift is not stuck on a nil cache (plant_stock does not wait).
-    ScheduleDemandPrewarm("focus-demand")
+    ScheduleDemandPrewarm(reason)
 end
 
-function Planner.InvalidateFocusCaches()
-    InvalidateFocusCaches()
+function Planner.InvalidateFocusCaches(reason)
+    InvalidateFocusCaches(reason)
 end
 
 ----------------------------------------------------------------
@@ -3297,7 +3358,7 @@ function Planner.RefreshSkillGateStatuses()
         end
     end
     if changed then
-        InvalidateFocusCaches()
+        InvalidateFocusCaches("skill-gate")
         local Brew = StockPiler.Brew
         if Brew and Brew.InvalidateCanBrewCache then
             Brew.InvalidateCanBrewCache()
@@ -4964,6 +5025,23 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         end
     end
     local contestDirty = false
+    -- Snapshot before paint so focus-cache invalidate uses net status, not
+    -- intermediate ApplyLiveWatchStatus flips that PolishSharedContest undoes.
+    local focusSnap = {}
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            focusSnap[i] = {
+                key = tostring(row.statusKey or ""),
+                shared = row.craftableShared == true,
+            }
+        end
+    end
+    local function FocusKeyQualifies(key)
+        return key == "restocking" or key == "need_seeds"
+            or key == "upgrading_seed" or key == "ready_to_craft_shared"
+            or key == "buy_ingredients"
+    end
     for i = 1, #rows do
         local row = rows[i]
         if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
@@ -5093,18 +5171,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                         Grow.MarkPlantJobDirty()
                     end
                 end
-                if newKey ~= prevKey
-                    and (newKey == "restocking" or newKey == "need_seeds"
-                        or newKey == "upgrading_seed"
-                        or newKey == "ready_to_craft_shared"
-                        or newKey == "buy_ingredients"
-                        or prevKey == "ready_to_craft_shared"
-                        or prevKey == "buy_ingredients"
-                        or prevKey == "restocking" or prevKey == "need_seeds"
-                        or prevKey == "upgrading_seed")
-                then
-                    InvalidateFocusCaches()
-                end
+                -- Focus-cache invalidate deferred to net compare after PolishSharedContest.
             end
         end
     end
@@ -5159,9 +5226,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         craftReadyBrew = StockPiler.Brew
         craftReadyBefore = craftReadyBrew and craftReadyBrew.HasReadyToCraft
             and craftReadyBrew.HasReadyToCraft() == true
-        if PolishSharedContest(rows) then
-            InvalidateFocusCaches()
-        end
+        PolishSharedContest(rows)
         if craftReadyBrew and craftReadyBrew.InvalidateCanBrewCache then
             craftReadyBrew.InvalidateCanBrewCache()
         end
@@ -5173,6 +5238,25 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 end
             end
         end
+    end
+    -- One focus-cache bust per pass, only when a qualifying status really changed.
+    local focusDirty = false
+    for i = 1, #rows do
+        local row = rows[i]
+        local before = focusSnap[i]
+        if type(row) == "table" and type(before) == "table" then
+            local afterKey = tostring(row.statusKey or "")
+            local afterShared = row.craftableShared == true
+            if afterKey ~= before.key or afterShared ~= before.shared then
+                if FocusKeyQualifies(afterKey) or FocusKeyQualifies(before.key) then
+                    focusDirty = true
+                    break
+                end
+            end
+        end
+    end
+    if focusDirty then
+        InvalidateFocusCaches("live-status")
     end
     for i = 1, #rows do
         StampCraftableSafety(rows[i])
@@ -5570,6 +5654,7 @@ end
 --- runs the real build and stores _demandCache.
 function Planner.WarmDemand()
     Planner._demandPrewarmDue = nil
+    Planner._demandPrewarmDueKey = nil
     return BuildBalancedSpecDemand()
 end
 
@@ -5883,6 +5968,14 @@ function Planner.LiveRecount(opts)
     if opts.invalidateStamps == true and Planner.InvalidateCraftableStamps then
         Planner.InvalidateCraftableStamps(listData)
     end
+    -- Stamp forced recount so BrewCatchup / RequestForcedWatchRecount can skip
+    -- a second Status.Craftable pass on the same snapGen+frame.
+    if opts.forceRecountCraftable == true then
+        local Inv = StockPiler.Inventory
+        local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+        local frame = tonumber(StockPiler.FrameCounter) or 0
+        Planner._forcedRecountStamp = tostring(snap) .. ":" .. tostring(frame)
+    end
     local patchOpts = {
         allowWarmHave = opts.allowWarmHave,
         syncSnapshot = opts.syncSnapshot,
@@ -5927,6 +6020,17 @@ function Planner.LiveRecount(opts)
     return Planner._liveGen
 end
 
+--- True when LiveRecount already forced craftable this snapGen+frame.
+function Planner.ForcedRecountMatches(snapGen, frame)
+    local stamp = Planner._forcedRecountStamp
+    if stamp == nil then
+        return false
+    end
+    snapGen = tonumber(snapGen) or 0
+    frame = tonumber(frame) or 0
+    return stamp == (tostring(snapGen) .. ":" .. tostring(frame))
+end
+
 --- Flip Enable AutoGrow <-> Restocking on current plan + optional extra rows (listData).
 --- Call from Watch UI after master/per-watch AutoGrow toggles - do not wait for rebuild.
 function Planner.ReconcileAutoGrowStatusesNow(extraRows)
@@ -5957,7 +6061,7 @@ function Planner.ReconcileAutoGrowStatusesNow(extraRows)
         end
     end
     if changed then
-        InvalidateFocusCaches()
+        InvalidateFocusCaches("autogrow-reconcile")
     end
     return changed
 end
@@ -5978,7 +6082,7 @@ function Planner.AfterPrioritySoftChange(extraRows)
         polish(plan.rows)
     end
     polish(extraRows)
-    InvalidateFocusCaches()
+    InvalidateFocusCaches("priority-soft")
 end
 
 function Planner.HasReadyToCraft()

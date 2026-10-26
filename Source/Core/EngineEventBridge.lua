@@ -154,6 +154,12 @@ function Bridge.FlushPendingMainSlots()
     if StockPiler.Perf and StockPiler.Perf.End then
         StockPiler.Perf.End("Inv.ApplySlots")
     end
+    -- Same-frame FrameWork.Pump used to run ui-force-watch-recount + WarmHave.miss
+    -- on top of ApplySlots (libperf Inv.ApplySlots + Status.Craftable x18).
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.NoteHeavyWork then
+        Sch.NoteHeavyWork()
+    end
     return true
 end
 
@@ -171,6 +177,10 @@ function Bridge.FlushPendingCraftSlots()
     ApplyInventorySlots("craft", slots, "engine-crafting-slot")
     if StockPiler.Perf and StockPiler.Perf.End then
         StockPiler.Perf.End("Inv.ApplySlots")
+    end
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.NoteHeavyWork then
+        Sch.NoteHeavyWork()
     end
     return true
 end
@@ -594,6 +604,9 @@ local function RunUpdateProcessed(timeElapsed)
     RunStage("open-paint", function()
         if StockPilerWindow and StockPilerWindow.FlushOpenPaint then
             StockPilerWindow.FlushOpenPaint()
+        end
+        if StockPilerTabWatch and StockPilerTabWatch.FlushChromeRepaint then
+            StockPilerTabWatch.FlushChromeRepaint()
         end
     end)
 

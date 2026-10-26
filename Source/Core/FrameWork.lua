@@ -71,6 +71,11 @@ local function ShouldSkipPump()
         if Sch.IsSuppressed and Sch.IsSuppressed() == true then
             return true
         end
+        -- Bag-apply / BagFlush already heavy this frame: defer Pump one frame
+        -- so ui-force-watch-recount does not WarmHave.miss on the same Update.
+        if Sch.ShouldDeferWarmHaveBag and Sch.ShouldDeferWarmHaveBag() == true then
+            return true
+        end
     end
     local Orch = StockPiler.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then

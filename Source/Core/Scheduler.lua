@@ -106,6 +106,10 @@ local function IssueBurstActive()
 end
 
 local function RequestCachePrewarm(reason)
+    reason = tostring(reason or "unknown")
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("prewarm", reason)
+    end
     -- Defer prewarm during plant/refine quiet and the seed-buffer issue burst.
     -- Bag coalesce is 2s; quiet is only 1.25s, so the flush was landing in the
     -- gap and running WarmHave + Demand + a full Watch refresh.
@@ -1067,9 +1071,13 @@ function Sch.IsPlanRebuildPending()
 end
 
 function Sch.MarkWatchUiDirty(payload)
+    payload = type(payload) == "table" and payload or {}
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("watchDirty", tostring(payload.reason or "mark"))
+    end
     local Bus = StockPiler.EventBus
     if Bus and Bus.FireWatchUiDirty then
-        Bus.FireWatchUiDirty(type(payload) == "table" and payload or {})
+        Bus.FireWatchUiDirty(payload)
     end
 end
 

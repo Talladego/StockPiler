@@ -725,8 +725,10 @@ function StockPilerTabPlants.OnMouseOverIcon()
             SystemData.ActiveWindow.name,
             data.name or T("ui.plant_fallback")
         )
-        if Tooltips.AnchorTooltip and Tooltips.ANCHOR_WINDOW_RIGHT then
-            Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+        if StockPiler.Inventory and StockPiler.Inventory.AnchorLikeBagItemTooltip then
+            StockPiler.Inventory.AnchorLikeBagItemTooltip()
+        elseif Tooltips.AnchorTooltip then
+            Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
         end
     end
 end
@@ -801,7 +803,7 @@ function StockPilerTabPlants.OnMouseOverRecipe()
         StockPiler.RecipeTooltip.ShowColoredRows(
             SystemData.ActiveWindow.name,
             tipRows,
-            Tooltips and Tooltips.ANCHOR_WINDOW_RIGHT
+            Tooltips and Tooltips.ANCHOR_WINDOW_BOTTOM
         )
         return
     end
@@ -811,7 +813,7 @@ function StockPilerTabPlants.OnMouseOverRecipe()
     end
     if Tooltips and Tooltips.CreateTextOnlyTooltip then
         Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, towstring(table.concat(lines, "\n")))
-        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_BOTTOM)
     end
 end
 
