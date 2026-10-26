@@ -17,6 +17,56 @@ local function TryQuiet(label, fn, ...)
     return StockPiler.Util.TryCallQuiet(label, fn, ...)
 end
 
+--- Mythic GetCraftingItems clears GameData.Player.itemsDirty (the normal
+--- backpack flag) instead of craftingItemsDirty. Capture the pending flag
+--- and put it back when a craft read drops it. A flag raised during the
+--- call stays set; a flag that was already clear is left alone.
+local function CaptureItemsDirty()
+    local player = _G.GameData and _G.GameData.Player
+    return type(player) == "table" and player.itemsDirty == true
+end
+
+local function RestorePendingItemsDirty(hadItemsDirty)
+    if hadItemsDirty ~= true then
+        return
+    end
+    if type(_G.GameData) ~= "table" or type(_G.GameData.Player) ~= "table" then
+        return
+    end
+    if _G.GameData.Player.itemsDirty ~= true then
+        _G.GameData.Player.itemsDirty = true
+    end
+end
+
+local function CallCraftingRead(label, fn, ...)
+    local hadItemsDirty = CaptureItemsDirty()
+    local ok, data = TryQuiet(label, fn, ...)
+    RestorePendingItemsDirty(hadItemsDirty)
+    return ok, data
+end
+
+local function KnownMainBackpackCapacity()
+    local player = _G.GameData and _G.GameData.Player
+    if type(player) ~= "table" then
+        player = nil
+    end
+    local slots = (tonumber(player and player.numBackpackSlots)
+        or tonumber(player and player.backpackSlots)
+        or tonumber(player and player.maxBackpackSlots)
+        or 0)
+    if slots > 0 then
+        return true
+    end
+    local bp = _G.EA_Window_Backpack
+    if type(bp) == "table" and type(bp.numberOfSlots) == "table" then
+        local key = bp.TYPE_INVENTORY or 1
+        if (tonumber(bp.numberOfSlots[key]) or 0) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
 local function ItemPresent(item)
     if type(item) ~= "table" then
         return false
@@ -258,29 +308,32 @@ end
 --- Thin DataUtils / engine wrappers. Trusts dirty gate unless forceRefresh.
 --- Force path calls GetCraftingItemData / GetInventoryItemData directly.
 --- Stock DataUtils.GetCraftingItems never clears craftingItemsDirty (it wrongly
---- clears itemsDirty instead) - once dirty at init, every ReloadCraftingItems
---- refetches. Do NOT clear craftingItemsDirty/itemsDirty here: clearing made
---- DataUtils serve a stale table on the next slot event (after the first move).
+--- clears itemsDirty instead). Preserve a pending itemsDirty across craft reads
+--- so the next GetItems can still fill the shared backpack cache. A zero-entry
+--- main cache with known backpack capacity is marked dirty and retried once
+--- when that first GetItems did not already read native inventory.
+--- Do NOT clear craftingItemsDirty/itemsDirty here: clearing made DataUtils
+--- serve a stale table on the next slot event (after the first move).
 function BA.GetBagTable(bagType, opts)
     opts = type(opts) == "table" and opts or {}
     local force = opts.force == true
     bagType = tostring(bagType or BAG_MAIN)
     if bagType == BAG_CRAFT then
         if force == true and type(GetCraftingItemData) == "function" then
-            local ok, data = TryQuiet("BagAdapter.GetCraftingItemData.force", GetCraftingItemData)
+            local ok, data = CallCraftingRead("BagAdapter.GetCraftingItemData.force", GetCraftingItemData)
             if ok and type(data) == "table" then
                 BA._warmCraft = data
                 return data
             end
         end
         if DataUtils and type(DataUtils.GetCraftingItems) == "function" then
-            local ok, data = TryQuiet("BagAdapter.GetCraftingItems", DataUtils.GetCraftingItems)
+            local ok, data = CallCraftingRead("BagAdapter.GetCraftingItems", DataUtils.GetCraftingItems)
             if ok and type(data) == "table" then
                 BA._warmCraft = data
                 return data
             end
         elseif type(GetCraftingItemData) == "function" then
-            local ok, data = TryQuiet("BagAdapter.GetCraftingItemData", GetCraftingItemData)
+            local ok, data = CallCraftingRead("BagAdapter.GetCraftingItemData", GetCraftingItemData)
             if ok and type(data) == "table" then
                 BA._warmCraft = data
                 return data
@@ -296,8 +349,33 @@ function BA.GetBagTable(bagType, opts)
         end
     end
     if DataUtils and type(DataUtils.GetItems) == "function" then
+        local player = _G.GameData and _G.GameData.Player
+        local startedItemsDirty = type(player) == "table" and player.itemsDirty == true
         local ok, data = TryQuiet("BagAdapter.GetItems", DataUtils.GetItems)
-        if ok and type(data) == "table" then
+        local failed = ok ~= true or type(data) ~= "table"
+        local empty = ok == true and type(data) == "table" and next(data) == nil
+        if (failed or empty) and KnownMainBackpackCapacity() then
+            if type(_G.GameData) == "table" and type(_G.GameData.Player) == "table" then
+                _G.GameData.Player.itemsDirty = true
+            end
+            if startedItemsDirty ~= true then
+                local retryOk, retryData = TryQuiet("BagAdapter.GetItems.retry", DataUtils.GetItems)
+                if retryOk == true and type(retryData) == "table" and next(retryData) ~= nil then
+                    BA._warmMain = retryData
+                    return retryData
+                end
+                if type(_G.GameData) == "table" and type(_G.GameData.Player) == "table" then
+                    _G.GameData.Player.itemsDirty = true
+                end
+                if retryOk == true and type(retryData) == "table" then
+                    BA._warmMain = retryData
+                    return retryData
+                end
+            elseif ok == true and type(data) == "table" then
+                BA._warmMain = data
+                return data
+            end
+        elseif ok == true and type(data) == "table" then
             BA._warmMain = data
             return data
         end
@@ -422,7 +500,12 @@ function BA.ReadSlot(bagType, slot)
         local itemLoc = bagType == BAG_CRAFT and GameData.ItemLocs.CRAFTING_ITEM
             or GameData.ItemLocs.INVENTORY
         if itemLoc ~= nil then
-            local ok, item = TryQuiet("BagAdapter.GetItemData", DataUtils.GetItemData, itemLoc, slot)
+            local ok, item
+            if bagType == BAG_CRAFT then
+                ok, item = CallCraftingRead("BagAdapter.GetItemData", DataUtils.GetItemData, itemLoc, slot)
+            else
+                ok, item = TryQuiet("BagAdapter.GetItemData", DataUtils.GetItemData, itemLoc, slot)
+            end
             if ok then
                 local uid, qty = BA.SlotQty(item)
                 return uid, qty, item
