@@ -1677,7 +1677,8 @@ end
 
 --- Scan bags / Account.items / grows for a cultivable ProductMatches twin.
 --- Skips butcher/vendor names (LooksButcher) unless goldweed/gobswort.
-local function SearchGrowProducerUid(spec)
+--- opts.cacheOnly skips the live bag walk (hover, hydrate, Watch tips).
+local function SearchGrowProducerUid(spec, opts)
     local MS = StockPiler.MaterialSpec
     if type(spec) ~= "table" or not (MS and MS.ProductMatches) then
         return 0
@@ -1696,16 +1697,20 @@ local function SearchGrowProducerUid(spec)
     end
 
     -- 1) Live bags. Scan the whole tier so the lowest matching uid wins.
-    local Inv = StockPiler.Inventory
-    if Inv and Inv.ForEachItem then
-        Inv.ForEachItem(function(item)
-            if type(item) == "table" then
-                considerItem(item, item.uniqueID or item.uniqueId or item.uid)
-            end
-        end)
-    end
-    if bestUid > 0 then
-        return bestUid
+    -- Hover / hydrate passes cacheOnly and must not start this walk.
+    local cacheOnly = type(opts) == "table" and opts.cacheOnly == true
+    if not cacheOnly then
+        local Inv = StockPiler.Inventory
+        if Inv and Inv.ForEachItem then
+            Inv.ForEachItem(function(item)
+                if type(item) == "table" then
+                    considerItem(item, item.uniqueID or item.uniqueId or item.uid)
+                end
+            end)
+        end
+        if bestUid > 0 then
+            return bestUid
+        end
     end
 
     -- 2) Learned Items store
@@ -1794,10 +1799,11 @@ end
 --- Prefer a cultivable plant twin over butcher/vendor ProductMatches twins.
 --- Returns the current uid when it is already growable, a known plant twin when
 --- one exists, or 0 when butcher/vendor is the only option (caller keeps it).
-function SM.FindGrowableTwinUid(spec)
+function SM.FindGrowableTwinUid(spec, opts)
     if type(spec) ~= "table" then
         return 0
     end
+    opts = type(opts) == "table" and opts or {}
     if SM.IsHarvestByproduct(spec) then
         return 0
     end
@@ -1819,9 +1825,22 @@ function SM.FindGrowableTwinUid(spec)
     if twinKey ~= "" and SM._growTwinCache[twinKey] ~= nil then
         return tonumber(SM._growTwinCache[twinKey]) or 0
     end
+    -- A fingerprint plant search already walked bags for this product.
+    if opts.cacheOnly == true and cacheKey ~= "" and SM._plantUidCacheSnap == gen
+        and type(SM._plantUidCache) == "table" and SM._plantUidCache[cacheKey] ~= nil
+    then
+        return tonumber(SM._plantUidCache[cacheKey]) or 0
+    end
 
-    local bestUid = SearchGrowProducerUid(spec)
+    local bestUid = SearchGrowProducerUid(spec, opts)
     -- Bound butcher uid must not win: SearchGrowProducerUid already skips LooksButcher.
+    -- cacheOnly must not store a miss: the bag twin may show up on a later full search.
+    if opts.cacheOnly == true then
+        if bestUid > 0 and twinKey ~= "" then
+            SM._growTwinCache[twinKey] = bestUid
+        end
+        return bestUid
+    end
     if twinKey ~= "" then
         SM._growTwinCache[twinKey] = bestUid
     end

@@ -670,7 +670,8 @@ local function HydrateRecipeSlots(recipe)
     -- because ContestedBuyOnlyKind treats the slot as non-growable. Rewrite to a
     -- cultivable twin when known (Majestic Goldweed); fingerprint unchanged.
     if RS.PreferGrowableSlotExemplars then
-        RS.PreferGrowableSlotExemplars(recipe.slots)
+        -- Hover and plan hydrate must not cold-scan bags for a cultivable twin.
+        RS.PreferGrowableSlotExemplars(recipe.slots, { cacheOnly = true })
     end
     StampIncompleteMainEffect(recipe)
 end
@@ -2973,7 +2974,7 @@ end
 
 --- Rewrite slot exemplars to a cultivable twin when one is known.
 --- Fingerprint stays the same (uid-agnostic). Butcher/vendor kept when alone.
-function RS.PreferGrowableSlotExemplars(slots)
+function RS.PreferGrowableSlotExemplars(slots, opts)
     if type(slots) ~= "table" then
         return slots
     end
@@ -2981,6 +2982,7 @@ function RS.PreferGrowableSlotExemplars(slots)
     if not (SM and SM.FindGrowableTwinUid) then
         return slots
     end
+    opts = type(opts) == "table" and opts or {}
     for i = 1, #slots do
         local slot = slots[i]
         if type(slot) == "table" then
@@ -2990,7 +2992,7 @@ function RS.PreferGrowableSlotExemplars(slots)
                 if role ~= "" and (spec.role == nil or spec.role == "" or spec.role == "ingredient") then
                     spec.role = role
                 end
-                local plantUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+                local plantUid = tonumber(SM.FindGrowableTwinUid(spec, opts)) or 0
                 local curUid = tonumber(slot.uid) or tonumber(spec.uid) or tonumber(spec.boundUid) or 0
                 if plantUid > 0 and plantUid ~= curUid then
                     slot.uid = plantUid

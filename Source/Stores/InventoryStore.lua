@@ -843,7 +843,7 @@ function Inv.ResolvePotionItemData(potionKey, uid, existing)
     return best or existing
 end
 
---- Same screen-edge placement bags use (CreateItemTooltip → ANCHOR_WINDOW_VARIABLE).
+--- Same screen-edge placement bags use (CreateItemTooltip -> ANCHOR_WINDOW_VARIABLE).
 function Inv.AnchorLikeBagItemTooltip()
     if not (Tooltips and type(Tooltips.AnchorTooltip) == "function") then
         return

@@ -193,6 +193,16 @@ do
     Perf._reasonTally = Perf._reasonTally or {}
 
     function Perf.Tally(bucket, reason)
+        -- Profiling off: do not allocate tally tables on prewarm or Watch dirty.
+        local enabled = false
+        if type(Perf.IsEnabled) == "function" then
+            enabled = Perf.IsEnabled() == true
+        else
+            enabled = Perf.Enabled == true
+        end
+        if enabled ~= true then
+            return
+        end
         bucket = tostring(bucket or "?")
         reason = tostring(reason or "?")
         local byBucket = Perf._reasonTally

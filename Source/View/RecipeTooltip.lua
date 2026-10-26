@@ -32,7 +32,7 @@ RecipeTooltip._raisedRows = nil
 
 --- Direct wipe of private DefaultTooltipRowN labels (stock ClearTooltip only
 --- walks Tooltips.NUM_ROWS). Used so craft-button / long tip leftovers cannot
---- ghost under the next tip of any kind (recipe, watch, bag, vendor, …).
+--- ghost under the next tip of any kind (recipe, watch, bag, vendor, ...).
 local function WipePrivateRowLabels(fromRow, toRow)
     fromRow = tonumber(fromRow) or 0
     toRow = tonumber(toRow) or 0
@@ -880,7 +880,7 @@ local function AppendIngredientSection(rows, header, stats, role, statsColor, ma
 end
 
 --- Recipe tip rows: title/meta, then one section per recipe slot.
---- perCraft > 1 is shown as "… - Stabilizer x2" (not duplicated sections).
+--- perCraft > 1 is shown as "... - Stabilizer x2" (not duplicated sections).
 function RecipeTooltip.BuildRows(recipeData)
     if type(recipeData) ~= "table" then
         return {}

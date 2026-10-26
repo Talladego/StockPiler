@@ -2970,7 +2970,7 @@ local function SpecIsAutoGrowProgressableTip(entry)
         return false
     end
     if SM and SM.FindGrowableTwinUid then
-        return (tonumber(SM.FindGrowableTwinUid(spec)) or 0) > 0
+        return (tonumber(SM.FindGrowableTwinUid(spec, { cacheOnly = true })) or 0) > 0
     end
     return false
 end

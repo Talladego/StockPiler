@@ -866,6 +866,15 @@ end
 -- Growable / slot classification (stub-safe)
 ----------------------------------------------------------------
 
+--- Twin lookup for Watch / plan paint. Never starts a live bag scan.
+local function FindGrowableTwinCached(spec)
+    local SM = StockPiler.SeedMap
+    if not (SM and SM.FindGrowableTwinUid) then
+        return 0
+    end
+    return tonumber(SM.FindGrowableTwinUid(spec, { cacheOnly = true })) or 0
+end
+
 --- True when the slot can progress via AutoGrow: exemplar is cultivable, or a
 --- known cult twin exists (e.g. Majestic Goldweed for Brutal Zoic Gore). Used by
 --- ContestedBuyOnlyKind / RecipeSlotPlanEntry so Buy materials never blocks a
@@ -887,11 +896,8 @@ local function SpecIsGrowable(spec, role)
     end
     -- Fingerprint may bind a butcher/vendor exemplar; a ProductMatches cult twin
     -- still means we can grow rather than Buy-block the watch.
-    if SM and SM.FindGrowableTwinUid then
-        local twin = tonumber(SM.FindGrowableTwinUid(spec)) or 0
-        if twin > 0 then
-            return true
-        end
+    if FindGrowableTwinCached(spec) > 0 then
+        return true
     end
     return false
 end
@@ -916,11 +922,7 @@ local function SpecCanAutoGrowProgress(spec, role)
     if SpecIsGrowable(spec, role) == true then
         return true
     end
-    local SM = StockPiler.SeedMap
-    if SM and SM.FindGrowableTwinUid then
-        return (tonumber(SM.FindGrowableTwinUid(spec)) or 0) > 0
-    end
-    return false
+    return FindGrowableTwinCached(spec) > 0
 end
 
 --- Prefer main -> goldweed/stab -> extender -> multiplier when growing convert feedstock for resin.
@@ -1018,10 +1020,7 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
     local function FillPlantEntry(plantUidHint)
         entry.kind = "plant"
         local SM = StockPiler.SeedMap
-        local growTwin = 0
-        if SM and SM.FindGrowableTwinUid then
-            growTwin = tonumber(SM.FindGrowableTwinUid(spec)) or 0
-        end
+        local growTwin = FindGrowableTwinCached(spec)
         -- Prefer cult twin plant uid over butcher bound exemplar for seed/refine.
         local plantProbe = spec
         if growTwin > 0 and (tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0) ~= growTwin then
@@ -1105,11 +1104,7 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
         entry.kind = "buy"
     else
         -- Butcher/vendor exemplar with a cultivable twin: plant that twin.
-        local twinUid = 0
-        local SM = StockPiler.SeedMap
-        if SM and SM.FindGrowableTwinUid then
-            twinUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
-        end
+        local twinUid = FindGrowableTwinCached(spec)
         if twinUid > 0 then
             FillPlantEntry(twinUid)
         else
@@ -1518,8 +1513,8 @@ local function BuildBalancedSpecDemand(opts)
                 if progress then
                     if SpecIsGrowable(row.spec, role) and SM.FindPlantUidForSpec then
                         plantUid = tonumber(SM.FindPlantUidForSpec(row.spec)) or 0
-                    elseif SM.FindGrowableTwinUid then
-                        plantUid = tonumber(SM.FindGrowableTwinUid(row.spec)) or 0
+                    else
+                        plantUid = FindGrowableTwinCached(row.spec)
                     end
                     if SM.ResolveSeedForSpec then
                         local seed = SM.ResolveSeedForSpec(row.spec)
