@@ -180,19 +180,8 @@ if LibPerf and type(LibPerf.Scope) == "function" then
     Perf.Available = true
     function Perf.OnFrame(_timeElapsed)
     end
-    local thr = 0
-    if Perf.GetThreshold then
-        thr = tonumber(Perf.GetThreshold()) or 0
-    elseif Perf.GetFrameThreshold then
-        thr = tonumber(Perf.GetFrameThreshold()) or 0
-    end
-    if thr > 0 and thr < CAPTURE_FLOOR_MS then
-        if Perf.SetThreshold then
-            Perf.SetThreshold(CAPTURE_FLOOR_MS)
-        elseif Perf.SetFrameThreshold then
-            Perf.SetFrameThreshold(CAPTURE_FLOOR_MS)
-        end
-    end
+    -- Do not raise a saved /libperf threshold. LibPerf persists it; a 250ms
+    -- floor here overwrote /libperf StockPiler thr 50 on every reload.
     StockPiler.Perf = Perf
 else
     StockPiler.Perf = MakeInAddonPerf()

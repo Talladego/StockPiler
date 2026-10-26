@@ -2028,6 +2028,15 @@ function StockPilerTabWatch.UpdateRows(opts)
     if not DoesWindowExist("SPTabWatchList") then
         return
     end
+    if opts.forceQuietPaint ~= true then
+        local Sch = StockPiler.Scheduler
+        if Sch and (
+            (Sch.IsSuppressed and Sch.IsSuppressed() == true)
+            or (Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
+        ) then
+            return
+        end
+    end
     if StockPiler.Perf and StockPiler.Perf.Begin then
         StockPiler.Perf.Begin("WatchRows")
     end
@@ -2165,7 +2174,7 @@ function StockPilerTabWatch.UpdateRows(opts)
                     else
                         local craftColor = COLOR_BLOCK
                         if craftable > 0 then
-                            -- Yellow: craftable but seed buffer short. Green: buffer-safe (shared OK).
+                            -- Green: Ready to Brew (count covers the target). Yellow: not ready.
                             if data.seedBufferShort == true or data.craftableSafe == false then
                                 craftColor = COLOR_WARN
                             else
@@ -3706,11 +3715,19 @@ function StockPilerTabWatch.OnMouseOverCraftable()
         Tip(T("tip.watch.craftable_none"))
         return
     end
-    if data.seedBufferShort == true or data.craftableSafe == false then
+    if data.craftableSafe == true then
+        Tip(T("tip.watch.craftable_ready"))
+        return
+    end
+    if data.seedBufferShort == true then
         Tip(T("tip.watch.craftable_seed_buffer"))
         return
     end
-    Tip(T("tip.watch.craftable_ready"))
+    if data.craftableShared == true or tostring(data.statusKey or "") == "ready_to_craft_shared" then
+        Tip(T("tip.watch.craftable_shared"))
+        return
+    end
+    Tip(T("tip.watch.craftable_not_ready"))
 end
 
 function StockPilerTabWatch.OnMouseOverTarget()

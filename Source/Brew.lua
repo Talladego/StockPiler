@@ -278,7 +278,7 @@ local function RowIsReadyToCraft(row)
 end
 
 local function RowCanPrematureLoad(row)
-    -- Manual load: green Craftable only (buffer-safe; shared mats OK).
+    -- Manual load follows the green Craftable column (Ready, target covered).
     if type(row) ~= "table" then
         return false
     end

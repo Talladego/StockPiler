@@ -1875,6 +1875,27 @@ function Grow.PickedThisFrame()
     return frame > 0 and Grow._plantPickFrame == frame
 end
 
+function Grow.IssuedThisFrame()
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    return frame > 0 and Grow._engineIssueFrame == frame
+end
+
+--- Cold PickPlantCandidate and PlantSeed were one ~70ms frame. Defer the
+--- engine call to a later frame. A cold pick on a later frame still issues,
+--- so a garden invalidate cannot stall planting.
+function Grow.ShouldDeferPlantIssue()
+    if Grow.PickedThisFrame() ~= true then
+        return false
+    end
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    local deferred = tonumber(Grow._deferPlantFrame) or 0
+    if deferred > 0 and deferred ~= frame then
+        return false
+    end
+    Grow._deferPlantFrame = frame
+    return true
+end
+
 function Grow.PeekSeedsForNextPlant()
     if Grow._plantQueueDirty == true then
         return false, "dirty"
@@ -2053,6 +2074,27 @@ function Grow.IssuePlantOne(opId)
         })
     end
 
+    -- Quiet before PlantSeed so cult/bag deltas cannot paint Watch this frame.
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.ArmPlantQuiet then
+        Sch.ArmPlantQuiet()
+    end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
+    end
+    if Sch and Sch.SuppressInventorySideEffects then
+        Sch.SuppressInventorySideEffects(2)
+    end
+
+    local issueFrame = tonumber(StockPiler.FrameCounter) or 0
+    if issueFrame > 0 and Grow._engineIssueFrame == issueFrame then
+        ReleaseCommit(plotNum, false)
+        return done(false)
+    end
+    Grow._engineIssueFrame = issueFrame
     CA.SetCurrentPlot(plotNum)
     local ok = CA.PlantSeed(plotNum, slot, backpackType)
     if ok ~= true then
@@ -2067,11 +2109,11 @@ function Grow.IssuePlantOne(opId)
 
     -- Seed left the bag; keep _pendingPlant until soil confirm so plots are not reused.
     ReleaseSeedReservation(plotNum)
+    Grow._deferPlantFrame = 0
     Grow._lastPlantedSeedUid = seedUid
     Grow._commitForceCleared = false
     Grow.InvalidatePlantQueue({})
-    -- Plant quiet: hold plan rebuild / Watch / Footer through CultivationUpdated.
-    local Sch = StockPiler.Scheduler
+    -- Refresh the quiet window through CultivationUpdated after the plant call.
     if Sch and Sch.ArmPlantQuiet then
         Sch.ArmPlantQuiet()
     end

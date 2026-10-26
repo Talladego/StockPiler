@@ -678,10 +678,14 @@ end
 function StockPiler.Initialize()
     ClearBootBusTokens()
     StockPiler.Persistence.EnsureSettings()
-    if StockPiler.Perf and StockPiler.Perf.SetEnabled then
-        StockPiler.Perf.SetEnabled(false)
-    elseif StockPiler.Perf and StockPiler.Perf.Disable then
-        StockPiler.Perf.Disable()
+    -- LibPerf owns enable/threshold (saved in LibPerf.Settings, restored on reload).
+    -- Forcing off here persisted perf OFF and wiped /libperf StockPiler on 50.
+    if StockPiler.Perf and StockPiler.Perf.Available ~= true then
+        if StockPiler.Perf.SetEnabled then
+            StockPiler.Perf.SetEnabled(false)
+        elseif StockPiler.Perf.Disable then
+            StockPiler.Perf.Disable()
+        end
     end
     if StockPiler.Locale and StockPiler.Locale.Initialize then
         StockPiler.Locale.Initialize()

@@ -1145,6 +1145,7 @@ function Refine.CollectIntents(opts)
     if Perf and Perf.Begin then
         Perf.Begin("CollectIntents")
     end
+    Refine._collectedFrame = tonumber(StockPiler.FrameCounter) or 0
     local intents = {}
     local RS = StockPiler.RecipeSpec
     local SM = StockPiler.SeedMap
@@ -1338,6 +1339,39 @@ function Refine.CollectIntents(opts)
     return intents
 end
 
+function Refine.CollectedThisFrame()
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    return frame > 0 and Refine._collectedFrame == frame
+end
+
+function Refine.IssuedThisFrame()
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    return frame > 0 and Refine._engineIssueFrame == frame
+end
+
+--- Cold CollectIntents and SendUseItem were one ~100ms frame. Defer the
+--- engine call to a later frame. A cold collect on a later frame still issues.
+function Refine.ShouldDeferIssue()
+    if Refine.CollectedThisFrame() ~= true then
+        return false
+    end
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    local deferred = tonumber(Refine._deferIssueFrame) or 0
+    if deferred > 0 and deferred ~= frame then
+        return false
+    end
+    Refine._deferIssueFrame = frame
+    return true
+end
+
+function Refine.TakeDeferredIssue()
+    if Refine._deferredThisCall == true then
+        Refine._deferredThisCall = false
+        return true
+    end
+    return false
+end
+
 function Refine.CanIssue(intent)
     if type(intent) ~= "table" then
         return false, "nil-intent"
@@ -1519,10 +1553,26 @@ function Refine.IssueOne(intent, opId)
     end
     Refine.TrackLiveSeed(seedUid)
 
-    if StockPiler.Scheduler and StockPiler.Scheduler.SuppressInventorySideEffects then
-        StockPiler.Scheduler.SuppressInventorySideEffects(2)
+    -- Quiet before SendUseItem so the bag storm cannot paint Watch mid-issue.
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.ArmPlantQuiet then
+        Sch.ArmPlantQuiet()
+    end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
+    end
+    if Sch and Sch.SuppressInventorySideEffects then
+        Sch.SuppressInventorySideEffects(2)
     end
 
+    local issueFrame = tonumber(StockPiler.FrameCounter) or 0
+    if issueFrame > 0 and Refine._engineIssueFrame == issueFrame then
+        return done(false)
+    end
+    Refine._engineIssueFrame = issueFrame
     local location = EA_Window_Backpack.GetCursorForBackpack(bagType)
     local sent = 0
     for _ = 1, uses do
@@ -1549,6 +1599,7 @@ function Refine.IssueOne(intent, opId)
     if plantUid > 0 and seedUid > 0 then
         Refine._pendingSeedByPlant[plantUid] = seedUid
     end
+    Refine._deferIssueFrame = 0
     Refine._issuedSeedThisTick = seedUid
     Refine._reconcileSnapGen = -1
     LogRefine(string.format(
@@ -1558,8 +1609,7 @@ function Refine.IssueOne(intent, opId)
     if StockPiler.Grow and StockPiler.Grow.InvalidatePlantQueue then
         StockPiler.Grow.InvalidatePlantQueue({ jobOnly = true })
     end
-    -- Hold plan/UI through refine inventory storms (same Flatten as plant).
-    local Sch = StockPiler.Scheduler
+    -- Refresh quiet through the rest of the refine inventory storm.
     if Sch and Sch.ArmPlantQuiet then
         Sch.ArmPlantQuiet()
     end
@@ -1596,6 +1646,7 @@ function Refine.TryTick(opId)
     ClearOrphanPending()
     local intents = Refine.CollectIntents()
     if type(intents) ~= "table" or #intents == 0 then
+        Refine._deferredThisCall = false
         -- No actionable refine: back off so grow-wait ticks do not rebuild intents
         -- every AutoGrow second (LibPerf ~300-450ms CollectIntents spikes).
         Refine._refineWaitTicks = math.max(tonumber(Refine._refineWaitTicks) or 0, 5)
@@ -1603,6 +1654,14 @@ function Refine.TryTick(opId)
             Refine._refineDirty = false
             Refine._refineDirtyReason = nil
         end
+        return false
+    end
+    if Refine.ShouldDeferIssue() == true then
+        Refine._deferredThisCall = true
+        return false
+    end
+    Refine._deferredThisCall = false
+    if Refine.IssuedThisFrame() == true then
         return false
     end
     for i = 1, #intents do

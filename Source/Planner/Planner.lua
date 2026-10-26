@@ -2982,7 +2982,8 @@ local function PropagateSharedSeedBufferStatus(rows)
     return changed
 end
 
---- Craftable column safety: green only when bags can craft and seed cushion is met.
+--- Green craftable means Ready to Brew: the count covers the target, the seed
+--- buffer is met, and the mats are not shared. Anything else with a count is yellow.
 local function StampCraftableSafety(row)
     if type(row) ~= "table" then
         return
@@ -2991,8 +2992,15 @@ local function StampCraftableSafety(row)
     local short = SeedBufferShort(row.recipe or row.specRecipe, pk, row) == true
     row.seedBufferShort = short
     local craftable = tonumber(row.craftable) or 0
-    -- Safe (green): craftable > 0 and buffer not short. Shared mats do not block green.
-    row.craftableSafe = craftable > 0 and not short
+    local have = tonumber(row.potionHave) or 0
+    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+    local covers = target > 0 and (have + craftable) >= target
+    local key = tostring(row.statusKey or "")
+    local shared = row.craftableShared == true or key == "ready_to_craft_shared"
+    local ready = key == "ready_to_craft" and covers and not shared and not short
+    -- Target already met. Still green when a brew would be safe.
+    local stocked = key == "potion_stocked" and not shared and not short
+    row.craftableSafe = craftable > 0 and (ready or stocked)
 end
 
 local function ApplyNeedApothecaryStatus(row)

@@ -307,13 +307,32 @@ local function ShouldDeferWatchFlush()
     return false
 end
 
+--- FrameWork quiet: harvest storm / plant quiet / same-frame SkipUi.
+--- ignoreDefer must not paint WatchRows here (v1.1.3 harvest Flatten).
+local function IsFrameWorkQuietHold()
+    local Sch = StockPiler.Scheduler
+    if not Sch then
+        return false
+    end
+    if Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
+        return true
+    end
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
+        return true
+    end
+    return false
+end
+
 --- Light in-place stock/status paint while Watch is open (no ListBox rebind).
 --- Defined after ShouldDeferWatchFlush (Lua local visibility).
---- opts.ignoreDefer: plant quiet / harvest storm still need status recount.
+--- opts.ignoreDefer skips soft holds only. Quiet hold always returns false.
 --- opts.forceRecount / allowBrewHold: post-brew event path (session may stay loaded).
 local function TryWatchLiveCatchup(opts)
     opts = type(opts) == "table" and opts or {}
     if not IsWatchTabVisible() then
+        return false
+    end
+    if IsFrameWorkQuietHold() then
         return false
     end
     if opts.ignoreDefer ~= true and ShouldDeferWatchFlush() then
@@ -361,6 +380,22 @@ local function BrewSessionBlocksRecount()
     return Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
 end
 
+--- Bag snaps keep arriving every ~2s through harvest, refine, and replant.
+--- The forced craftable recount (WarmHave + Status.Craftable) waits until that stops.
+local function IssueBurstHoldsRecount()
+    local Sch = StockPiler.Scheduler
+    if not Sch then
+        return false
+    end
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
+        return true
+    end
+    if Sch.IsAutoGrowIssueBurstActive and Sch.IsAutoGrowIssueBurstActive() == true then
+        return true
+    end
+    return false
+end
+
 --- One forced craftable recount per inventory snapGen (coalesced to end of frame).
 --- Mid-brew: do not queue ui-force-watch-recount. Pump skips that job until the
 --- session ends, and stamping the snap done before the paint used to drop the
@@ -389,6 +424,13 @@ local function RequestForcedWatchRecount(_reason)
         Ui._forceRecountDeferredWhileHidden = false
         Ui._forceRecountDoneSnapGen = nil
     end
+    if IssueBurstHoldsRecount() then
+        -- Bag snaps during harvest/refine/replant are ~2s apart (bag coalesce).
+        -- Each one used to run sync WarmHave + craftable xN in the quiet gap.
+        Ui._forceRecountPendingSnapGen = snapGen
+        Ui._forceRecountHeldForBurst = true
+        return
+    end
     if snapGen > 0 and Ui._forceRecountDoneSnapGen == snapGen then
         return
     end
@@ -397,6 +439,10 @@ local function RequestForcedWatchRecount(_reason)
     local genKey = snapGen > 0 and snapGen or ((tonumber(Ui._forceRecountOnceGen) or 0) + 1)
     Ui._forceRecountOnceGen = genKey
     local function run()
+        if IssueBurstHoldsRecount() then
+            Ui._forceRecountHeldForBurst = true
+            return
+        end
         local doneSnap = tonumber(Ui._forceRecountPendingSnapGen) or 0
         if doneSnap > 0 and Ui._forceRecountDoneSnapGen == doneSnap then
             return
@@ -415,6 +461,18 @@ local function RequestForcedWatchRecount(_reason)
     else
         run()
     end
+end
+
+--- One craftable recount after the harvest/refine/replant burst goes idle.
+function Ui.FlushBurstHeldWatchRecount()
+    if Ui._forceRecountHeldForBurst ~= true then
+        return
+    end
+    if IssueBurstHoldsRecount() then
+        return
+    end
+    Ui._forceRecountHeldForBurst = false
+    RequestForcedWatchRecount("burst-idle")
 end
 
 --- Watch became paintable (tab select / window open). Flush bag snaps that
@@ -704,10 +762,8 @@ function Ui.FlushWatchUiIfDirty()
             return true
         end
         TryCatalogLiveCatchup()
-        -- Plant quiet / harvest storm skip full RefreshWatch; still patch stock/status.
-        if hardHold and Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true then
-            TryWatchLiveCatchup({ ignoreDefer = true })
-        end
+        -- Do not LiveRecount/UpdateRows during harvest/plant quiet. ignoreDefer
+        -- here stacked WatchRows on every bag dirty (libperf WatchRows xN).
         return
     end
 
