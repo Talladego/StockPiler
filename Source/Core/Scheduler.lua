@@ -28,6 +28,8 @@ Sch.POLL_SEC = 0.25
 -- Cover plant/refine inventory + CultivationUpdated lag (0.75 left WarmHave
 -- miss storms between IssueOne and the next orch tick).
 Sch.PLANT_QUIET_BASE_SEC = 1.25
+-- Real issue activity may hold Watch/plan, but not across an idle refine wait.
+Sch.ISSUE_BURST_MAX_SEC = 4.0
 
 Sch._bagDue = false
 Sch._bagAt = 0
@@ -57,6 +59,7 @@ Sch._awaitingSessionLoad = false
 Sch._orchDecisionHoldTicks = 0
 Sch._heavyWorkFrame = -1
 Sch._pendingBufferFlagsRebuild = false
+Sch._burstHoldStartedAt = 0
 Sch._busTokens = nil
 
 local function Now()
@@ -146,32 +149,37 @@ local function FlushPendingPrewarmAfterQuiet()
     Sch._pendingPlanAfterPrewarm = true
 end
 
---- True while refine/replant IssueOne is still cycling.
---- Quiet must end so Orch can issue, but WarmHave on every ~1.25s boundary
---- was the post-harvest spike train.
+--- True only for a recent plant-quiet arm or an outstanding refine.
+--- Idle wait ticks, a dirty flag, and a cached buffer pending bit are not a
+--- burst: those stay set while nothing is issuing and were freezing Watch.
+--- The hold also caps so a lingering outstanding or a repeated arm cannot
+--- freeze the plan for the whole session. now<=0 does not hold forever.
 local function AutoGrowIssueBurstActive(now)
     now = tonumber(now) or Now()
+    if now <= 0 then
+        return false
+    end
+    local cap = tonumber(Sch.ISSUE_BURST_MAX_SEC) or 4.0
+    if cap < 0 then
+        cap = 0
+    end
     local lastArm = tonumber(Sch._lastPlantQuietArmAt) or 0
-    if lastArm > 0 and now > 0 and (now - lastArm) < 4.0 then
-        return true
-    end
+    local recentArm = lastArm > 0 and (now - lastArm) < cap
     local RP = StockPiler.RefinePipeline
-    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
-        return true
+    local outstanding = RP and RP.HasOutstanding and RP.HasOutstanding() == true
+    if recentArm ~= true and outstanding ~= true then
+        Sch._burstHoldStartedAt = 0
+        return false
     end
-    local Refine = StockPiler.Refine
-    if Refine then
-        if Refine._refineDirty == true then
-            return true
-        end
-        if (tonumber(Refine._refineWaitTicks) or 0) > 0 then
-            return true
-        end
-        if Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true then
-            return true
-        end
+    local started = tonumber(Sch._burstHoldStartedAt) or 0
+    if started <= 0 or started > now then
+        Sch._burstHoldStartedAt = now
+        started = now
     end
-    return false
+    if (now - started) >= cap then
+        return false
+    end
+    return true
 end
 
 function Sch.IsAutoGrowIssueBurstActive(now)
@@ -332,10 +340,8 @@ local function RebuildPlanIfDue()
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
         return false
     end
-    local RP = StockPiler.RefinePipeline
-    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
-        return false
-    end
+    -- Outstanding refine holds the plan only inside the capped issue burst.
+    -- A second uncapped HasOutstanding check kept the plan frozen after the cap.
     if Now() < (tonumber(Sch._planAt) or 0) then
         return false
     end

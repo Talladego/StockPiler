@@ -1866,7 +1866,17 @@ function SM.ResolveSeedForSpec(spec)
     if type(spec) ~= "table" then
         return nil
     end
-    local plantUid = SM.FindPlantUidForSpec(spec)
+    -- A butcher/vendor exemplar is not itself growable. Use the cultivable twin
+    -- so seed and plant links are not the butcher uid.
+    local plantUid = 0
+    local role = tostring(spec.role or "")
+    if not (SM.IsHarvestByproduct(spec) or role == "container") then
+        if SM.IsGrowableSpec(spec) == true then
+            plantUid = SM.FindPlantUidForSpec(spec)
+        elseif SM.FindGrowableTwinUid then
+            plantUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+        end
+    end
     -- Skill-matched plant->seed first (never let owned L1 vendor seeds win).
     if plantUid > 0 and SM.ResolveSeedUidForPlant then
         local matched = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0

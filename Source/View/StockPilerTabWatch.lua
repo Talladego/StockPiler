@@ -2771,6 +2771,36 @@ local function SpecIsAutoGrowProgressableTip(entry)
     if SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
         return true
     end
+    if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
+        return false
+    end
+    if SM and SM.FindGrowableTwinUid then
+        return (tonumber(SM.FindGrowableTwinUid(spec)) or 0) > 0
+    end
+    return false
+end
+
+local function TipHasGrowableShortfall(slots)
+    if type(slots) ~= "table" then
+        return false
+    end
+    for i = 1, #slots do
+        local entry = slots[i]
+        if type(entry) == "table" and SpecIsAutoGrowProgressableTip(entry) then
+            local have = tonumber(entry.have) or 0
+            local need = tonumber(entry.need) or 0
+            local Planner = StockPiler.Planner
+            if Planner and Planner.CountItemsMatchingSpec and type(entry.spec) == "table" then
+                local live = Planner.CountItemsMatchingSpec(entry.spec, { cacheOnly = true })
+                if live ~= nil then
+                    have = tonumber(live) or have
+                end
+            end
+            if have < need then
+                return true
+            end
+        end
+    end
     return false
 end
 
@@ -3101,6 +3131,10 @@ local function BuildStatusTooltipRows(data)
         local colorOk = RgbDef(COLOR_OK)
         local colorWarn = RgbDef(COLOR_WARN)
         local colorBlock = RgbDef(COLOR_BLOCK)
+        -- Flasks can be short on every watch while this row can still grow.
+        local softenBuyForGrow = TipHasGrowableShortfall(slots)
+            and CanAutoGrowUi()
+            and data.autoGrow == true
         local slotShown = 0
         for i = 1, #slots do
             local entry = slots[i]
@@ -3234,8 +3268,13 @@ local function BuildStatusTooltipRows(data)
                     else
                         statusNote = T("watch.note.buy_materials")
                     end
-                    noteKind = "block"
-                    haveColor = colorBlock
+                    if softenBuyForGrow then
+                        noteKind = "warning"
+                        haveColor = colorWarn
+                    else
+                        noteKind = "block"
+                        haveColor = colorBlock
+                    end
                 elseif stocked then
                     local contestedKeys = data.contestedSpecKeys
                     local specKey = TipEntrySpecKey(entry)
@@ -3258,8 +3297,13 @@ local function BuildStatusTooltipRows(data)
                             else
                                 statusNote = T("watch.note.buy_materials")
                             end
-                            noteKind = "block"
-                            haveColor = colorBlock
+                            if softenBuyForGrow then
+                                noteKind = "warning"
+                                haveColor = colorWarn
+                            else
+                                noteKind = "block"
+                                haveColor = colorBlock
+                            end
                         else
                             statusNote = T("watch.note.shared")
                             noteKind = "warning"

@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.1.3"
+StockPiler.Version = L"1.1.4"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)
@@ -680,11 +680,20 @@ function StockPiler.Initialize()
     StockPiler.Persistence.EnsureSettings()
     -- LibPerf owns enable/threshold (saved in LibPerf.Settings, restored on reload).
     -- Forcing off here persisted perf OFF and wiped /libperf StockPiler on 50.
-    if StockPiler.Perf and StockPiler.Perf.Available ~= true then
-        if StockPiler.Perf.SetEnabled then
-            StockPiler.Perf.SetEnabled(false)
-        elseif StockPiler.Perf.Disable then
-            StockPiler.Perf.Disable()
+    -- A fresh player has no saved scope, so profiling stays off until they opt in.
+    local perf = StockPiler.Perf
+    if perf then
+        local savedScope = nil
+        if type(LibPerf) == "table" and type(LibPerf.Settings) == "table" then
+            savedScope = LibPerf.Settings.StockPiler
+        end
+        local forceOff = perf.Available ~= true or type(savedScope) ~= "table"
+        if forceOff then
+            if perf.SetEnabled then
+                perf.SetEnabled(false)
+            elseif perf.Disable then
+                perf.Disable()
+            end
         end
     end
     if StockPiler.Locale and StockPiler.Locale.Initialize then

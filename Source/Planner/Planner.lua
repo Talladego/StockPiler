@@ -892,6 +892,25 @@ local function SpecIsHarvestByproduct(spec)
     return false
 end
 
+--- AutoGrow can still move this slot: a cult plant, or a butcher/vendor
+--- exemplar that has a cultivable twin. Containers and harvest byproducts cannot.
+local function SpecCanAutoGrowProgress(spec, role)
+    if tostring(role or "") == "container" then
+        return false
+    end
+    if SpecIsHarvestByproduct(spec) == true then
+        return false
+    end
+    if SpecIsGrowable(spec, role) == true then
+        return true
+    end
+    local SM = StockPiler.SeedMap
+    if SM and SM.FindGrowableTwinUid then
+        return (tonumber(SM.FindGrowableTwinUid(spec)) or 0) > 0
+    end
+    return false
+end
+
 --- Prefer main -> goldweed/stab -> extender -> multiplier when growing convert feedstock for resin.
 local function ByproductConvertRoleRank(role)
     role = tostring(role or "")
@@ -984,9 +1003,7 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
     if type(demand) == "table" and key ~= nil then
         demandRow = demand[key]
     end
-    if SpecIsHarvestByproduct(spec) then
-        entry.kind = "convert"
-    elseif SpecIsGrowable(spec, role) then
+    local function FillPlantEntry(plantUidHint)
         entry.kind = "plant"
         local SM = StockPiler.SeedMap
         local seed = nil
@@ -996,11 +1013,19 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
         if type(seed) == "table" then
             entry.seed = seed
             entry.seedUid = tonumber(seed.uniqueID or seed.uid) or 0
-            entry.plantUid = tonumber(seed.plantUid) or SpecBoundUid(spec)
+            entry.plantUid = tonumber(seed.plantUid) or 0
         else
-            entry.plantUid = SpecBoundUid(spec)
-            if entry.plantUid <= 0 and SM and SM.FindPlantUidForSpec then
-                entry.plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+            entry.plantUid = 0
+        end
+        plantUidHint = tonumber(plantUidHint) or 0
+        if (tonumber(entry.plantUid) or 0) <= 0 then
+            if plantUidHint > 0 then
+                entry.plantUid = plantUidHint
+            else
+                entry.plantUid = SpecBoundUid(spec)
+                if entry.plantUid <= 0 and SM and SM.FindPlantUidForSpec then
+                    entry.plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+                end
             end
         end
         local Inv = StockPiler.Inventory
@@ -1023,10 +1048,25 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
             local budget = Refine.GetSeedBudgetForSpec(spec, entry.seedUid)
             entry.seedCredit = tonumber(budget and budget.credit) or 0
         end
+    end
+    if SpecIsHarvestByproduct(spec) then
+        entry.kind = "convert"
+    elseif SpecIsGrowable(spec, role) then
+        FillPlantEntry(0)
     elseif role == "container" then
         entry.kind = "buy"
     else
-        entry.kind = "buy"
+        -- Butcher/vendor exemplar with a cultivable twin: plant that twin.
+        local twinUid = 0
+        local SM = StockPiler.SeedMap
+        if SM and SM.FindGrowableTwinUid then
+            twinUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+        end
+        if twinUid > 0 then
+            FillPlantEntry(twinUid)
+        else
+            entry.kind = "buy"
+        end
     end
     -- Tip notes: (Shared) contested vs (Pooled) multi-watch demand.
     if type(demandRow) == "table" and type(demandRow.watchNames) == "table" and #demandRow.watchNames > 1 then
@@ -1377,7 +1417,7 @@ local function BuildBalancedSpecDemand(opts)
                     }
                     if byproduct then
                         byproductKeys[#byproductKeys + 1] = specKey
-                    elseif SpecIsGrowable(spec, role) then
+                    elseif SpecCanAutoGrowProgress(spec, role) then
                         local rank = ByproductConvertRoleRank(role)
                         if rank < prefRank then
                             prefRank = rank
@@ -1426,9 +1466,12 @@ local function BuildBalancedSpecDemand(opts)
                 local seedUid = 0
                 -- Containers are buy-only; never assign plantUid (84904 vials looked "refinable").
                 local role = tostring(row.role or row.spec.role or "")
-                if role ~= "container" and SpecIsGrowable(row.spec, role) then
-                    if SM.FindPlantUidForSpec then
+                local progress = role ~= "container" and SpecCanAutoGrowProgress(row.spec, role)
+                if progress then
+                    if SpecIsGrowable(row.spec, role) and SM.FindPlantUidForSpec then
                         plantUid = tonumber(SM.FindPlantUidForSpec(row.spec)) or 0
+                    elseif SM.FindGrowableTwinUid then
+                        plantUid = tonumber(SM.FindGrowableTwinUid(row.spec)) or 0
                     end
                     if SM.ResolveSeedForSpec then
                         local seed = SM.ResolveSeedForSpec(row.spec)
@@ -2089,6 +2132,112 @@ local function BuyNoteFlagsFromEntry(entry)
     return false, false, true
 end
 
+local function TipCountsForSpec(row, spec)
+    local tips = row and row.statusTipSlots
+    if type(tips) ~= "table" or type(spec) ~= "table" then
+        return nil, nil, nil
+    end
+    local key = SpecKey(spec)
+    for i = 1, #tips do
+        local e = tips[i]
+        if type(e) == "table" then
+            local same = e.spec == spec
+            if not same and key ~= nil then
+                local ek = e.specKey
+                if ek == nil and type(e.spec) == "table" then
+                    ek = SpecKey(e.spec)
+                end
+                same = ek == key
+            end
+            if same then
+                return tonumber(e.have), tonumber(e.need), tonumber(e.deficit)
+            end
+        end
+    end
+    return nil, nil, nil
+end
+
+--- True when this row still has a cult plant or cultivable twin below its need.
+--- Have comes from the warm cache, then statusTipSlots. Never a cold bag scan:
+--- PolishSharedContest runs on the live tick and a miss is WarmHave.miss.
+local function RowHasGrowableShortfall(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    local craftsNeeded = tonumber(row.craftsNeeded) or 0
+    if craftsNeeded <= 0 then
+        local deficit = tonumber(row.potionDeficit) or 0
+        if deficit > 0 and type(row.recipe) == "table" then
+            craftsNeeded = CraftsNeededForDeficit(
+                deficit, row.recipe, tonumber(row.uniqueID) or 0
+            )
+        end
+    end
+    if craftsNeeded <= 0 then
+        craftsNeeded = math.max(0, (tonumber(row.targetCount) or tonumber(row.target) or 0)
+            - (tonumber(row.potionHave) or 0))
+    end
+    local slots = row.slotSpecs or row.slots
+    if type(slots) ~= "table" then
+        slots = row.recipe and row.recipe.slots
+    end
+    local function slotShort(spec, role, slot, slotList)
+        if SpecCanAutoGrowProgress(spec, role) ~= true then
+            return false
+        end
+        local per = 1
+        if type(slot) == "table" then
+            per = EffectivePerCraft(slot, slotList or slots)
+        end
+        local need = (tonumber(craftsNeeded) or 0) * per
+        local have = CountItemsMatchingSpec(spec, { cacheOnly = true })
+        if have ~= nil then
+            return need > 0 and have < need
+        end
+        local tipHave, tipNeed, tipDeficit = TipCountsForSpec(row, spec)
+        if tipDeficit ~= nil then
+            return tipDeficit > 0
+        end
+        if tipHave ~= nil and tipNeed ~= nil then
+            return tipHave < tipNeed
+        end
+        return false
+    end
+    if type(slots) == "table" then
+        for i = 1, #slots do
+            local slot = slots[i]
+            local spec = ResolveSlotSpec(slot)
+            if type(spec) ~= "table" and type(slot) == "table" and type(slot.spec) ~= "table" then
+                spec = slot
+            end
+            if type(spec) == "table" then
+                local role = (type(slot) == "table" and slot.role) or spec.role
+                if slotShort(spec, role, slot, slots) then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    local tips = row.statusTipSlots
+    if type(tips) ~= "table" then
+        return false
+    end
+    for i = 1, #tips do
+        local e = tips[i]
+        if type(e) == "table" and SpecCanAutoGrowProgress(e.spec, e.role) then
+            local deficit = tonumber(e.deficit)
+            if deficit ~= nil and deficit > 0 then
+                return true
+            end
+            if (tonumber(e.have) or 0) < (tonumber(e.need) or 0) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- Contested specs that are all non-growable -> "flasks" | "materials" | "both" | nil.
 local function ContestedBuyOnlyKind(row)
     if type(row) ~= "table" or row.craftableShared ~= true then
@@ -2113,7 +2262,7 @@ local function ContestedBuyOnlyKind(row)
         if type(sk) == "string" and contested[sk] == true then
             anyContested = true
             local role = slot.role or (type(spec) == "table" and spec.role) or nil
-            if SpecIsHarvestByproduct(spec) ~= true and SpecIsGrowable(spec, role) == true then
+            if SpecIsHarvestByproduct(spec) ~= true and SpecCanAutoGrowProgress(spec, role) == true then
                 anyGrowable = true
             elseif tostring(role or "") == "container" then
                 anyContainer = true
@@ -2123,6 +2272,10 @@ local function ContestedBuyOnlyKind(row)
         end
     end
     if not anyContested or anyGrowable then
+        return nil
+    end
+    -- Shared flasks can be short across watches while this row can still grow.
+    if RowHasGrowableShortfall(row) then
         return nil
     end
     if anyContainer and anyMaterials then
@@ -2154,6 +2307,9 @@ local function PaintSharedMaterialsStatus(row)
     row.statusLines = { T("watch.note.shared") }
 end
 
+-- Defined with the status helpers below. ApplySharedStatusFlip runs later.
+local SetMaterialsShortStatus
+
 local function RowCoveredForReady(row)
     local have = tonumber(row.potionHave) or 0
     local craftable = tonumber(row.craftable) or 0
@@ -2184,6 +2340,9 @@ local function ApplySharedStatusFlip(rows)
                 local buyKind = ContestedBuyOnlyKind(row)
                 if buyKind ~= nil then
                     PaintBuyOnlySharedStatus(row, buyKind)
+                elseif RowHasGrowableShortfall(row) then
+                    -- Armed AutoGrow can still plant. Restocking, not Shared-only.
+                    SetMaterialsShortStatus(row, true, nil)
                 else
                     PaintSharedMaterialsStatus(row)
                 end
@@ -2304,7 +2463,7 @@ end
 -- Status helpers
 ----------------------------------------------------------------
 
-local function SetMaterialsShortStatus(row, growable, buyLabel)
+function SetMaterialsShortStatus(row, growable, buyLabel)
     if growable == true and CanAutoGrowSkill() then
         local key = nil
         local watch = nil
@@ -3405,7 +3564,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
                     local role = slot.role
                     local need = craftsNeeded * EffectivePerCraft(slot, slots)
                     local slotHave = LiveSlotHave(spec, role, slot)
-                    if SpecIsGrowable(spec, role) then
+                    if SpecCanAutoGrowProgress(spec, role) then
                         anyGrowable = true
                         if slotHave ~= nil and slotHave < need then
                             growableShort = true
@@ -5537,7 +5696,8 @@ function Planner.CollectVendorBuyJobs(opts)
             return
         end
         local kind = "buy"
-        if SpecIsGrowable(spec, role) then
+        -- Skip cult plants and butcher/vendor twins while AutoGrow can plant them.
+        if SpecCanAutoGrowProgress(spec, role) then
             kind = "plant"
             if allowPlantBuys ~= true then
                 return

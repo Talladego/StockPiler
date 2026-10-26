@@ -2058,6 +2058,12 @@ function Grow.IssuePlantOne(opId)
         return done(false)
     end
 
+    -- Same-frame guard before any commit. A refused issue must not reserve
+    -- the plot, stash soil, or arm quiet.
+    if Grow.IssuedThisFrame() == true then
+        return done(false)
+    end
+
     Grow._pendingPlant[plotNum] = 1
     Grow._pendingPlantAt[plotNum] = NowSec()
     Grow._pendingSeedUid[plotNum] = seedUid
@@ -2074,26 +2080,7 @@ function Grow.IssuePlantOne(opId)
         })
     end
 
-    -- Quiet before PlantSeed so cult/bag deltas cannot paint Watch this frame.
-    local Sch = StockPiler.Scheduler
-    if Sch and Sch.ArmPlantQuiet then
-        Sch.ArmPlantQuiet()
-    end
-    if Sch and Sch.SkipPlanThisFrame then
-        Sch.SkipPlanThisFrame()
-    end
-    if Sch and Sch.SkipUiThisFrame then
-        Sch.SkipUiThisFrame()
-    end
-    if Sch and Sch.SuppressInventorySideEffects then
-        Sch.SuppressInventorySideEffects(2)
-    end
-
     local issueFrame = tonumber(StockPiler.FrameCounter) or 0
-    if issueFrame > 0 and Grow._engineIssueFrame == issueFrame then
-        ReleaseCommit(plotNum, false)
-        return done(false)
-    end
     Grow._engineIssueFrame = issueFrame
     CA.SetCurrentPlot(plotNum)
     local ok = CA.PlantSeed(plotNum, slot, backpackType)

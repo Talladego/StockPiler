@@ -2,16 +2,18 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.4
+
+- The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
+- Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.3
 
 - Shared recipes now prefer growable plants over butcher or vendor ingredients when known, and learning a shared recipe updates its ingredient list.
 - AutoBuy now respects craft bag space (keeping one slot free) and prints a chat notice when paused by Reserve, Budget, or a full craft bag.
 - Craft button and action bar macro now flash when a plant finishes growing.
-- Hold Watch paint and WarmHave during harvest/refine/replant so those bursts do not hitch every issue.
-- Defer the per-snapshot craftable recount until that burst is idle. It was the short spike about every 2 seconds.
-- During Seed Buffer, keep Watch refresh and WarmHave latched until the phase is idle. Bag flushes were still painting every 2 seconds after plant-quiet expired.
-- Split plant pick and seed-buffer intent scan off the PlantSeed / SendUseItem frame, and do not issue twice in one frame.
-- Craftable stays green only when that count meets the target and the watch is Ready to Brew. Shared materials and a short seed buffer stay yellow.
 - Bug fixes.
 - Performance improvements.
 

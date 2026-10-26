@@ -1134,9 +1134,12 @@ function Refine.CollectIntents(opts)
             if snapMoved or harvestDirty then
                 Refine.InvalidateIntentCache()
             else
+                -- Warm hit must not defer IssueOne on this frame.
+                Refine._coldRebuildFrame = 0
                 return Refine._intentCache
             end
         else
+            Refine._coldRebuildFrame = 0
             return Refine._intentCache
         end
     end
@@ -1145,7 +1148,9 @@ function Refine.CollectIntents(opts)
     if Perf and Perf.Begin then
         Perf.Begin("CollectIntents")
     end
-    Refine._collectedFrame = tonumber(StockPiler.FrameCounter) or 0
+    -- Set only when this call rebuilds. A warm return above clears it.
+    Refine._coldRebuildFrame = tonumber(StockPiler.FrameCounter) or 0
+    Refine._collectedFrame = Refine._coldRebuildFrame
     local intents = {}
     local RS = StockPiler.RecipeSpec
     local SM = StockPiler.SeedMap
@@ -1341,7 +1346,7 @@ end
 
 function Refine.CollectedThisFrame()
     local frame = tonumber(StockPiler.FrameCounter) or 0
-    return frame > 0 and Refine._collectedFrame == frame
+    return frame > 0 and (tonumber(Refine._coldRebuildFrame) or 0) == frame
 end
 
 function Refine.IssuedThisFrame()
@@ -1547,31 +1552,20 @@ function Refine.IssueOne(intent, opId)
         return done(false)
     end
 
+    -- Same-frame guard before any live-seed record or quiet arm.
+    -- A refused issue must not look like a seed was sent.
+    if Refine.IssuedThisFrame() == true then
+        return done(false)
+    end
+
     local SM = StockPiler.SeedMap
+    -- Snapshot bag counts before SendUseItem. Moving this after the call
+    -- would see the consumed stack and miss the seed gain.
     if SM and SM.BeginPendingRefine then
         SM.BeginPendingRefine(item)
     end
-    Refine.TrackLiveSeed(seedUid)
-
-    -- Quiet before SendUseItem so the bag storm cannot paint Watch mid-issue.
-    local Sch = StockPiler.Scheduler
-    if Sch and Sch.ArmPlantQuiet then
-        Sch.ArmPlantQuiet()
-    end
-    if Sch and Sch.SkipPlanThisFrame then
-        Sch.SkipPlanThisFrame()
-    end
-    if Sch and Sch.SkipUiThisFrame then
-        Sch.SkipUiThisFrame()
-    end
-    if Sch and Sch.SuppressInventorySideEffects then
-        Sch.SuppressInventorySideEffects(2)
-    end
 
     local issueFrame = tonumber(StockPiler.FrameCounter) or 0
-    if issueFrame > 0 and Refine._engineIssueFrame == issueFrame then
-        return done(false)
-    end
     Refine._engineIssueFrame = issueFrame
     local location = EA_Window_Backpack.GetCursorForBackpack(bagType)
     local sent = 0
@@ -1595,6 +1589,7 @@ function Refine.IssueOne(intent, opId)
         return done(false)
     end
 
+    Refine.TrackLiveSeed(seedUid)
     Refine._pendingByPlant[plantUid] = pending + sent
     if plantUid > 0 and seedUid > 0 then
         Refine._pendingSeedByPlant[plantUid] = seedUid
@@ -1609,7 +1604,8 @@ function Refine.IssueOne(intent, opId)
     if StockPiler.Grow and StockPiler.Grow.InvalidatePlantQueue then
         StockPiler.Grow.InvalidatePlantQueue({ jobOnly = true })
     end
-    -- Refresh quiet through the rest of the refine inventory storm.
+    -- Quiet only after SendUseItem actually went out.
+    local Sch = StockPiler.Scheduler
     if Sch and Sch.ArmPlantQuiet then
         Sch.ArmPlantQuiet()
     end
