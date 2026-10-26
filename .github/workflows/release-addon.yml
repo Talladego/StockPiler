@@ -1,6 +1,6 @@
 # Build an installable StockPiler zip (not full repo source) and publish it.
 # - Push to main, or a manual run of main → a vX.Y.Z release,
-#   a moving "latest" prerelease, and an upload to the Return of Reckoning addon site when that version is new
+#   a moving "latest" release, and an upload to the Return of Reckoning addon site when that version is new
 # - A manual run from another branch only packs the zip
 # - Tag v* → versioned GitHub Release
 # Version tags older than the newest 10 are deleted. The moving "latest" tag is not pruned.
@@ -142,17 +142,18 @@ jobs:
           else
             gh release upload "$tag" "$ZIP" dist/StockPiler.zip --clobber
           fi
-          # Recreate the moving prerelease at this commit. --cleanup-tag
+          # Recreate the moving latest release at this commit. --cleanup-tag
           # removes the previous tag when the release exists; the push covers
-          # a tag left behind on its own. "latest" stays out of the prune loop.
+          # a tag left behind on its own. --latest=false keeps v${VERSION} as
+          # GitHub's latest release. "latest" stays out of the prune loop.
           gh release delete latest --yes --cleanup-tag || true
           git push origin :refs/tags/latest 2>/dev/null || true
           gh release create latest "$ZIP" dist/StockPiler.zip \
             --verify-tag=false \
             --target "$GITHUB_SHA" \
-            --title "Latest build (${VERSION})" \
+            --title "Latest release (${VERSION})" \
             --notes "$version_notes" \
-            --prerelease
+            --latest=false
           gh release list --limit 100 --json tagName,publishedAt,isDraft,isPrerelease \
             --jq '[.[] | select(.tagName | startswith("v")) | select(.tagName != "latest") | select(.isDraft == false and .isPrerelease == false)] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
             | while IFS= read -r old; do
