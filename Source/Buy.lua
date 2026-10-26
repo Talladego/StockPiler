@@ -2114,6 +2114,16 @@ function Buy.PollStorePresence()
         VA.FlushPendingStoreRefresh()
     end
     BeginVisitIfNeeded()
+    local interactionOpen = VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true
+    if Buy._lastInteractionOpen == true and interactionOpen ~= true then
+        if StockPiler.Refine and StockPiler.Refine.MarkRefineDue then
+            StockPiler.Refine.MarkRefineDue("interaction-closed")
+        end
+        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
+            StockPiler.Scheduler.WakeAutoGrow()
+        end
+    end
+    Buy._lastInteractionOpen = interactionOpen == true
 end
 
 function Buy.OnStoreUpdated(opts)

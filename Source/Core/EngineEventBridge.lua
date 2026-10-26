@@ -424,6 +424,17 @@ end
 --- Trainer / interact closed: GameData may update a tick after TRADE_SKILL_UPDATED.
 function Bridge.OnInteractDone()
     Bridge.OnTradeSkillUpdated()
+    local VA = StockPiler.VendorAdapter
+    local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+    local interactionOpen = VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true
+    if storeOpen ~= true and interactionOpen ~= true then
+        if StockPiler.Refine and StockPiler.Refine.MarkRefineDue then
+            StockPiler.Refine.MarkRefineDue("interaction-closed")
+        end
+        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
+            StockPiler.Scheduler.WakeAutoGrow()
+        end
+    end
 end
 
 function Bridge.OnStoreShow()

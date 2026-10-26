@@ -988,6 +988,11 @@ function Refine.ShouldAllowRefineNow(opts)
     if ignoreVendor ~= true and VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
         return false, "vendor-open"
     end
+    -- Quest / trainer / bank dialogs also listen for INTERACT_DONE. ignoreVendor
+    -- only skips the merchant; any other NPC window still blocks SendUseItem.
+    if VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true then
+        return false, "interaction-open"
+    end
     local Orch = StockPiler.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() then
         return false, "brew-session"
@@ -1503,6 +1508,12 @@ function Refine.IssueOne(intent, opId)
             Perf.End("Refine.IssueOne")
         end
         return ok == true
+    end
+
+    -- A dialog can open after CollectIntents. Refuse before any stamp,
+    -- live-seed record, quiet arm, or SendUseItem (that event closes it).
+    if VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true then
+        return done(false)
     end
 
     local slot, item, bagType = ResolveIntentSlot(intent)

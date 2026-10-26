@@ -203,6 +203,168 @@ function VA.IsStoreOpen()
     return WindowGetShowing(STORE_WIN) == true
 end
 
+-- Service windows that are not named EA_Window_Interaction*.
+local SERVICE_WINDOWS = {
+    BankWindow = true,
+    GuildVaultWindow = true,
+    MailWindow = true,
+    AuctionWindow = true,
+    BarberWindow = true,
+    EA_Window_EquipmentUpgrade = true,
+    EA_Window_GuildVault = true,
+    EA_Window_Mail = true,
+    EA_Window_Auction = true,
+    EA_Window_Barber = true,
+    EA_Window_Bank = true,
+}
+
+-- Used only when WindowUtils.openWindowList is not a table (unit-test stub).
+local FALLBACK_INTERACTION_WINDOWS = {
+    "EA_Window_InteractionQuest",
+    "EA_Window_InteractionTraining",
+    "EA_Window_InteractionTomeTraining",
+    "EA_Window_InteractionRenownTraining",
+    "EA_Window_InteractionSpecialtyTraining",
+    "EA_Window_InteractionCareerMaster",
+    "EA_Window_InteractionGuild",
+    "EA_Window_InteractionKeepUpgrades",
+    "EA_Window_InteractionInfluenceRewards",
+    "EA_Window_InteractionLastName",
+    "EA_Window_InteractionHeraldry",
+    "EA_InteractionFlightMasterWindow",
+    "BankWindow",
+    "GuildVaultWindow",
+    "MailWindow",
+    "AuctionWindow",
+    "BarberWindow",
+    "EA_Window_EquipmentUpgrade",
+}
+
+local function WindowEntryName(entry)
+    if type(entry) == "string" and entry ~= "" then
+        return entry
+    end
+    if type(entry) == "table" then
+        if type(entry.name) == "string" and entry.name ~= "" then
+            return entry.name
+        end
+        if type(entry.windowName) == "string" and entry.windowName ~= "" then
+            return entry.windowName
+        end
+    end
+    return nil
+end
+
+local function IsDyeMerchantCharacter()
+    local cw = CharacterWindow
+    if type(cw) ~= "table" then
+        return false
+    end
+    local modeConst = cw.MODE_DYE_MERCHANT
+    if modeConst ~= nil and cw.mode == modeConst then
+        return true
+    end
+    if modeConst == nil and tonumber(cw.mode) == 3 then
+        return true
+    end
+    return false
+end
+
+local function IsNonStoreInteractionName(name)
+    if type(name) ~= "string" or name == "" or name == STORE_WIN then
+        return false
+    end
+    if name == "CharacterWindow" then
+        return IsDyeMerchantCharacter()
+    end
+    if SERVICE_WINDOWS[name] == true then
+        return true
+    end
+    -- EA_Window_Interaction* except the merchant store (handled by IsStoreOpen).
+    if name:sub(1, 21) == "EA_Window_Interaction" then
+        return true
+    end
+    -- EA_InteractionFlightMasterWindow and other EA_Interaction* dialogs.
+    if name:sub(1, 14) == "EA_Interaction" then
+        return true
+    end
+    return false
+end
+
+--- Same-frame hide: still listed, but WindowGetShowing already false.
+local function ListedWindowCountsAsOpen(name)
+    local existsFn = type(DoesWindowExist) == "function"
+    local showingFn = type(WindowGetShowing) == "function"
+    if existsFn and DoesWindowExist(name) == true and showingFn and WindowGetShowing(name) == false then
+        return false
+    end
+    if not existsFn and showingFn and WindowGetShowing(name) == false then
+        return false
+    end
+    return true
+end
+
+local function ShowingTrue(name)
+    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= true then
+        return false
+    end
+    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
+        return false
+    end
+    return true
+end
+
+local function OpenListHasBlockingWindow(list)
+    if #list > 0 then
+        for i = 1, #list do
+            local name = WindowEntryName(list[i])
+            if name and IsNonStoreInteractionName(name) and ListedWindowCountsAsOpen(name) then
+                return true
+            end
+        end
+        return false
+    end
+    for key, value in pairs(list) do
+        local name = nil
+        if type(key) == "string" and key ~= "" and (value == true or type(value) == "table") then
+            name = WindowEntryName(value) or key
+        else
+            name = WindowEntryName(value)
+        end
+        if name and IsNonStoreInteractionName(name) and ListedWindowCountsAsOpen(name) then
+            return true
+        end
+    end
+    return false
+end
+
+--- Quest, trainer, flight master, bank, and other NPC windows.
+--- O(open windows) via WindowUtils.openWindowList. Does not poll every frame.
+function VA.IsNonStoreInteractionOpen()
+    local utils = WindowUtils
+    local list = type(utils) == "table" and utils.openWindowList or nil
+    if type(list) == "table" then
+        return OpenListHasBlockingWindow(list) == true
+    end
+    for i = 1, #FALLBACK_INTERACTION_WINDOWS do
+        if ShowingTrue(FALLBACK_INTERACTION_WINDOWS[i]) then
+            return true
+        end
+    end
+    if IsDyeMerchantCharacter() and ShowingTrue("CharacterWindow") then
+        return true
+    end
+    return false
+end
+
+--- opts.includeStore also treats the merchant store as an interaction.
+function VA.IsInteractionOpen(opts)
+    if type(opts) == "table" and opts.includeStore == true and VA.IsStoreOpen() == true then
+        return true
+    end
+    return VA.IsNonStoreInteractionOpen() == true
+end
+
 function VA.IsBuybackView()
     local store = EA_Window_InteractionStore
     if type(store) ~= "table" then

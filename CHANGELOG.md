@@ -6,6 +6,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 - The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
 - Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
+- Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows.
 - Bug fixes.
 - Performance improvements.
 
