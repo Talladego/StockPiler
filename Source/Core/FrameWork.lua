@@ -170,6 +170,13 @@ function FW.Start(opts)
     return true
 end
 
+function FW.Enqueue(id, fn)
+    if type(fn) ~= "function" then
+        return false
+    end
+    return FW.StartOnce(id, nil, fn)
+end
+
 function FW.StartOnce(id, gen, fn)
     return FW.Start({
         id = id,

@@ -761,6 +761,64 @@ end
 
 local QUEUE_ANNOUNCE_DEBOUNCE_SEC = 0.85
 
+local function PlanGenForBuyJobs()
+    local Planner = StockPiler.Planner
+    local gen = 0
+    if Planner and type(Planner.GetPlanGen) == "function" then
+        gen = tonumber(Planner.GetPlanGen()) or 0
+    elseif Planner then
+        gen = tonumber(Planner._planGen) or 0
+    end
+    local PS = StockPiler.PlanSnapshot
+    if PS and type(PS.Get) == "function" then
+        local plan = PS.Get()
+        local snap = type(plan) == "table" and tonumber(plan.planGen) or 0
+        if snap > gen then
+            gen = snap
+        end
+    end
+    return gen
+end
+
+local function JobsCacheKey()
+    local Inv = StockPiler.Inventory
+    local snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
+    local Caps = StockPiler.TradeSkillCaps
+    local skillHash = Caps and Caps.LevelsHash and Caps.LevelsHash() or ""
+    local watchGen = StockPiler.Watch and StockPiler.Watch.GetGen and StockPiler.Watch.GetGen() or 0
+    local skillUpHash = "0"
+    local SkillUp = StockPiler.SkillUp
+    if SkillUp then
+        local parts = {}
+        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+            parts[#parts + 1] = "c:" .. tostring(SkillUp.TargetMaxSkill and SkillUp.TargetMaxSkill() or 0)
+        end
+        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+            parts[#parts + 1] = "a:" .. tostring(SkillUp.ApoTargetTier and SkillUp.ApoTargetTier() or 0)
+                .. "/" .. tostring(SkillUp.ApoContainerBuyTarget and SkillUp.ApoContainerBuyTarget() or 0)
+                .. "/" .. tostring(SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0)
+        end
+        if #parts > 0 then
+            skillUpHash = table.concat(parts, "|")
+        end
+    end
+    local UpgradeSeed = StockPiler.UpgradeSeed
+    local upgradeHash = "0"
+    if UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true then
+        upgradeHash = "1"
+    end
+    local Watch = StockPiler.Watch
+    local opt = "1"
+    if Watch and Watch.IsOptimisticOutcomeEstimate
+        and Watch.IsOptimisticOutcomeEstimate() ~= true
+    then
+        opt = "0"
+    end
+    return tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(skillHash)
+        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash .. ":" .. upgradeHash
+        .. ":" .. opt .. ":" .. tostring(PlanGenForBuyJobs())
+end
+
 local function QueueFingerprint(jobs)
     local parts = {}
     if type(jobs) ~= "table" then
@@ -873,7 +931,45 @@ local function ScheduleQueueAnnounce(jobs)
     Buy._queueAnnounceDue = NowSec() + QUEUE_ANNOUNCE_DEBOUNCE_SEC
 end
 
+--- One collect for a plan update. A matching jobs cache is not collected again.
+local function ArmPlanQueueAnnounce()
+    if Buy.IsEnabled() ~= true then
+        Buy._planQueueAnnouncePending = nil
+        return false
+    end
+    local key = JobsCacheKey()
+    if type(Buy._jobsCache) == "table" and Buy._jobsCacheKey == key then
+        local fp = QueueFingerprint(Buy._jobsCache)
+        if fp == (Buy._queueAnnounceKey or "") and Buy._queueAnnounceDue == nil then
+            return false
+        end
+        ScheduleQueueAnnounce(Buy._jobsCache)
+    else
+        Buy._suppressQueueSchedule = true
+        local ok, jobs = pcall(Buy.CollectBuyJobs)
+        Buy._suppressQueueSchedule = false
+        if ok ~= true then
+            return false
+        end
+        ScheduleQueueAnnounce(type(jobs) == "table" and jobs or {})
+    end
+    if Buy._queueAnnounceDue == nil then
+        return false
+    end
+    -- Plan updates chat on this evaluation instead of waiting out the buy debounce.
+    Buy._queueAnnounceDue = 0
+    return true
+end
+
 function Buy.FlushQueueAnnounce()
+    if Buy._planQueueAnnouncePending == true then
+        Buy._planQueueAnnouncePending = nil
+        local FW = StockPiler.FrameWork
+        if FW and type(FW.Cancel) == "function" then
+            FW.Cancel("Buy.PlanQueueAnnounce")
+        end
+        ArmPlanQueueAnnounce()
+    end
     local due = tonumber(Buy._queueAnnounceDue)
     if due == nil then
         return false
@@ -893,8 +989,13 @@ function Buy.FlushQueueAnnounce()
     if key == (Buy._queueAnnounceKey or "") then
         return false
     end
-    -- Prefer a fresh collect so the printed qty matches bags after debounce.
-    if Buy.CollectBuyJobs then
+    -- The plan-update pass already filled this cache. Do not collect again.
+    local cacheFresh = type(jobs) == "table"
+        and type(Buy._jobsCache) == "table"
+        and Buy._jobsCacheKey ~= nil
+        and Buy._jobsCacheKey == JobsCacheKey()
+        and jobs == Buy._jobsCache
+    if cacheFresh ~= true and Buy.CollectBuyJobs then
         Buy._suppressQueueSchedule = true
         local ok, fresh = pcall(Buy.CollectBuyJobs)
         Buy._suppressQueueSchedule = false
@@ -1827,42 +1928,7 @@ end
 ----------------------------------------------------------------
 
 function Buy.CollectBuyJobs()
-    local Inv = StockPiler.Inventory
-    local snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
-    local Caps = StockPiler.TradeSkillCaps
-    local skillHash = Caps and Caps.LevelsHash and Caps.LevelsHash() or ""
-    local watchGen = StockPiler.Watch and StockPiler.Watch.GetGen and StockPiler.Watch.GetGen() or 0
-    local skillUpHash = "0"
-    local SkillUp = StockPiler.SkillUp
-    if SkillUp then
-        local parts = {}
-        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
-            parts[#parts + 1] = "c:" .. tostring(SkillUp.TargetMaxSkill and SkillUp.TargetMaxSkill() or 0)
-        end
-        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
-            parts[#parts + 1] = "a:" .. tostring(SkillUp.ApoTargetTier and SkillUp.ApoTargetTier() or 0)
-                .. "/" .. tostring(SkillUp.ApoContainerBuyTarget and SkillUp.ApoContainerBuyTarget() or 0)
-                .. "/" .. tostring(SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0)
-        end
-        if #parts > 0 then
-            skillUpHash = table.concat(parts, "|")
-        end
-    end
-    local UpgradeSeed = StockPiler.UpgradeSeed
-    local upgradeHash = "0"
-    if UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true then
-        upgradeHash = "1"
-    end
-    local Watch = StockPiler.Watch
-    local opt = "1"
-    if Watch and Watch.IsOptimisticOutcomeEstimate
-        and Watch.IsOptimisticOutcomeEstimate() ~= true
-    then
-        opt = "0"
-    end
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(skillHash)
-        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash .. ":" .. upgradeHash
-        .. ":" .. opt
+    local cacheKey = JobsCacheKey()
     if type(Buy._jobsCache) == "table" and Buy._jobsCacheKey == cacheKey then
         if Buy._suppressQueueSchedule ~= true then
             ScheduleQueueAnnounce(Buy._jobsCache)
@@ -2487,7 +2553,6 @@ local function TryResumeIdleStop(via)
     if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
         return false
     end
-    Buy.InvalidateJobsCache()
     local jobs = Buy.CollectBuyJobs()
     if type(jobs) ~= "table" or #jobs == 0 then
         return false
@@ -2511,16 +2576,28 @@ end
 
 function Buy.OnPlanUpdated()
     if Buy.IsEnabled() == true then
-        Buy.InvalidateJobsCache()
-        Buy._suppressQueueSchedule = true
-        local ok, jobs = pcall(Buy.CollectBuyJobs)
-        Buy._suppressQueueSchedule = false
-        if ok then
-            ScheduleQueueAnnounce(type(jobs) == "table" and jobs or {})
-            -- Plan rebuilds should chat promptly (don't wait out the buy debounce).
-            Buy._queueAnnounceDue = 0
+        local VA = StockPiler.VendorAdapter
+        local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+        local FW = StockPiler.FrameWork
+        local live = FW and type(FW.Enqueue) == "function"
+            and (type(_G.RegisterEventHandler) == "function" or FW._running == true)
+        if storeOpen ~= true and live then
+            Buy._planQueueAnnouncePending = true
+            FW.Enqueue("Buy.PlanQueueAnnounce", function()
+                if Buy._planQueueAnnouncePending ~= true then
+                    return
+                end
+                Buy._planQueueAnnouncePending = nil
+                if ArmPlanQueueAnnounce() then
+                    Buy.FlushQueueAnnounce()
+                end
+            end)
+        else
+            Buy._planQueueAnnouncePending = nil
+            if ArmPlanQueueAnnounce() then
+                Buy.FlushQueueAnnounce()
+            end
         end
-        Buy.FlushQueueAnnounce()
     end
     local VA = StockPiler.VendorAdapter
     if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then

@@ -6,22 +6,16 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 - The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
 - Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
-- Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows.
-- Refining (AutoGrow and manual plant use) waits while an NPC dialog or the merchant is open, then continues when it closes. AutoBuy still needs the vendor open.
-- Checking whether an NPC window is open no longer spam-errors `WindowGetShowing` for bank, mail, auction, trainer, and other windows that were never created.
-- Switching to the Potions tab no longer rebuilds every recipe fingerprint when the list is already loaded; bag counts update in place.
-- AutoGrow additives retry after a plot changes stage. Three failed Soil applies no longer permanently skip Water for the rest of the session.
-- AutoBuy prints the purchase queue in chat whenever that queue changes (Optimistic toggle, plan update, or buys), with cost vs Budget when prices are known.
-- AutoBuy remembers vendor unit prices (and what you last paid) so the queue tip and chat can show a known cost even after the merchant closes.
-- Cost and Budget amounts in AutoBuy chat and tips use the backpack gold / silver / brass coin icons.
-- With Optimistic off, a Potent recipe measured at 0% success still sizes material buys from brew samples (Laplace), so butcher/vendor mains like Armor Scales are queued when bags are short.
-- Turning Optimistic mode Off warns in chat about large AutoBuy queues for rare Potents; the Optimistic and AutoBuy tips repeat that Reserve and Budget still cap spending.
+- AutoGrow keeps planting while watched potions still need grown ingredients, even when shared materials already cover the bottle count.
+- Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows. Refining waits until the window closes.
+- Zoning while cultivation is active no longer leaves backpack items or mounts unusable.
+- AutoBuy prints its purchase queue in chat when the queue changes, remembers vendor prices for cost estimates, and formats gold, silver, and brass with coin icons.
+- Turning Optimistic mode off warns in chat when rare Potent recipes may queue large material purchases, and sizes material buys even before your first Potent proc.
 - Watch finishes painting status, icons, priority, and Brew after login and when you open the tab. A potion or plant you just mark watched shows up immediately.
 - Tooltips no longer keep a leftover "Right-click opens the StockPiler window" line. Checkbox tips open upward, recipe and Watch status tips open downward, and item tips sit like bag tips.
 - A material you can grow is not treated as something you must buy when the recipe names a butcher ingredient. Brew still uses that butcher ingredient first when it is in your bags.
 - A recipe tip shows a repeated ingredient once, with a count, instead of repeating the whole section.
-- AutoGrow keeps planting when watches show Shared materials (craftable covers the bottle gap but AutoBrew will not claim those mats).
-- Zoning while cultivation is active no longer leaves backpack items or mounts unusable.
+- Bug fixes.
 - Performance improvements.
 
 ## 1.1.3

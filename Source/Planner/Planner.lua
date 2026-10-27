@@ -10,6 +10,10 @@ local WatchStillNeedsGrow
 local Planner = StockPiler.Planner
 
 Planner._planGen = 0
+
+function Planner.GetPlanGen()
+    return tonumber(Planner._planGen) or 0
+end
 Planner._closedLiveSnapGen = nil
 Planner._liveGen = 0
 Planner._craftsMemo = nil

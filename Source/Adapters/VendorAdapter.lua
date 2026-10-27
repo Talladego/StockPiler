@@ -321,7 +321,7 @@ local function IsNonStoreInteractionName(name)
     if name:sub(1, 14) == "EA_Interaction" then
         return true
     end
-    -- Guild create / rename (InteractionWindowGuildCreateForm, …).
+    -- Guild create / rename (InteractionWindowGuildCreateForm, ...).
     if name:sub(1, 17) == "InteractionWindow" then
         return true
     end

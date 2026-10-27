@@ -33,7 +33,7 @@ Grow._pendingAdditive = Grow._pendingAdditive or {}
 Grow._pendingAdditiveAt = Grow._pendingAdditiveAt or {}
 Grow._additiveAttempts = Grow._additiveAttempts or {}
 Grow._additiveStall = Grow._additiveStall or {}
--- Stage when a plot was additive-stalled. A later stage (Soil→Water→Nutrient)
+-- Stage when a plot was additive-stalled. A later stage (Soil->Water->Nutrient)
 -- must get a fresh attempt budget; otherwise mid-session grows never get water.
 Grow._additiveStallStage = Grow._additiveStallStage or {}
 Grow._fillCursor = Grow._fillCursor or 1
