@@ -7,7 +7,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
 - Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
 - AutoGrow keeps planting while watched potions still need grown ingredients, even when shared materials already cover the bottle count.
-- Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows. Refining waits until the window closes.
+- Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows. Refining waits until the window closes, and chat notes when refine is stalled on the merchant or another NPC dialog.
 - Zoning while cultivation is active no longer leaves backpack items or mounts unusable.
 - AutoBuy prints its purchase queue in chat when the queue changes, remembers vendor prices for cost estimates, and formats gold, silver, and brass with coin icons.
 - SkillUp AutoBuy only tops up the seed line it is planting, not leftover lower-tier seeds.

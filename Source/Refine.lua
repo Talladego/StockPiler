@@ -32,6 +32,7 @@ Refine._reconcileSnapGen = -1
 Refine._onUpdateFrame = -1
 Refine._liveSeedBaseline = Refine._liveSeedBaseline or {}
 Refine._blockedVendorNotified = false
+Refine._blockedInteractionNotified = false
 
 ----------------------------------------------------------------
 -- Helpers
@@ -977,6 +978,7 @@ end
 function Refine.ShouldAllowRefineNow(opts)
     opts = type(opts) == "table" and opts or {}
     local ignoreVendor = opts.ignoreVendor == true
+    local ignoreInteraction = opts.ignoreInteraction == true
     if Refine.IsEnabled() ~= true then
         return false, "disabled"
     end
@@ -990,7 +992,11 @@ function Refine.ShouldAllowRefineNow(opts)
     end
     -- Quest / trainer / bank dialogs also listen for INTERACT_DONE. ignoreVendor
     -- only skips the merchant; any other NPC window still blocks SendUseItem.
-    if VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true then
+    -- ignoreInteraction is for the stalled tip (is refine work waiting aside from
+    -- that dialog?), same pattern as ignoreVendor.
+    if ignoreInteraction ~= true
+        and VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true
+    then
         return false, "interaction-open"
     end
     local Orch = StockPiler.Orchestrator
@@ -1088,31 +1094,63 @@ end
 
 function Refine.ClearBlockedNotify()
     Refine._blockedVendorNotified = false
+    Refine._blockedInteractionNotified = false
 end
 
---- One chat line when refine work is waiting and the merchant window is the block.
---- Returns true only on the first notice. ClearBlockedNotify arms it again.
+--- One chat line when refine work is waiting on an open merchant or NPC dialog.
+--- Returns true only on the first notice per block. ClearBlockedNotify arms again.
 function Refine.MaybeNotifyBlocked()
     local VA = StockPiler.VendorAdapter
-    if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
+    local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+    local interactionOpen = VA and VA.IsNonStoreInteractionOpen
+        and VA.IsNonStoreInteractionOpen() == true
+    if storeOpen ~= true then
         Refine._blockedVendorNotified = false
+    end
+    if interactionOpen ~= true then
+        Refine._blockedInteractionNotified = false
+    end
+    if storeOpen ~= true and interactionOpen ~= true then
         return false
     end
-    if Refine._blockedVendorNotified == true then
-        return false
+
+    -- Merchant alone: vendor tip (AutoBuy needs the store open).
+    if storeOpen == true and interactionOpen ~= true then
+        if Refine._blockedVendorNotified == true then
+            return false
+        end
+        if #(Refine.CollectIntents({ ignoreVendor = true }) or {}) == 0 then
+            return false
+        end
+        local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
+            or L"<icon02486> Refine stalled - close the merchant window to continue."
+        if StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(msg)
+        end
+        Refine._blockedVendorNotified = true
+        return true
     end
-    local ignore = { ignoreVendor = true }
-    -- CollectIntents already applies ShouldAllowRefineNow(ignore).
-    if #(Refine.CollectIntents(ignore) or {}) == 0 then
-        return false
+
+    -- Quest / trainer / bank / flight master / etc. (with or without the store).
+    if interactionOpen == true then
+        if Refine._blockedInteractionNotified == true then
+            return false
+        end
+        if #(Refine.CollectIntents({
+            ignoreVendor = true,
+            ignoreInteraction = true,
+        }) or {}) == 0 then
+            return false
+        end
+        local msg = (StockPiler.T and StockPiler.T("refine.blocked.interaction_open"))
+            or L"<icon02486> Refine stalled - close the NPC window to continue."
+        if StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(msg)
+        end
+        Refine._blockedInteractionNotified = true
+        return true
     end
-    local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
-        or L"<icon02486> Refine stalled - close the merchant window to continue."
-    if StockPiler.Debug and StockPiler.Debug.Print then
-        StockPiler.Debug.Print(msg)
-    end
-    Refine._blockedVendorNotified = true
-    return true
+    return false
 end
 
 ----------------------------------------------------------------

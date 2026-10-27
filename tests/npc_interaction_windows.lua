@@ -154,6 +154,9 @@ StockPiler = {
         if key == "refine.blocked.vendor_open" then
             return "Refine stalled - close the merchant window to continue."
         end
+        if key == "refine.blocked.interaction_open" then
+            return "Refine stalled - close the NPC window to continue."
+        end
         return tostring(key)
     end,
     Debug = {
@@ -235,6 +238,7 @@ local CA = StockPiler.CultivatorAdapter
 
 local STORE = "EA_Window_InteractionStore"
 local TIP = "Refine stalled - close the merchant window to continue."
+local INTERACTION_TIP = "Refine stalled - close the NPC window to continue."
 
 local function allowPair()
     return Refine.ShouldAllowRefineNow()
@@ -337,8 +341,24 @@ local bothAllow, bothWhy = Refine.ShouldAllowRefineNow({ ignoreVendor = true })
 eq(bothAllow, false, "ignoreVendor still blocks when a quest is also open")
 eq(bothWhy, "interaction-open", "store plus quest is interaction-open")
 eq(select(2, allowPair()), "vendor-open", "default opts still prefer vendor-open")
-eq(Refine.MaybeNotifyBlocked(), false, "a quest beside the store does not use the merchant tip")
-eq(#prints, 1, "the quest does not print another merchant tip")
+-- Seed intents so the interaction tip can fire (same as store-only path).
+Refine.CollectIntents({ ignoreVendor = true, ignoreInteraction = true })
+Refine._intentCache = { { reason = "plant-need", slot = 3, uses = 1 } }
+eq(Refine.MaybeNotifyBlocked(), true, "a quest beside the store uses the NPC tip")
+eq(#prints, 2, "the quest prints the interaction tip once")
+eq(prints[2], INTERACTION_TIP, "the interaction tip text is the NPC line")
+
+-- Quest alone: same tip when refine work is waiting.
+resetWindows()
+resetRefine()
+prints = {}
+Refine.ClearBlockedNotify()
+pushOpen("EA_Window_InteractionQuest")
+Refine.CollectIntents({ ignoreVendor = true, ignoreInteraction = true })
+Refine._intentCache = { { reason = "plant-need", slot = 3, uses = 1 } }
+eq(Refine.MaybeNotifyBlocked(), true, "quest-only refine work notifies")
+eq(prints[1], INTERACTION_TIP, "quest-only tip is the NPC line")
+eq(Refine.MaybeNotifyBlocked(), false, "quest tip does not repeat until cleared")
 
 -- Dialog opens after intents were collected. Same-frame hide does not block.
 resetWindows()

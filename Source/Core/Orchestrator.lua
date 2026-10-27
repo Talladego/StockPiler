@@ -615,8 +615,8 @@ function Orch._TickBody()
     -- 3) Refine
     local Refine = StockPiler.Refine
     local allowRefine = Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
-    -- Unconditional: MaybeNotifyBlocked also clears its latch once refine is
-    -- allowed again or the block is no longer the open merchant.
+    -- Unconditional: MaybeNotifyBlocked also clears its latches once refine is
+    -- allowed again or the merchant / NPC dialog is no longer the block.
     if Refine and Refine.MaybeNotifyBlocked then
         Refine.MaybeNotifyBlocked()
     end

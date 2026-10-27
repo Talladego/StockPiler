@@ -418,6 +418,7 @@ StockPiler.Locale.Packs[LANG] = {
     ["brew.blocked_plant"] = L"<icon10985> Waiting on pending plant.",
     ["brew.blocked_refine"] = L"<icon10985> Waiting on refine.",
     ["refine.blocked.vendor_open"] = L"<icon02486> Refine stalled - close the merchant window to continue.",
+    ["refine.blocked.interaction_open"] = L"<icon02486> Refine stalled - close the NPC window to continue.",
     ["buy.blocked.reserve"] = L"<icon02486> AutoBuy paused - gold is at or below your Reserve ({gold}).",
     ["buy.blocked.budget"] = L"<icon02486> AutoBuy paused - Budget reached ({spent} / {gold}).",
     ["buy.blocked.craft_bag"] = L"<icon02486> AutoBuy paused - craft bag full; bought what fit, rest waits for space.",
