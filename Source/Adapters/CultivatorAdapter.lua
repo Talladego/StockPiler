@@ -352,20 +352,21 @@ local function OpenListContains(list, want)
 end
 
 local function ExplicitlyHidden(name)
-    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= false then
+    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
         return false
     end
-    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
+    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= false then
         return false
     end
     return true
 end
 
 local function ShowingTrue(name)
-    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= true then
+    -- DoesWindowExist first: WindowGetShowing on a never-created name errors in client.
+    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
         return false
     end
-    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
+    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= true then
         return false
     end
     return true
@@ -380,11 +381,13 @@ local function ClosedBeforeCascade(name)
     end
     if type(WindowGetShowing) == "function" then
         local existsKnown = type(DoesWindowExist) ~= "function" or DoesWindowExist(name) == true
-        if existsKnown and WindowGetShowing(name) == false then
-            return true
-        end
-        if WindowGetShowing(name) == true and existsKnown then
-            return false
+        if existsKnown then
+            if WindowGetShowing(name) == false then
+                return true
+            end
+            if WindowGetShowing(name) == true then
+                return false
+            end
         end
     end
     local utils = WindowUtils

@@ -88,7 +88,11 @@ function DoesWindowExist(name)
     return exists[name] == true
 end
 
+-- Mirror the client: WindowGetShowing on a never-created name is an error.
 function WindowGetShowing(name)
+    if exists[name] ~= true and DoesWindowExist ~= nil then
+        error("WindowGetShowing: Window " .. tostring(name) .. " does not exist", 2)
+    end
     return showing[name] == true
 end
 
@@ -191,6 +195,14 @@ StockPiler = {
         BeginPendingRefine = function()
             pendingSnaps = pendingSnaps + 1
         end,
+        ItemLooksLikeRefinablePlant = function()
+            return true
+        end,
+    },
+    BagAdapter = {
+        ReadSlot = function()
+            return 1, 3, { uniqueID = 42, stackCount = 2 }
+        end,
     },
 }
 
@@ -250,9 +262,11 @@ local function resetRefine()
 end
 
 local blockers = {
+    "EA_Window_InteractionBase",
     "EA_Window_InteractionQuest",
     "EA_Window_InteractionTraining",
     "EA_Window_InteractionRenownTraining",
+    "InteractionWindowGuildCreateForm",
     "BankWindow",
     "GuildVaultWindow",
     "MailWindow",
@@ -347,10 +361,16 @@ eq(select(2, allowPair()), "interaction-open", "reopening the quest blocks refin
 -- DoesWindowExist missing: WindowGetShowing false still means closed.
 local savedExists = DoesWindowExist
 DoesWindowExist = nil
+-- Without DoesWindowExist the mock cannot gate; allow GetShowing like a soft client.
+local softShowing = WindowGetShowing
+function WindowGetShowing(name)
+    return showing[name] == true
+end
 showing["EA_Window_InteractionQuest"] = false
 eq(VA.IsNonStoreInteractionOpen(), false, "showing false without DoesWindowExist is closed")
 showing["EA_Window_InteractionQuest"] = true
 eq(VA.IsNonStoreInteractionOpen(), true, "showing true without DoesWindowExist stays open")
+WindowGetShowing = softShowing
 DoesWindowExist = savedExists
 
 -- Stale list entry whose window no longer exists still counts (until OnHidden).
@@ -358,17 +378,54 @@ exists["EA_Window_InteractionQuest"] = false
 showing["EA_Window_InteractionQuest"] = false
 eq(VA.IsNonStoreInteractionOpen(), true, "listed window with DoesWindowExist false still counts")
 
--- Empty open list does not scan WindowGetShowing. A missing list does.
+-- Empty open list still polls WindowGetShowing for known blockers (desynced list).
 resetWindows()
 resetRefine()
 setOpen("EA_Window_InteractionQuest", true)
 WindowUtils.openWindowList = {}
-eq(VA.IsNonStoreInteractionOpen(), false, "an empty open list does not poll WindowGetShowing")
+eq(VA.IsNonStoreInteractionOpen(), true, "an empty open list still polls known windows")
+eq(select(2, allowPair()), "interaction-open", "empty list + visible quest blocks refine")
+setOpen("EA_Window_InteractionBase", true)
+showing["EA_Window_InteractionQuest"] = false
+exists["EA_Window_InteractionQuest"] = false
+eq(VA.IsNonStoreInteractionOpen(), true, "empty list + InteractionBase blocks")
+showing["EA_Window_InteractionBase"] = false
+eq(VA.IsNonStoreInteractionOpen(), false, "empty list with nothing showing is closed")
+setOpen("InteractionWindowGuildCreateForm", true)
+eq(VA.IsNonStoreInteractionOpen(), true, "InteractionWindowGuildCreateForm blocks via fallback")
+resetWindows()
+resetRefine()
+pushOpen("InteractionWindowGuildRename")
+eq(select(2, allowPair()), "interaction-open", "InteractionWindowGuildRename blocks refine")
+resetWindows()
+resetRefine()
+setOpen("EA_Window_InteractionQuest", true)
+WindowUtils.openWindowList = {}
 local savedUtils = WindowUtils
 WindowUtils = nil
 eq(VA.IsNonStoreInteractionOpen(), true, "a missing open list falls back to known windows")
 WindowUtils = savedUtils
-eq(VA.IsNonStoreInteractionOpen(), false, "restoring an empty open list stops the fallback")
+showing["EA_Window_InteractionQuest"] = false
+exists["EA_Window_InteractionQuest"] = false
+eq(VA.IsNonStoreInteractionOpen(), false, "empty list with nothing showing is closed")
+
+-- Fallback poll must not WindowGetShowing names that were never created.
+resetWindows()
+resetRefine()
+WindowUtils.openWindowList = {}
+local okFallback, errFallback = pcall(function()
+    return VA.IsNonStoreInteractionOpen()
+end)
+eq(okFallback, true, "empty fallback does not error on missing windows")
+eq(errFallback, false, "empty fallback with no windows is closed")
+
+-- Store alone is never a non-store interaction (AutoBuy needs the merchant open).
+resetWindows()
+resetRefine()
+setOpen(STORE, true)
+WindowUtils.openWindowList = {}
+eq(VA.IsNonStoreInteractionOpen(), false, "empty list + store alone is not non-store")
+eq(select(2, allowPair()), "vendor-open", "store-only still uses vendor-open")
 
 -- Ordinary windows, including gear CharacterWindow, do not block.
 resetWindows()
@@ -496,6 +553,30 @@ WindowUtils.Cascade.Resolve()
 eq(showing["MailWindow"], true, "merged mail stays open")
 eq(showing["BankWindow"], false, "the closed bank stays closed")
 eq(showing["EA_InteractionFlightMasterWindow"], true, "merged flight master stays open")
+
+-- Manual plant refine via SendUseItem is refused while an interaction is open.
+load_module("Source/Knowledge/LearnBridge.lua")
+local LB = StockPiler.LearnBridge
+eq(LB.EnsureUseItemRefineHook(), true, "LearnBridge hooks SendUseItem")
+resetWindows()
+resetRefine()
+prints = {}
+pushOpen("EA_Window_InteractionQuest")
+local sendsHook = sends
+local snapsHook = pendingSnaps
+SendUseItem(1, 3, 0, 0, 0)
+eq(sends, sendsHook, "manual refine does not SendUseItem while quest is open")
+eq(pendingSnaps, snapsHook, "manual refine does not snapshot while quest is open")
+eq(#prints, 0, "manual refine hold is silent")
+playerClose("EA_Window_InteractionQuest")
+SendUseItem(1, 3, 0, 0, 0)
+eq(sends, sendsHook + 1, "manual refine SendUseItem after quest closes")
+eq(pendingSnaps, snapsHook + 1, "manual refine learns after quest closes")
+setOpen(STORE, true)
+local sendsStore = sends
+SendUseItem(1, 3, 0, 0, 0)
+eq(sends, sendsStore, "manual refine does not SendUseItem while store is open")
+setOpen(STORE, false)
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

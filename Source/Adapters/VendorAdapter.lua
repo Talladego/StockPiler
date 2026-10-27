@@ -134,18 +134,37 @@ local function LearnVendorRows(list)
             StockPiler.Items.StoreItem(item, "vendor")
         end
         local key = tostring(uid)
-        if type(vendorItems[key]) == "table" then
-            return
+        local cost = tonumber(item.cost) or tonumber(item.price) or tonumber(item.sellPrice) or 0
+        if cost < 0 then
+            cost = 0
         end
-        vendorItems[key] = {
-            uniqueID = uid,
-            name = item.name,
-            iconNum = tonumber(item.iconNum) or 0,
-            cost = tonumber(item.cost) or 0,
-            cultivationType = tonumber(item.cultivationType) or 0,
-            tradeSkill = tonumber(item.tradeSkill) or CraftingFamilyBonus(item) or 0,
-        }
-        added = added + 1
+        local existing = vendorItems[key]
+        if type(existing) == "table" then
+            -- Refresh cost/name on revisit so tip/queue use current prices.
+            if cost > 0 and (tonumber(existing.cost) or 0) ~= cost then
+                existing.cost = cost
+                added = added + 1
+            end
+            if item.name ~= nil and (existing.name == nil or existing.name == L"" or existing.name == "") then
+                existing.name = item.name
+            end
+            if (tonumber(item.iconNum) or 0) > 0 then
+                existing.iconNum = tonumber(item.iconNum) or existing.iconNum
+            end
+        else
+            vendorItems[key] = {
+                uniqueID = uid,
+                name = item.name,
+                iconNum = tonumber(item.iconNum) or 0,
+                cost = cost,
+                cultivationType = tonumber(item.cultivationType) or 0,
+                tradeSkill = tonumber(item.tradeSkill) or CraftingFamilyBonus(item) or 0,
+            }
+            added = added + 1
+        end
+        if cost > 0 and StockPiler.Knowledge and StockPiler.Knowledge.RememberVendorCost then
+            StockPiler.Knowledge.RememberVendorCost(uid, cost)
+        end
     end
     local n = 0
     for _, item in ipairs(list) do
@@ -218,26 +237,40 @@ local SERVICE_WINDOWS = {
     EA_Window_Bank = true,
 }
 
--- Used only when WindowUtils.openWindowList is not a table (unit-test stub).
+-- Showing-poll when openWindowList is empty/desynced. Never includes the merchant
+-- store (AutoBuy needs that window open; refine uses IsStoreOpen separately).
 local FALLBACK_INTERACTION_WINDOWS = {
+    "EA_Window_InteractionBase",
     "EA_Window_InteractionQuest",
+    "EA_Window_InteractionHealer",
     "EA_Window_InteractionTraining",
+    "EA_Window_InteractionCoreTraining",
+    "EA_Window_InteractionSpecialtyTraining",
     "EA_Window_InteractionTomeTraining",
     "EA_Window_InteractionRenownTraining",
-    "EA_Window_InteractionSpecialtyTraining",
     "EA_Window_InteractionCareerMaster",
     "EA_Window_InteractionGuild",
     "EA_Window_InteractionKeepUpgrades",
     "EA_Window_InteractionInfluenceRewards",
+    "EA_Window_InteractionEventRewards",
+    "EA_Window_InteractionAltar",
     "EA_Window_InteractionLastName",
     "EA_Window_InteractionHeraldry",
+    "EA_Window_InteractionLibrarianStore",
     "EA_InteractionFlightMasterWindow",
+    "InteractionWindowGuildCreateForm",
+    "InteractionWindowGuildRename",
     "BankWindow",
     "GuildVaultWindow",
     "MailWindow",
     "AuctionWindow",
     "BarberWindow",
     "EA_Window_EquipmentUpgrade",
+    "EA_Window_GuildVault",
+    "EA_Window_Mail",
+    "EA_Window_Auction",
+    "EA_Window_Barber",
+    "EA_Window_Bank",
 }
 
 local function WindowEntryName(entry)
@@ -288,10 +321,16 @@ local function IsNonStoreInteractionName(name)
     if name:sub(1, 14) == "EA_Interaction" then
         return true
     end
+    -- Guild create / rename (InteractionWindowGuildCreateForm, …).
+    if name:sub(1, 17) == "InteractionWindow" then
+        return true
+    end
     return false
 end
 
---- Same-frame hide: still listed, but WindowGetShowing already false.
+--- Listed openWindowList entry still blocks unless it is known to exist and is
+--- already hidden (same-frame hide). A stale list name with DoesWindowExist
+--- false still counts as open until OnHidden removes it.
 local function ListedWindowCountsAsOpen(name)
     local existsFn = type(DoesWindowExist) == "function"
     local showingFn = type(WindowGetShowing) == "function"
@@ -305,13 +344,26 @@ local function ListedWindowCountsAsOpen(name)
 end
 
 local function ShowingTrue(name)
-    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= true then
-        return false
-    end
+    -- DoesWindowExist first: WindowGetShowing on a never-created name errors in client.
     if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
         return false
     end
+    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= true then
+        return false
+    end
     return true
+end
+
+local function FallbackShowingOpen()
+    for i = 1, #FALLBACK_INTERACTION_WINDOWS do
+        if ShowingTrue(FALLBACK_INTERACTION_WINDOWS[i]) then
+            return true
+        end
+    end
+    if IsDyeMerchantCharacter() and ShowingTrue("CharacterWindow") then
+        return true
+    end
+    return false
 end
 
 local function OpenListHasBlockingWindow(list)
@@ -339,22 +391,15 @@ local function OpenListHasBlockingWindow(list)
 end
 
 --- Quest, trainer, flight master, bank, and other NPC windows.
---- O(open windows) via WindowUtils.openWindowList. Does not poll every frame.
+--- Prefer openWindowList; also poll known windows so an empty/desynced list
+--- cannot miss EA_Window_InteractionBase (SendUseItem closes those).
 function VA.IsNonStoreInteractionOpen()
     local utils = WindowUtils
     local list = type(utils) == "table" and utils.openWindowList or nil
-    if type(list) == "table" then
-        return OpenListHasBlockingWindow(list) == true
-    end
-    for i = 1, #FALLBACK_INTERACTION_WINDOWS do
-        if ShowingTrue(FALLBACK_INTERACTION_WINDOWS[i]) then
-            return true
-        end
-    end
-    if IsDyeMerchantCharacter() and ShowingTrue("CharacterWindow") then
+    if type(list) == "table" and OpenListHasBlockingWindow(list) == true then
         return true
     end
-    return false
+    return FallbackShowingOpen() == true
 end
 
 --- opts.includeStore also treats the merchant store as an interaction.

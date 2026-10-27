@@ -1807,7 +1807,7 @@ end
 --- rows, when passed, is this build's rows. Nil keeps the published snapshot.
 WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
     target = tonumber(target) or 0
-    if target <= 0 or type(potion) ~= "table" then
+    if target <= 0 then
         return false
     end
     watchKey = tostring(watchKey or "")
@@ -1816,6 +1816,7 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
         local plan = PS and PS.Get and PS.Get()
         rows = plan and plan.rows
     end
+    -- Plan SoT first: works without a live potion table (published rows omit it).
     if type(rows) == "table" and watchKey ~= "" then
         for i = 1, #rows do
             local row = rows[i]
@@ -1832,7 +1833,9 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
                     if gap > 0 then
                         return true
                     end
-                    if row.craftableShared == true then
+                    if row.craftableShared == true
+                        or tostring(row.statusKey or "") == "ready_to_craft_shared"
+                    then
                         return true
                     end
                     if tostring(row.statusKey or "") == "need_seeds" then
@@ -1842,6 +1845,9 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
                 end
             end
         end
+    end
+    if type(potion) ~= "table" then
+        return false
     end
     local outUid = tonumber(potion.outputUid) or 0
     local have = PotionHave(nil, potion, outUid)
@@ -3653,6 +3659,8 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
             return
         end
         -- Tips look covered but craftable is still 0: craft bag full beats Restocking.
+        -- (Expected craftable 0 with mats in bag = watched outcome never drops on
+        -- this fingerprint; AutoBrew also requires craftable > 0.)
         if IsCraftBagFullCached() then
             ApplyCraftBagFullStatus(row)
             return

@@ -33,6 +33,9 @@ Grow._pendingAdditive = Grow._pendingAdditive or {}
 Grow._pendingAdditiveAt = Grow._pendingAdditiveAt or {}
 Grow._additiveAttempts = Grow._additiveAttempts or {}
 Grow._additiveStall = Grow._additiveStall or {}
+-- Stage when a plot was additive-stalled. A later stage (Soil→Water→Nutrient)
+-- must get a fresh attempt budget; otherwise mid-session grows never get water.
+Grow._additiveStallStage = Grow._additiveStallStage or {}
 Grow._fillCursor = Grow._fillCursor or 1
 Grow._additiveCursor = Grow._additiveCursor or 1
 Grow._lastPlantedSeedUid = 0
@@ -1570,6 +1573,13 @@ local function PlanRowsLackPlantDemand()
                     return false
                 end
             else
+                -- Shared craftable covers bottleGap but AutoBrew will not brew those
+                -- rows, so Cult still needs to grow contested mats.
+                if row.craftableShared == true
+                    or tostring(row.statusKey or "") == "ready_to_craft_shared"
+                then
+                    return false
+                end
                 local gap = tonumber(row.bottleGap)
                 if gap == nil then
                     local target = tonumber(row.potionMin) or tonumber(row.target) or 0
@@ -2151,6 +2161,60 @@ function Grow.ClearPendingAdditive(plotNum)
     Grow._pendingAdditiveAt[plotNum] = nil
 end
 
+local function ClearAdditiveRetry(plotNum)
+    plotNum = tonumber(plotNum) or 0
+    if plotNum <= 0 then
+        return
+    end
+    Grow._additiveAttempts[plotNum] = nil
+    Grow._additiveStall[plotNum] = nil
+    Grow._additiveStallStage[plotNum] = nil
+end
+
+--- Drop stall/attempt caps when the plot stage changed or the plot is empty.
+--- Without this, 3 failed Soil applies permanently blocked Water for the session.
+local function ClearStaleAdditiveStalls()
+    local CA = StockPiler.CultivatorAdapter
+    if not CA or not CA.ReadPlot then
+        return
+    end
+    local seen = {}
+    local function consider(plotNum)
+        plotNum = tonumber(plotNum) or 0
+        if plotNum <= 0 or seen[plotNum] then
+            return
+        end
+        seen[plotNum] = true
+        local stalled = Grow._additiveStall[plotNum] == true
+        local attempts = tonumber(Grow._additiveAttempts[plotNum]) or 0
+        if not stalled and attempts <= 0 then
+            return
+        end
+        local live = CA.ReadPlot(plotNum)
+        if type(live) ~= "table" or IsPlotEmptyRow(live) then
+            ClearAdditiveRetry(plotNum)
+            return
+        end
+        local stage = NormalizeStage(live.stage)
+        local stallStage = Grow._additiveStallStage[plotNum]
+        if stallStage ~= nil and stallStage ~= stage then
+            ClearAdditiveRetry(plotNum)
+            return
+        end
+        -- Attempts without a stall stage (older state): bind stage so a later
+        -- advance still clears, or clear if stage moved since last attempt bind.
+        if attempts > 0 and stallStage == nil then
+            Grow._additiveStallStage[plotNum] = stage
+        end
+    end
+    for plotNum in pairs(Grow._additiveStall) do
+        consider(plotNum)
+    end
+    for plotNum in pairs(Grow._additiveAttempts) do
+        consider(plotNum)
+    end
+end
+
 function Grow.ClearPendingAdditiveIfFilled(plotNum, row)
     plotNum = tonumber(plotNum) or 0
     if plotNum <= 0 or (tonumber(Grow._pendingAdditive[plotNum]) or 0) < 1 then
@@ -2164,6 +2228,7 @@ function Grow.ClearPendingAdditiveIfFilled(plotNum, row)
     local cultType = AD.CultTypeForStage(stage)
     if cultType and AD.PlotHasAdditive(row, cultType) then
         Grow.ClearPendingAdditive(plotNum)
+        ClearAdditiveRetry(plotNum)
     end
 end
 
@@ -2177,6 +2242,7 @@ function Grow.NeedsCurrentStageAdditive()
     if not AD or not AD.IsEnabled or AD.IsEnabled() ~= true then
         return false
     end
+    ClearStaleAdditiveStalls()
     if AD.CanApplyCurrentStage then
         return AD.CanApplyCurrentStage({
             pendingAdditive = Grow._pendingAdditive,
@@ -2203,16 +2269,17 @@ local function ExpirePendingAdditives()
                 live = CA.ReadPlot(plotNum)
             end
             local filled = false
+            local stage = 0
             if type(live) == "table" and AD and AD.PlotHasAdditive and AD.CultTypeForStage then
-                local stage = tonumber(live.stage) or 0
+                stage = tonumber(live.stage) or 0
                 local cultType = AD.CultTypeForStage(stage)
                 filled = cultType and AD.PlotHasAdditive(live, cultType) == true
             end
             if filled then
-                Grow._additiveAttempts[plotNum] = nil
-                Grow._additiveStall[plotNum] = nil
+                ClearAdditiveRetry(plotNum)
             elseif (tonumber(Grow._additiveAttempts[plotNum]) or 0) >= maxAdds then
                 Grow._additiveStall[plotNum] = true
+                Grow._additiveStallStage[plotNum] = stage
             end
             Grow.ClearPendingAdditive(plotNum)
         end
@@ -2222,6 +2289,7 @@ end
 function Grow.TryAdditive(opId)
     -- A hidden in-flight apply must expire even when no plot currently looks due.
     ExpirePendingAdditives()
+    ClearStaleAdditiveStalls()
     if Grow.NeedsCurrentStageAdditive() ~= true then
         return false
     end
@@ -2257,6 +2325,14 @@ function Grow.TryAdditive(opId)
         local plotNum = tonumber(pick.plotNum) or 0
         if (tonumber(Grow._additiveAttempts[plotNum]) or 0) >= maxAdds then
             Grow._additiveStall[plotNum] = true
+            local stallStage = 0
+            if CA.ReadPlot then
+                local live = CA.ReadPlot(plotNum)
+                if type(live) == "table" then
+                    stallStage = NormalizeStage(live.stage)
+                end
+            end
+            Grow._additiveStallStage[plotNum] = stallStage
             if Perf and Perf.End then
                 Perf.End("Grow.TryAdditive")
             end
@@ -2268,7 +2344,7 @@ function Grow.TryAdditive(opId)
                 and AD.PlotHasAdditive(live, pick.cultType) == true
             then
                 Grow.ClearPendingAdditive(plotNum)
-                Grow._additiveAttempts[plotNum] = nil
+                ClearAdditiveRetry(plotNum)
                 if Perf and Perf.End then
                     Perf.End("Grow.TryAdditive")
                 end
@@ -2951,7 +3027,14 @@ function Grow.OnCultivationUpdated(plotNum)
             Grow._plotQuietUntil[plotNum] = nil
             ReleaseCommit(plotNum, true)
         end
+        Grow.ClearPendingAdditiveIfFilled(plotNum, row)
+        local stallStage = Grow._additiveStallStage[plotNum]
+        if stallStage ~= nil and NormalizeStage(row.stage) ~= stallStage then
+            ClearAdditiveRetry(plotNum)
+        end
     elseif type(row) == "table" and IsPlotEmptyRow(row) then
+        ClearAdditiveRetry(plotNum)
+        Grow.ClearPendingAdditive(plotNum)
         if CC and CC.OnSoilStillEmpty then
             CC.OnSoilStillEmpty(plotNum, {})
         end

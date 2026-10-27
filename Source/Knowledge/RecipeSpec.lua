@@ -2159,25 +2159,33 @@ function RS.ExpectedCraftableBottles(recipe, potionUid, opts)
 end
 
 --- Crafts expected to cover a deficit when only `rate` of brews produce this potion.
---- Falls back to optimistic CraftsNeededForDeficit when rate is unknown.
+--- Too few samples (OutcomeSuccessRate nil): optimistic CraftsNeededForDeficit.
+--- Measured 0% after enough attempts: Laplace (s+1)/(n+2) so AutoBuy still sizes
+--- vials/mains instead of under-buying as if every craft succeeds.
 function RS.ExpectedCraftsForDeficit(deficit, recipe, potionUid)
     deficit = math.max(0, tonumber(deficit) or 0)
     if deficit <= 0 then
         return 0, nil
     end
     potionUid = tonumber(potionUid) or tonumber(recipe and recipe.outputUid) or 0
-    local rate = RS.OutcomeSuccessRate(recipe, potionUid)
+    local rate, successes, attempts = RS.OutcomeSuccessRate(recipe, potionUid)
     local yield = RS.StableCraftYield(recipe, potionUid)
     if yield < 1 then
         yield = 1
     end
-    if rate == nil or rate <= 0 then
-        return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), rate
+    if rate == nil then
+        return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), nil
     end
-    if rate > 1 then
-        rate = 1
+    local rateEff = tonumber(rate) or 0
+    if rateEff <= 0 then
+        -- rate is only non-nil after OUTCOME_RATE_MIN_ATTEMPTS samples.
+        successes = tonumber(successes) or 0
+        attempts = tonumber(attempts) or 0
+        rateEff = (successes + 1) / (attempts + 2)
+    elseif rateEff > 1 then
+        rateEff = 1
     end
-    local perCraft = yield * rate
+    local perCraft = yield * rateEff
     if perCraft <= 0 then
         return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), rate
     end

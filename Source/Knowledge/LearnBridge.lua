@@ -132,11 +132,19 @@ function LB.EnsureUseItemRefineHook()
     SendUseItem = function(location, slot, a, b, c)
         local item = ResolveItemForUse(location, slot)
         local SM = StockPiler.SeedMap
-        if type(item) == "table" and SM and SM.ItemLooksLikeRefinablePlant
+        local refinable = type(item) == "table" and SM and SM.ItemLooksLikeRefinablePlant
             and SM.ItemLooksLikeRefinablePlant(item) == true
-            and SM.BeginPendingRefine
-        then
-            pcall(SM.BeginPendingRefine, item)
+        -- SendUseItem ends the NPC visit (INTERACT_DONE). Silently refuse plant
+        -- refine while quest/trainer/store/bank is open; AutoBuy and non-plant
+        -- uses still go through.
+        if refinable == true then
+            local VA = StockPiler.VendorAdapter
+            if VA and VA.IsInteractionOpen and VA.IsInteractionOpen({ includeStore = true }) == true then
+                return
+            end
+            if SM.BeginPendingRefine then
+                pcall(SM.BeginPendingRefine, item)
+            end
         end
         return orig(location, slot, a, b, c)
     end

@@ -986,6 +986,16 @@ function StockPilerWindow.SelectTab(tabNumber, opts)
         if StockPiler.Perf and StockPiler.Perf.Tally then
             StockPiler.Perf.Tally("refreshTab", "select-tab-watch")
         end
+    elseif tabNumber == StockPilerWindow.TABS_POTIONS
+        and StockPilerTabPotions
+        and StockPilerTabPotions.PaintTabSwitch
+    then
+        -- Skip fingerprint rebuild when the potions catalog is already bound.
+        StockPilerTabPotions.PaintTabSwitch()
+        StockPilerWindow.RefreshFooterButtons()
+        if StockPiler.Perf and StockPiler.Perf.Tally then
+            StockPiler.Perf.Tally("refreshTab", "select-tab-potions")
+        end
     else
         StockPilerWindow.RefreshActiveTab("select-tab")
     end
@@ -995,6 +1005,16 @@ function StockPilerWindow.SelectTab(tabNumber, opts)
         local listCount = 0
         if StockPilerTabWatch and type(StockPilerTabWatch.listData) == "table" then
             listCount = #StockPilerTabWatch.listData
+        end
+        if listCount > 0 and not hasPopulated then
+            StockPilerWindow.RequestListRepopulate()
+        end
+    elseif tabNumber == StockPilerWindow.TABS_POTIONS then
+        local indices = SPTabPotionsList and SPTabPotionsList.PopulatorIndices
+        local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+        local listCount = 0
+        if StockPilerTabPotions and type(StockPilerTabPotions.listData) == "table" then
+            listCount = #StockPilerTabPotions.listData
         end
         if listCount > 0 and not hasPopulated then
             StockPilerWindow.RequestListRepopulate()

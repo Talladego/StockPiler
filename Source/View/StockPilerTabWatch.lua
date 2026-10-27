@@ -687,7 +687,9 @@ local function AfterWatchSettingsChanged()
     if StockPilerTabWatch.UpdateRows then
         StockPilerTabWatch.UpdateRows({ keepVisible = true })
     end
-    if StockPiler.Buy and StockPiler.Buy.IsEnabled and StockPiler.Buy.IsEnabled() == true then
+    if StockPiler.Buy and StockPiler.Buy.NotifyQueueMaybeChanged then
+        StockPiler.Buy.NotifyQueueMaybeChanged()
+    elseif StockPiler.Buy and StockPiler.Buy.IsEnabled and StockPiler.Buy.IsEnabled() == true then
         local VA = StockPiler.VendorAdapter
         if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
             if StockPiler.Buy.InvalidateJobsCache then
@@ -2613,6 +2615,15 @@ function StockPilerTabWatch.OnToggleOptimisticMode()
         return
     end
     NotifySettings(T("watch.optimistic_mode", { state = OnOff(on) }))
+    if on ~= true then
+        local CC = StockPiler.CraftChatAdapter
+        local warn = T("watch.optimistic_mode_off_warn")
+        if CC and CC.Print then
+            CC.Print(warn)
+        else
+            NotifySettings(warn)
+        end
+    end
     AfterWatchSettingsChanged()
     UpdateOptimisticModeCheckbox()
 end
@@ -3617,6 +3628,12 @@ end
 
 function StockPilerTabWatch.OnMouseOverAutoBuy()
     local text = T("tip.watch.autobuy")
+    local Watch = StockPiler.Watch
+    if Watch and Watch.IsOptimisticOutcomeEstimate
+        and Watch.IsOptimisticOutcomeEstimate() ~= true
+    then
+        text = text .. L"\n" .. T("tip.watch.autobuy_optimistic_off")
+    end
     local Buy = StockPiler.Buy
     local jobs = Buy and Buy.CollectBuyJobs and Buy.CollectBuyJobs()
     if type(jobs) == "table" and #jobs > 0 then
@@ -3645,6 +3662,32 @@ function StockPilerTabWatch.OnMouseOverAutoBuy()
             end
             if #shown > limit then
                 text = text .. L"\n" .. T("tip.watch.autobuy_more", { count = #shown - limit })
+            end
+            if Buy.EstimateJobsCostBrass then
+                local costBrass, pricedN, jobN = Buy.EstimateJobsCostBrass(shown)
+                if pricedN > 0 and costBrass > 0 then
+                    local brassPerGold = Buy.BRASS_PER_GOLD or 10000
+                    local cap = Buy.GetBudgetGold and Buy.GetBudgetGold() or 0
+                    local spentBrass = Buy.GetSpentBrass and Buy.GetSpentBrass() or 0
+                    local remainBrass = math.max(0, (cap * brassPerGold) - spentBrass)
+                    local costLabel = Buy.FormatMoneyBrass and Buy.FormatMoneyBrass(costBrass)
+                        or (tostring(costBrass) .. "b")
+                    local spentLabel = Buy.FormatMoneyBrass and Buy.FormatMoneyBrass(spentBrass)
+                        or tostring(spentBrass)
+                    local remainLabel = Buy.FormatMoneyBrass and Buy.FormatMoneyBrass(remainBrass)
+                        or (tostring(remainBrass) .. "b")
+                    local goldLabel = Buy.FormatGoldAmount and Buy.FormatGoldAmount(cap)
+                        or (tostring(cap) .. "g")
+                    local costKey = (pricedN >= jobN)
+                        and "tip.watch.autobuy_cost"
+                        or "tip.watch.autobuy_cost_partial"
+                    text = text .. L"\n" .. T(costKey, {
+                        cost = costLabel,
+                        spent = spentLabel,
+                        gold = goldLabel,
+                        remain = remainLabel,
+                    })
+                end
             end
         end
     end
@@ -3732,9 +3775,11 @@ function StockPilerTabWatch.OnMouseOverBudget()
     local remain = Buy and Buy.GetAllowanceRemainingBrass and Buy.GetAllowanceRemainingBrass() or 0
     local remainLabel = (Buy and Buy.FormatMoneyBrass and Buy.FormatMoneyBrass(remain))
         or tostring(remain)
+    local allowanceLabel = (Buy and Buy.FormatGoldAmount and Buy.FormatGoldAmount(allowance))
+        or (tostring(allowance) .. "g")
     Tip(T("tip.watch.budget_chip", {
         spent = spentLabel,
-        allowance = tostring(allowance) .. "g",
+        allowance = allowanceLabel,
         remain = remainLabel,
     }))
 end

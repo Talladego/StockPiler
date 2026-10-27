@@ -6,8 +6,8 @@ StockPiler = StockPiler or {}
 StockPiler.Persistence = StockPiler.Persistence or {}
 local P = StockPiler.Persistence
 
--- vendorItems is session-only (see Knowledge.VendorItems); do not persist.
-local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "skillUpRates" }
+-- vendorItems (full store rows) is session-only; vendorCosts (uid->brass) persists.
+local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "skillUpRates", "vendorCosts" }
 P.ACCOUNT_TABLES = ACCOUNT_TABLES
 
 -- Historical leak keys (settings flags written onto Account). Strip on load.
@@ -466,8 +466,8 @@ local UI_CHARACTER_KEYS = {
 
 --- Reset settings the window shows, plus watches (checked state included).
 --- Does not replace the settings table.
---- Preserves Account (items, grows, refines, recipes, potions, skillUpRates
---- and migrate latches), other characters, and on this character:
+--- Preserves Account (items, grows, refines, recipes, potions, skillUpRates,
+--- vendorCosts, and migrate latches), other characters, and on this character:
 --- lastCultSkill, lastApoSkill, autoBuySpentBrass, watchPriorityTiersMigrated,
 --- autoGrowPauseCombat, brewPreferNonGrowableFirst, brewMacroEnabled,
 --- brewRespectGrowReserve.
