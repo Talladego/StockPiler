@@ -1044,21 +1044,17 @@ function SkillUp.PickMovableBagSeed()
     return nil
 end
 
---- First movable bag main that still needs seeds (buffer or empty plots).
+--- Active SkillUp bag line that still needs seeds (buffer or empty plots).
+--- Only the current movable plant line (highest free bag main) — not leftover
+--- lower-tier seeds (e.g. L25 Parsley while planting L100 Thief's Nettle).
 function SkillUp.PickCultSupplySeed()
-    SkillUp.PickBestBagSeed()
-    local list = SkillUp._bagMainList
-    if type(list) ~= "table" then
+    local pick = SkillUp.PickMovableBagSeed and SkillUp.PickMovableBagSeed() or nil
+    if type(pick) ~= "table" or (tonumber(pick.seedUid) or 0) <= 0 then
         return nil
     end
-    for i = 1, #list do
-        local pick = list[i]
-        if SkillUp.FreeBagSeeds(pick) >= 1 then
-            local deficit = tonumber(SkillUp.SeedDeficit(pick.seedUid)) or 0
-            if deficit >= 1 then
-                return pick
-            end
-        end
+    local deficit = tonumber(SkillUp.SeedDeficit(pick.seedUid)) or 0
+    if deficit >= 1 then
+        return pick
     end
     return nil
 end
@@ -2875,7 +2871,7 @@ function SkillUp.ShouldApoBuyContainer()
     if not (Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true) then
         return false
     end
-    -- Buy vials when an exact-tier main exists (even if held for seed buffer).
+    -- Exact-tier main still in bags (ignore seed-buffer reserve) means this Apo band.
     if SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) == nil then
         return false
     end
@@ -2884,7 +2880,21 @@ function SkillUp.ShouldApoBuyContainer()
         return false
     end
     local have = SkillUp.CountApoContainers()
-    return have < want
+    if have >= want then
+        return false
+    end
+    -- Do not open a vial job while brew is blocked on seed buffer / Cult supply.
+    -- That queued vials on a held main, then cleared when Cult planted it.
+    local recipe, why = SkillUp.BuildApoBrewRecipe()
+    if why == "seed_buffer" or why == "wait_cult" then
+        return false
+    end
+    -- Top up the band while a brew recipe is live, or when bags have no vial.
+    if type(recipe) == "table" then
+        return true
+    end
+    local containers = SkillUp.ListApoBagMaterials("container")
+    return type(containers) ~= "table" or #containers < 1
 end
 
 local function SpecStability(spec)
