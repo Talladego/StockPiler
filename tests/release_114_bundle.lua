@@ -905,6 +905,235 @@ eq(Refine._liveSeedBaseline[71], nil, "a refused SendUseItem does not record a l
 eq(begins, 1, "the snapshot still happens before a refused send")
 
 ----------------------------------------------------------------
+-- SkillUp AutoBuy: active seed line, vial holds, resin top-up.
+----------------------------------------------------------------
+
+load_module("Source/SkillUp.lua")
+local SU = StockPiler.SkillUp
+
+local savedItems = H.items
+local prevFromItem = StockPiler.MaterialSpec.FromItemData
+local prevIsSeed = StockPiler.SeedMap.IsBagSeedOrSpore
+local prevGetWatches = StockPiler.Watch.GetWatches
+local prevGetPlants = StockPiler.Watch.GetPlantWatches
+local prevCharRow = StockPiler.Watch.CharacterRow
+local prevCultSkill = StockPiler.TradeSkillCaps.GetCultSkill
+local prevApoSkill = StockPiler.TradeSkillCaps.GetApoSkill
+local prevEach = StockPiler.Inventory.ForEachItem
+local prevCount = StockPiler.Inventory.CountByUid
+local prevUpgrade = StockPiler.UpgradeSeed
+
+local cultSkill = 100
+local apoSkill = 100
+local deficits = {}
+local bagWalks = 0
+
+StockPiler.TradeSkillCaps.GetCultSkill = function()
+    return cultSkill
+end
+StockPiler.TradeSkillCaps.GetApoSkill = function()
+    return apoSkill
+end
+StockPiler.Watch.CharacterRow = function()
+    return {
+        skillUpCultEnabled = true,
+        skillUpApoEnabled = true,
+    }
+end
+StockPiler.Watch.GetWatches = function()
+    return {}
+end
+StockPiler.Watch.GetPlantWatches = function()
+    return {}
+end
+StockPiler.MaterialSpec.FromItemData = function(item)
+    if type(item) ~= "table" then
+        return nil
+    end
+    return {
+        role = item.role,
+        skillLevel = tonumber(item.skillLevel) or tonumber(item.skillReq) or 0,
+        stability = tonumber(item.stability) or 0,
+        growable = item.growable == true,
+        bonuses = {},
+    }
+end
+StockPiler.SeedMap.IsBagSeedOrSpore = function(item)
+    return type(item) == "table" and item.isSeed == true
+end
+StockPiler.UpgradeSeed = {
+    SeedDeficit = function(uid)
+        return tonumber(deficits[tonumber(uid) or 0]) or 0
+    end,
+    CountEmptyPlots = function()
+        return 0
+    end,
+}
+StockPiler.Inventory.ForEachItem = function(fn)
+    bagWalks = bagWalks + 1
+    for _, it in ipairs(H.items) do
+        fn(it)
+    end
+end
+StockPiler.Inventory.CountByUid = function(uid)
+    local n = 0
+    uid = tonumber(uid) or 0
+    for _, it in ipairs(H.items) do
+        if it.uniqueID == uid then
+            n = n + (tonumber(it.stackCount) or 0)
+        end
+    end
+    return n
+end
+
+local function bumpBags()
+    H.snap = H.snap + 1
+    SU._watchReserveCache = nil
+    SU._bestBagSeedKey = nil
+    SU._apoContainerCount = nil
+end
+
+local function mainItem(uid, skill, growable, count)
+    return {
+        uniqueID = uid,
+        stackCount = count or 4,
+        skillLevel = skill,
+        name = "Leaf",
+        role = "main",
+        growable = growable == true,
+        stability = 0,
+    }
+end
+
+local function vialItem(count)
+    return {
+        uniqueID = 701,
+        stackCount = count or 3,
+        skillLevel = 25,
+        name = "Vial",
+        role = "container",
+        stability = 0,
+    }
+end
+
+-- Leftover lower-tier seed is not the supply line while a higher line is active.
+H.items = {
+    { uniqueID = 25, stackCount = 4, skillLevel = 25, name = "Low Seed", isSeed = true },
+    { uniqueID = 100, stackCount = 4, skillLevel = 100, name = "High Seed", isSeed = true },
+}
+deficits[25] = 3
+deficits[100] = 2
+bumpBags()
+local supply = SU.PickCultSupplySeed()
+eq(type(supply) == "table" and supply.seedUid or 0, 100,
+    "the active higher seed line is the supply pick")
+deficits[100] = 0
+deficits[25] = 6
+eq(SU.PickCultSupplySeed(), nil,
+    "a leftover lower-tier seed is not picked while a higher line is active")
+
+-- Known stall reasons do not walk bags.
+H.items = { mainItem(501, 100, true, 4), vialItem(3) }
+bumpBags()
+bagWalks = 0
+SU._apoBagScans = 0
+eq(SU.ShouldApoBuyContainer("seed_buffer"), false,
+    "a known seed_buffer why does not buy vials")
+eq(SU.MapApoBuyStall("wait_cult"), "wait_cult",
+    "a known wait_cult why stays on cultivation")
+eq(bagWalks, 0, "a known seed or cult hold does not walk bags")
+eq(tonumber(SU._apoBagScans) or 0, 0, "a known seed or cult hold does not list materials")
+
+-- Seed buffer and cultivation holds do not queue a vial, even if some vials are owned.
+local _, whyHold = SU.BuildApoBrewRecipe()
+eq(whyHold, "seed_buffer", "a held exact-tier plant reports seed_buffer")
+eq(#SU.CollectContainerBuyJobs(), 0, "no vial buy job while the recipe is seed_buffer")
+local scansHold = tonumber(SU._apoBagScans) or 0
+local walksHold = bagWalks
+eq(SU.ShouldApoBuyContainer(), false, "memoized seed_buffer does not buy vials")
+eq(SU.MapApoBuyStall("seed_buffer"), "seed_buffer", "memoized seed_buffer keeps its stall")
+eq(SU.ShouldApoBuyContainer("seed_buffer"), false, "passed seed_buffer still does not buy")
+eq(tonumber(SU._apoBagScans) or 0, scansHold, "memoized seed_buffer does not list materials again")
+eq(bagWalks, walksHold, "memoized seed_buffer does not walk bags again")
+
+H.items = { mainItem(502, 25, true, 4), vialItem(3) }
+bumpBags()
+local _, whyCult = SU.BuildApoBrewRecipe()
+eq(whyCult, "wait_cult", "a lower-tier plant waits on cultivation")
+eq(#SU.CollectContainerBuyJobs(), 0, "no vial buy job while the recipe is wait_cult")
+scansHold = tonumber(SU._apoBagScans) or 0
+SU.ShouldApoBuyContainer()
+SU.MapApoBuyStall(whyCult)
+eq(tonumber(SU._apoBagScans) or 0, scansHold, "memoized wait_cult does not list materials again")
+
+-- No vials, brewable exact-tier main: a vial job is still queued.
+H.items = { mainItem(503, 100, false, 4) }
+bumpBags()
+local _, whyEmpty = SU.BuildApoBrewRecipe()
+eq(whyEmpty, "need_mats", "no vial reports need_mats")
+eq(SU.CountApoContainers(), 0, "bags have no vial")
+scansHold = tonumber(SU._apoBagScans) or 0
+walksHold = bagWalks
+eq(SU.ShouldApoBuyContainer(whyEmpty), true, "vials are bought when the bag has none")
+eq(SU.MapApoBuyStall(whyEmpty), "need_container_vendor",
+    "the watch row asks for a vendor when no vial is owned")
+eq(tonumber(SU._apoBagScans) or 0, scansHold, "a known need_mats why does not list materials again")
+eq(bagWalks, walksHold, "a memoized empty-vial check does not walk bags again")
+local emptyJobs = SU.CollectContainerBuyJobs()
+eq(#emptyJobs, 1, "a vial buy job is queued when bags have no vial")
+eq(emptyJobs[1].role, "container", "the queued job is a vial")
+check((tonumber(emptyJobs[1].deficit) or 0) >= 1, "the empty-bag vial job has a deficit")
+scansHold = tonumber(SU._apoBagScans) or 0
+SU.CollectContainerBuyJobs()
+SU.ShouldApoBuyContainer()
+eq(tonumber(SU._apoBagScans) or 0, scansHold, "a repeated empty-bag vial job does not scan again")
+
+-- Resin wait with some vials already owned, still short of the band: top up.
+H.items = { mainItem(503, 100, false, 4), vialItem(3) }
+bumpBags()
+local recipeResin, whyResin = SU.BuildApoBrewRecipe()
+eq(recipeResin, nil, "a resin wait is not a live brew")
+eq(whyResin, "need_resin", "exact-tier main with vials and no resin reports need_resin")
+local haveVials = SU.CountApoContainers()
+local wantVials = SU.ApoContainerBuyTarget()
+check(haveVials > 0, "bags already hold some vials")
+check(haveVials < wantVials, "owned vials are still short of the band")
+scansHold = tonumber(SU._apoBagScans) or 0
+walksHold = bagWalks
+eq(SU.ShouldApoBuyContainer(whyResin), true, "need_resin still allows a vial top-up")
+eq(SU.MapApoBuyStall("need_resin"), "need_resin", "a resin wait keeps its stall label")
+local resinJobs = SU.CollectContainerBuyJobs()
+eq(#resinJobs, 1, "a vial buy job is queued while waiting on resin")
+eq(resinJobs[1].role, "container", "the resin-wait job is a vial")
+eq(resinJobs[1].deficit, wantVials - haveVials, "the resin-wait job tops vials up to the band")
+eq(tonumber(SU._apoBagScans) or 0, scansHold, "memoized need_resin does not list materials again")
+eq(bagWalks, walksHold, "memoized need_resin does not walk bags again")
+SU.ShouldApoBuyContainer()
+SU.CollectContainerBuyJobs()
+eq(tonumber(SU._apoBagScans) or 0, scansHold, "a repeated resin top-up does not scan again")
+eq(bagWalks, walksHold, "a repeated resin top-up does not walk bags again")
+
+-- Apo skill is part of the memo key, so a tier change rebuilds without a new snap.
+scansHold = tonumber(SU._apoBagScans) or 0
+apoSkill = 50
+local _, whyTier = SU.BuildApoBrewRecipe()
+check((tonumber(SU._apoBagScans) or 0) > scansHold, "an Apo skill change rebuilds the recipe")
+eq(whyTier, "need_mats", "the previous tier's main is not the new exact tier")
+apoSkill = 100
+
+H.items = savedItems
+StockPiler.MaterialSpec.FromItemData = prevFromItem
+StockPiler.SeedMap.IsBagSeedOrSpore = prevIsSeed
+StockPiler.Watch.GetWatches = prevGetWatches
+StockPiler.Watch.GetPlantWatches = prevGetPlants
+StockPiler.Watch.CharacterRow = prevCharRow
+StockPiler.TradeSkillCaps.GetCultSkill = prevCultSkill
+StockPiler.TradeSkillCaps.GetApoSkill = prevApoSkill
+StockPiler.Inventory.ForEachItem = prevEach
+StockPiler.Inventory.CountByUid = prevCount
+StockPiler.UpgradeSeed = prevUpgrade
+
+----------------------------------------------------------------
 -- LibPerf: saved threshold survives; a fresh player stays off.
 ----------------------------------------------------------------
 

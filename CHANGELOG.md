@@ -10,8 +10,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows. Refining waits until the window closes.
 - Zoning while cultivation is active no longer leaves backpack items or mounts unusable.
 - AutoBuy prints its purchase queue in chat when the queue changes, remembers vendor prices for cost estimates, and formats gold, silver, and brass with coin icons.
-- SkillUp AutoBuy only tops up the seed line it is planting (for example L100 Thief's Nettle), not leftover lower-tier seeds still short of the seed buffer.
-- SkillUp no longer queues vials while Apothecary is waiting on the seed buffer or Cultivation; that was announcing a vial buy and clearing it when those mains were planted.
+- SkillUp AutoBuy only tops up the seed line it is planting, not leftover lower-tier seeds.
+- SkillUp no longer briefly queues vials to buy while Apothecary is waiting on seeds or Cultivation.
 - Turning Optimistic mode off warns in chat when rare Potent recipes may queue large material purchases, and sizes material buys even before your first Potent proc.
 - Watch finishes painting status, icons, priority, and Brew after login and when you open the tab. A potion or plant you just mark watched shows up immediately.
 - Tooltips no longer keep a leftover "Right-click opens the StockPiler window" line. Checkbox tips open upward, recipe and Watch status tips open downward, and item tips sit like bag tips.
