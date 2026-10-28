@@ -3383,21 +3383,23 @@ end
 --- Potion products land in the main bag - do not reserve craft space for output.
 --- Cache by snap + live free count so freeing slots is not stuck on an old snap.
 local function IsCraftBagFullCached()
-    local BA = StockPiler.BagAdapter
-    local free = BA and BA.CraftBagFreeSlots and tonumber(BA.CraftBagFreeSlots()) or nil
     local Inv = StockPiler.Inventory
-    local snap = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
-    if Planner._craftBagFullSnap == snap
-        and Planner._craftBagFreeCached == free
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local BA = StockPiler.BagAdapter
+    local fetchGen = BA and BA.GetCraftFetchGen and tonumber(BA.GetCraftFetchGen()) or 0
+    if snap > 0 and Planner._craftBagFullSnap == snap
+        and Planner._craftBagFetchGen == fetchGen
         and Planner._craftBagFull ~= nil
     then
         return Planner._craftBagFull == true
     end
+    local free = BA and BA.CraftBagFreeSlots and tonumber(BA.CraftBagFreeSlots()) or nil
     local full = BA and BA.IsCraftBagFull and BA.IsCraftBagFull() == true
     if full ~= true and free ~= nil and free < 1 then
         full = true
     end
     Planner._craftBagFullSnap = snap
+    Planner._craftBagFetchGen = fetchGen
     Planner._craftBagFreeCached = free
     Planner._craftBagFull = full
     return full
@@ -4571,11 +4573,13 @@ local function BuildWatchRows(ctx, watches)
     end
     PerfEnd("Build.Status")
     PerfBegin("Build.Tips")
-    for i = 1, #rows do
-        if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true
-            and rows[i].skillUp ~= true and rows[i].addonOwned ~= true
-        then
-            FillWatchRowTips(rows[i], demand)
+    if Planner._lazyWatchTips ~= true then
+        for i = 1, #rows do
+            if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true
+                and rows[i].skillUp ~= true and rows[i].addonOwned ~= true
+            then
+                FillWatchRowTips(rows[i], demand)
+            end
         end
     end
     -- Tips can add seed UIDs; re-propagate so shared shorts demote all sharers.
@@ -4587,7 +4591,16 @@ local function BuildWatchRows(ctx, watches)
         previous = type(prevPlan) == "table" and prevPlan.seedBufferTipData or nil,
     })
     Planner._demandNeedScratch = {}
-    demand = BuildBalancedSpecDemand()
+    if type(needsPass1) ~= "table" or next(needsPass1) == nil then
+        -- Nothing in the first pass can change. Keep that demand.
+        if Planner._demandDeferStore == true then
+            Planner._demandDeferStore = nil
+        end
+        Planner._demandCache = demand
+        Planner._demandCacheKey = FullCacheKey("demand:" .. tostring(Planner._buildPlanGen or Planner._planGen or 0))
+    else
+        demand = BuildBalancedSpecDemand()
+    end
     Planner._lastDemand = demand
     -- Status was decided from the bag-only pass. Re-decide only the watches
     -- whose grow answer changed once the rows exist.
@@ -5022,12 +5035,17 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                     break
                 end
             end
-            if anySigned ~= true then
-                local unresolved
-                deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
-                if unresolved ~= true then
+            local unresolved
+            deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
+            local hasUid = type(deltaUids) == "table" and next(deltaUids) ~= nil
+            -- A signed bag delta still only recounts rows that touch those uids
+            -- when every uid resolved to a spec key. Unresolved stays a full pass.
+            if anySigned == true then
+                if unresolved ~= true and hasUid then
                     selectiveCraftable = true
                 end
+            elseif unresolved ~= true then
+                selectiveCraftable = true
             end
         end
     end
@@ -5625,6 +5643,37 @@ end
 
 function Planner.CacheKeyFromGens()
     return FormatCacheKey(ReadGens())
+end
+
+function Planner.EnsureWatchRowTip(row)
+    if type(row) ~= "table" then
+        return nil
+    end
+    if type(row.statusTipSlots) ~= "table" then
+        FillWatchRowTips(row, Planner._lastDemand)
+    end
+    return row.statusTipSlots
+end
+
+function Planner.BuildWatchRowTips(row, demand)
+    if type(row) ~= "table" then
+        return nil
+    end
+    FillWatchRowTips(row, demand or Planner._lastDemand)
+    return row.statusTipSlots
+end
+
+function Planner.GetSeedBufferTip()
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        return plan.seedBufferTipData
+    end
+    return nil
+end
+
+function Planner.BeginDemandSlice()
+    return "continue"
 end
 
 function Planner.IsHaveCacheWarmForSnap()

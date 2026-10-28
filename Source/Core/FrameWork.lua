@@ -236,14 +236,33 @@ function FW.EnqueueWarmHave(gen)
 end
 
 function FW.EnqueueDemand(gen)
-    return FW.StartOnce("prewarm-demand", gen, function()
-        local P = StockPiler.Planner
-        if P and P.WarmDemand then
-            P.WarmDemand()
-        elseif P and P.BuildBalancedSpecDemand then
-            P.BuildBalancedSpecDemand({ cacheOnly = true })
-        end
-    end)
+    return FW.Start({
+        id = "prewarm-demand",
+        gen = gen,
+        stepsPerFrame = 1,
+        resume = function(state)
+            local P = StockPiler.Planner
+            if not P then
+                return "done"
+            end
+            if state.phase == nil then
+                state.phase = "build"
+                if P.BeginDemandSlice then
+                    local result = P.BeginDemandSlice()
+                    if result == "done" then
+                        return "done"
+                    end
+                    return "continue"
+                end
+            end
+            if P.WarmDemand then
+                P.WarmDemand()
+            elseif P.BuildBalancedSpecDemand then
+                P.BuildBalancedSpecDemand()
+            end
+            return "done"
+        end,
+    })
 end
 
 --- True while any prewarm job is queued/running (hold PlanRebuild + Watch flush).

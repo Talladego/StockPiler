@@ -291,6 +291,16 @@ end
 
 --- Drain harvest-complete learn on UPDATE_PROCESSED (EngineEventBridge order).
 function LB.OnUpdateProcessed()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local now = StockPiler.Util and StockPiler.Util.NowSec and tonumber(StockPiler.Util.NowSec()) or 0
+    local sameSnap = snap > 0 and LB._harvestSnap == snap
+    local fresh = (now <= 0) or ((now - (tonumber(LB._harvestSnapAt) or 0)) < 2)
+    if sameSnap and fresh and LB._harvestCompletePending ~= true then
+        return false
+    end
+    LB._harvestSnap = snap
+    LB._harvestSnapAt = now
     if StockPiler.BrewLearn and StockPiler.BrewLearn.DrainInventoryCraftPoll then
         StockPiler.BrewLearn.DrainInventoryCraftPoll()
     end
@@ -334,9 +344,7 @@ function LB.Initialize()
     LB.EnsureApothecaryHook()
     LB.EnsurePerformCraftingHook()
     LB.EnsureUseItemRefineHook()
-    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RelinkPotionRecipeKeysFromOutcomes then
-        StockPiler.RecipeSpec.RelinkPotionRecipeKeysFromOutcomes()
-    end
+    -- Bootstrap already relinks recipes at startup. Do not scrub them again here.
 
     local Bus = StockPiler.EventBus
     local E = StockPiler.Events

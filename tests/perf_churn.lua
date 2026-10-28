@@ -680,6 +680,12 @@ RS.RelinkPotionRecipeKeysFromOutcomes = function()
     relinks = relinks + 1
     return origRelink()
 end
+local uidRelinks = 0
+local origUidRelink = RS.RelinkPotionUid
+RS.RelinkPotionUid = function(uid)
+    uidRelinks = uidRelinks + 1
+    return origUidRelink(uid)
+end
 local function brewOnce()
     return RS.StoreLearnedRecipeSpec({
         {
@@ -699,7 +705,7 @@ end
 local genBefore = RS.GetRecipeStatsGen()
 eq(brewOnce(), true, "the first brew of a recipe is stored")
 check(RS.GetRecipeStatsGen() > genBefore, "a new recipe bumps recipe stats")
-check(relinks >= 1, "a new recipe relinks potion keys")
+check(relinks >= 1 or uidRelinks >= 1, "a new recipe relinks potion keys")
 local genMid = RS.GetRecipeStatsGen()
 local relinksMid = relinks
 eq(brewOnce(), true, "a repeat brew of the same recipe is stored")
@@ -848,6 +854,26 @@ eq(craftResult, "crafted", "a throwing fresh-check prologue still crafts")
 eq(craftEcho, 2, "the second craft return value is forwarded")
 eq(#craftArgs, 2, "both crafts reached the original function")
 eq(craftArgs[2][3], "more", "the second extra argument is forwarded")
+
+-- Craft-bag free slots stay cached for a snap and drop after a forced fetch.
+StockPiler.Inventory.GetSnapGen = function()
+    return 3
+end
+GameData.Player.craftingItemsDirty = false
+local freeReads = 0
+local realCount = BA.CountBagOccupancy
+BA.CountBagOccupancy = function(bagType)
+    freeReads = freeReads + 1
+    return 1, 4
+end
+BA.InvalidateCraftFreeCache()
+eq(BA.CraftBagFreeSlots(), 3, "craft bag free slots are capacity minus filled")
+eq(BA.CraftBagFreeSlots(), 3, "the same snap reuses the free-slot cache")
+eq(freeReads, 1, "a cached free-slot check does not recount the craft bag")
+BA.FetchForce()
+eq(BA.CraftBagFreeSlots(), 3, "a forced fetch recounts free slots")
+check(freeReads > 1, "FetchForce invalidates the free-slot cache")
+BA.CountBagOccupancy = realCount
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

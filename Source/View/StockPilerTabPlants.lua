@@ -298,17 +298,13 @@ end
 local function PlantListCacheKey()
     local know = 0
     local watch = 0
-    local snap = 0
     if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
         know = tonumber(StockPiler.Knowledge.GetGen()) or 0
     end
     if StockPiler.Watch and StockPiler.Watch.GetGen then
         watch = tonumber(StockPiler.Watch.GetGen()) or 0
     end
-    if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
-        snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
-    end
-    return tostring(know) .. ":" .. tostring(watch) .. ":" .. tostring(snap)
+    return tostring(know) .. ":" .. tostring(watch)
 end
 
 local function BuildVisibleList()
@@ -442,6 +438,17 @@ function StockPilerTabPlants.Initialize()
     InitEffectCombo()
     InitLevelCombo()
     UpdateSortHeaders()
+    StockPilerTabPlants.Refresh()
+end
+
+function StockPilerTabPlants.PaintTabSwitch()
+    if type(StockPilerTabPlants.listData) == "table" and #StockPilerTabPlants.listData > 0 then
+        StockPilerTabPlants.PatchLiveHave()
+        if DoesWindowExist("SPTabPlantsList") then
+            StockPilerTabPlants.UpdateRows()
+        end
+        return
+    end
     StockPilerTabPlants.Refresh()
 end
 

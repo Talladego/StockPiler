@@ -3382,6 +3382,47 @@ function RS.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
     return true
 end
 
+function RS.RelinkPotionUid(outputUid)
+    outputUid = tonumber(outputUid) or 0
+    if outputUid <= 0 then
+        return 0
+    end
+    local recipes = RecipesTable()
+    local potions = PotionsTable()
+    if type(recipes) ~= "table" or type(potions) ~= "table" then
+        return 0
+    end
+    local potionKey = RS.PotionKeyFromUid(outputUid)
+    local potion = potions[potionKey]
+    if type(potion) ~= "table" then
+        return 0
+    end
+    local added = 0
+    for recipeKey, recipe in pairs(recipes) do
+        recipeKey = tostring(recipeKey or "")
+        local outcomes = type(recipe) == "table" and recipe.outcomes or nil
+        local oc = type(outcomes) == "table" and (outcomes[tostring(outputUid)] or outcomes[outputUid]) or nil
+        if recipeKey ~= "" and type(oc) == "table" then
+            local keys = CollectPotionRecipeKeyList(potion)
+            local seen = false
+            for i = 1, #keys do
+                if keys[i] == recipeKey then
+                    seen = true
+                    break
+                end
+            end
+            if not seen then
+                if type(potion.recipeKeys) ~= "table" then
+                    potion.recipeKeys = {}
+                end
+                potion.recipeKeys[#potion.recipeKeys + 1] = recipeKey
+                added = added + 1
+            end
+        end
+    end
+    return added
+end
+
 function RS.RelinkPotionRecipeKeysFromOutcomes()
     local recipes = RecipesTable()
     local potions = PotionsTable()
@@ -3638,7 +3679,13 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     end
     RS.SlimRecipeForStorage(recipe)
     if structuralChange then
-        local relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
+        local uid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+        local relinked = 0
+        if uid > 0 and RS.RelinkPotionUid then
+            relinked = tonumber(RS.RelinkPotionUid(uid)) or 0
+        else
+            relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
+        end
         if relinked > 0 then
             structuralChange = true
         end

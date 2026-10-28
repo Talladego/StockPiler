@@ -414,7 +414,18 @@ function BA.FetchLight()
     return FetchBags(false)
 end
 
+function BA.InvalidateCraftFreeCache()
+    BA._craftFreeSnap = nil
+    BA._craftFreeVal = nil
+    BA._craftFetchGen = (tonumber(BA._craftFetchGen) or 0) + 1
+end
+
+function BA.GetCraftFetchGen()
+    return tonumber(BA._craftFetchGen) or 0
+end
+
 function BA.FetchForce()
+    BA.InvalidateCraftFreeCache()
     local player = GameData and GameData.Player
     local prevItems, prevCraft
     if type(player) == "table" then
@@ -581,13 +592,28 @@ end
 
 --- Free craft-bag slots (nil if occupancy unknown).
 function BA.CraftBagFreeSlots()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local dirty = GameData and GameData.Player and GameData.Player.craftingItemsDirty == true
+    if snap > 0 and dirty ~= true and BA._craftFreeSnap == snap and BA._craftFreeVal ~= nil then
+        return BA._craftFreeVal
+    end
     local filled, capacity = BA.CountBagOccupancy(BAG_CRAFT)
     if filled == nil or capacity == nil or capacity <= 0 then
+        BA._craftFreeSnap = nil
+        BA._craftFreeVal = nil
         return nil
     end
     local free = capacity - filled
     if free < 0 then
         free = 0
+    end
+    if snap > 0 and dirty ~= true then
+        BA._craftFreeSnap = snap
+        BA._craftFreeVal = free
+    else
+        BA._craftFreeSnap = nil
+        BA._craftFreeVal = nil
     end
     return free
 end

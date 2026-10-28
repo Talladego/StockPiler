@@ -965,9 +965,28 @@ function Refine.HasActiveResinNeed()
     if not (RS and RS.BuildBalancedSpecDemand and SM and SM.IsHarvestByproduct) then
         return false
     end
-    local demand = RS.BuildBalancedSpecDemand()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local Watch = StockPiler.Watch
+    local watchGen = Watch and Watch.GetGen and tonumber(Watch.GetGen()) or 0
+    local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    local Garden = StockPiler.Garden
+    local gardenGen = Garden and Garden.GetPlanGen and tonumber(Garden.GetPlanGen()) or 0
+    local cacheKey = tostring(snap) .. ":" .. tostring(watchGen) .. ":" .. tostring(know) .. ":" .. tostring(gardenGen)
+    if Refine._resinNeedKey == cacheKey and Refine._resinNeedVal ~= nil then
+        return Refine._resinNeedVal == true
+    end
+    local demand = RS.BuildBalancedSpecDemand({ cacheOnly = true })
     if type(demand) ~= "table" then
-        return false
+        demand = RS.BuildBalancedSpecDemand()
+    end
+    local function finish(val)
+        Refine._resinNeedKey = cacheKey
+        Refine._resinNeedVal = val == true
+        return val == true
+    end
+    if type(demand) ~= "table" then
+        return finish(false)
     end
     for _, row in pairs(demand) do
         if type(row) == "table" and type(row.spec) == "table"
@@ -975,15 +994,15 @@ function Refine.HasActiveResinNeed()
             and (tonumber(row.deficit) or 0) > 0
         then
             if demand._resinFeedstock == true then
-                return true
+                return finish(true)
             end
             local pick = Refine.PickPlantForResinConvert(row.spec, tonumber(row.deficit) or 0)
             if type(pick) == "table" then
-                return true
+                return finish(true)
             end
         end
     end
-    return false
+    return finish(false)
 end
 
 --- Plant-first: block refine if empty plot + plantable unless buffer-pending or fillBlocked.

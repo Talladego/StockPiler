@@ -3455,6 +3455,23 @@ function SM.GetGenusLadder(genus)
     if genus == "" then
         return nil
     end
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    if SM._genusLadderKnow ~= know then
+        SM._genusLadderCache = {}
+        SM._genusLadderKnow = know
+    end
+    local cache = SM._genusLadderCache or {}
+    SM._genusLadderCache = cache
+    local key = genus .. ":" .. tostring(snap)
+    local hit = cache[key]
+    if hit ~= nil then
+        if hit == false then
+            return nil
+        end
+        return hit
+    end
     local all = SM.BuildAllFamilyLadders()
     local merged = nil
     local roles = {}
@@ -3615,6 +3632,7 @@ function SM.GetGenusLadder(genus)
             end
         end
     end
+    cache[key] = merged or false
     return merged
 end
 

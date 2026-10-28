@@ -2961,11 +2961,13 @@ function SkillUp.WatchDemandReserve(specOrUid)
     -- Yield and per-craft counts follow the recipe stats generation. That
     -- bump does not move the bag snap or the watch generation (FullCacheKey).
     local statsGen = RS and RS.GetRecipeStatsGen and tonumber(RS.GetRecipeStatsGen()) or 0
+    local knowGen = StockPiler.Knowledge and StockPiler.Knowledge.GetGen
+        and tonumber(StockPiler.Knowledge.GetGen()) or 0
     local cache = SkillUp._watchReserveCache
     if type(cache) ~= "table" or cache.snap ~= snap or cache.watchGen ~= watchGen
-        or cache.statsGen ~= statsGen
+        or cache.statsGen ~= statsGen or cache.knowGen ~= knowGen
     then
-        cache = { snap = snap, watchGen = watchGen, statsGen = statsGen, byUid = {} }
+        cache = { snap = snap, watchGen = watchGen, statsGen = statsGen, knowGen = knowGen, byUid = {} }
         SkillUp._watchReserveCache = cache
     end
     local cached = cache.byUid[wantUid]

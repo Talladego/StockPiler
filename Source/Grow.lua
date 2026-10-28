@@ -1839,6 +1839,7 @@ function Grow.GetPlantJob()
     if Grow._plantQueueDirty ~= true and Grow._plantJobProbed == true then
         local cached = Grow._cachedPlantJob
         if type(cached) == "table" and (tonumber(cached.seedUid) or 0) > 0 then
+            -- Real job: do not deep-copy demand just to confirm the cache.
             return cached
         end
         -- Nil-cache must not hide SkillUp when plots are empty (no watch demand).

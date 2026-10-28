@@ -986,6 +986,15 @@ function StockPilerWindow.SelectTab(tabNumber, opts)
         if StockPiler.Perf and StockPiler.Perf.Tally then
             StockPiler.Perf.Tally("refreshTab", "select-tab-watch")
         end
+    elseif tabNumber == StockPilerWindow.TABS_PLANTS
+        and StockPilerTabPlants
+        and StockPilerTabPlants.PaintTabSwitch
+    then
+        StockPilerTabPlants.PaintTabSwitch()
+        StockPilerWindow.RefreshFooterButtons()
+        if StockPiler.Perf and StockPiler.Perf.Tally then
+            StockPiler.Perf.Tally("refreshTab", "select-tab-plants")
+        end
     elseif tabNumber == StockPilerWindow.TABS_POTIONS
         and StockPilerTabPotions
         and StockPilerTabPotions.PaintTabSwitch

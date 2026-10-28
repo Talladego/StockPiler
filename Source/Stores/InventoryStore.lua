@@ -274,12 +274,15 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
     end
     newUid = tonumber(newUid) or 0
     newQty = tonumber(newQty) or 0
+    local changed = false
     if old.uid == newUid then
         local delta = newQty - (tonumber(old.qty) or 0)
         if delta ~= 0 then
+            changed = true
             Inv.AdjustUid(newUid, delta, "L0-slot")
         end
     else
+        changed = true
         if (tonumber(old.uid) or 0) > 0 then
             Inv.AdjustUid(old.uid, -(tonumber(old.qty) or 0), "L0-slot-clear")
             ClearSampleIfUnused(old.uid)
@@ -298,6 +301,7 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
     end
     -- Leave Inv._dirty. Clearing it here dropped a rebuild that a different
     -- slot or caller had already requested (PLN-8).
+    Inv._lastSlotChanged = changed == true
     return true
 end
 
@@ -370,19 +374,28 @@ function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
         return false
     end
     local pendingBefore = Inv._snapPending == true
+    local any = false
     for i = 1, n do
+        Inv._lastSlotChanged = false
         if Inv.OnSlotUpdated(bagType, slots[i], bagTable) ~= true then
             return false
         end
+        if Inv._lastSlotChanged == true then
+            any = true
+        end
     end
-    -- Engine said slots changed but L0 saw no net delta (stale empty read on
-    -- restore). Flatten from engine so Watch craftable can follow.
+    -- No net delta: do not force a 3-bag engine reread on this event.
+    -- A real delta still refreshes so Watch craftable can follow.
     if Inv._ready == true and pendingBefore ~= true and Inv._snapPending ~= true then
-        Inv.ForceFullRefresh({
-            forceEngine = true,
-            needQueue = true,
-            reason = reason .. "-stale",
-        })
+        if any ~= true then
+            Inv.MarkDirty({ reason = reason .. "-stale" })
+        else
+            Inv.ForceFullRefresh({
+                forceEngine = true,
+                needQueue = true,
+                reason = reason .. "-stale",
+            })
+        end
     end
     return true
 end

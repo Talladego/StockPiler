@@ -95,11 +95,22 @@ local function ListEntriesFromKnowledge()
 end
 
 function Catalog.ListPotionRecipeEntries()
-    local RS = StockPiler.RecipeSpec
-    if RS and RS.ListPotionRecipeEntries then
-        return RS.ListPotionRecipeEntries()
+    local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    if know > 0 and Catalog._potionListGen == know and type(Catalog._potionList) == "table" then
+        return Catalog._potionList
     end
-    return ListEntriesFromKnowledge()
+    local RS = StockPiler.RecipeSpec
+    local out
+    if RS and RS.ListPotionRecipeEntries then
+        out = RS.ListPotionRecipeEntries()
+    else
+        out = ListEntriesFromKnowledge()
+    end
+    if know > 0 and type(out) == "table" then
+        Catalog._potionListGen = know
+        Catalog._potionList = out
+    end
+    return out
 end
 
 --- Peek only - listing potions must not create disabled SV stubs.
@@ -395,6 +406,10 @@ end
 --- Plants that refine back to a seed (excludes resin / one-way byproducts).
 --- Harvest products and refine-learned plants both belong on Known plants.
 function Catalog.ListPlantEntries()
+    local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    if know > 0 and Catalog._plantListGen == know and type(Catalog._plantList) == "table" then
+        return Catalog._plantList
+    end
     local out = {}
     local seen = {}
     local Know = StockPiler.Knowledge
@@ -822,6 +837,11 @@ function Catalog.ListPlantEntries()
         end
         return na < nb
     end)
+    local knowDone = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    if knowDone > 0 then
+        Catalog._plantListGen = knowDone
+        Catalog._plantList = out
+    end
     return out
 end
 

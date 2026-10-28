@@ -3857,6 +3857,10 @@ function StockPilerTabWatch.OnMouseOverStatus()
     if not data then
         return
     end
+    local Planner = StockPiler.Planner
+    if Planner and Planner.EnsureWatchRowTip then
+        Planner.EnsureWatchRowTip(data)
+    end
     local RT = StockPiler.RecipeTooltip
     if not RT or not RT.ShowColoredRows then
         Tip(data.statusText or T("watch.col.status"))

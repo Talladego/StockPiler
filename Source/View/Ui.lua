@@ -468,7 +468,42 @@ local function RequestForcedWatchRecount(_reason)
             Ui._forceRecountDoneSnapGen = doneSnap
         end
     end
-    if FW and FW.StartOnce then
+    if FW and FW.Start then
+        FW.Start({
+            id = "ui-force-watch-recount",
+            gen = genKey,
+            stepsPerFrame = 1,
+            resume = function(state)
+                if IssueBurstHoldsRecount() then
+                    Ui._forceRecountHeldForBurst = true
+                    return "done"
+                end
+                local P = StockPiler.Planner
+                if state.phase == nil then
+                    state.phase = "warm"
+                    if P and P.BeginWarmHaveSlice then
+                        local result = P.BeginWarmHaveSlice()
+                        if result ~= "done" then
+                            return "continue"
+                        end
+                    end
+                end
+                if state.phase == "warm" then
+                    state.phase = "rows"
+                    if P and P.FinishWarmHaveSlice then
+                        local result = P.FinishWarmHaveSlice()
+                        if result == "defer" then
+                            state.phase = "warm"
+                            return "continue"
+                        end
+                    end
+                    return "continue"
+                end
+                run()
+                return "done"
+            end,
+        })
+    elseif FW and FW.StartOnce then
         FW.StartOnce("ui-force-watch-recount", genKey, run)
     else
         run()

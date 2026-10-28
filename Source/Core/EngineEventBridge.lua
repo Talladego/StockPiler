@@ -578,9 +578,11 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
+    local heavySlots = false
     RunStage("slots", function()
-        Bridge.FlushPendingMainSlots()
-        Bridge.FlushPendingCraftSlots()
+        if Bridge.FlushPendingMainSlots() == true or Bridge.FlushPendingCraftSlots() == true then
+            heavySlots = true
+        end
     end)
 
     RunStage("snapshot", function()
@@ -589,11 +591,13 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
-    RunStage("learn", function()
-        if StockPiler.LearnBridge and StockPiler.LearnBridge.OnUpdateProcessed then
-            StockPiler.LearnBridge.OnUpdateProcessed()
-        end
-    end)
+    if heavySlots ~= true then
+        RunStage("learn", function()
+            if StockPiler.LearnBridge and StockPiler.LearnBridge.OnUpdateProcessed then
+                StockPiler.LearnBridge.OnUpdateProcessed()
+            end
+        end)
+    end
 
     RunStage("refine", function()
         if StockPiler.Refine and StockPiler.Refine.OnUpdateProcessed then
@@ -603,11 +607,13 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
-    RunStage("scheduler", function()
-        if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
-            StockPiler.Scheduler.OnUpdate(timeElapsed)
-        end
-    end)
+    if heavySlots ~= true then
+        RunStage("scheduler", function()
+            if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
+                StockPiler.Scheduler.OnUpdate(timeElapsed)
+            end
+        end)
+    end
 
     RunStage("open-paint", function()
         if StockPilerWindow and StockPilerWindow.FlushOpenPaint then
@@ -644,13 +650,15 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
-    RunStage("list", function()
-        if StockPilerWindow and StockPilerWindow.FlushPendingListRepopulate
-            and StockPilerWindow._repopulatePending == true
-        then
-            StockPilerWindow.FlushPendingListRepopulate()
-        end
-    end)
+    if heavySlots ~= true then
+        RunStage("list", function()
+            if StockPilerWindow and StockPilerWindow.FlushPendingListRepopulate
+                and StockPilerWindow._repopulatePending == true
+            then
+                StockPilerWindow.FlushPendingListRepopulate()
+            end
+        end)
+    end
 end
 
 function Bridge.OnUpdateProcessed(timeElapsed)

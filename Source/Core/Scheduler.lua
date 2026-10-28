@@ -409,7 +409,9 @@ local function RebuildPlanIfDue()
         if StockPiler.Perf and StockPiler.Perf.Begin then
             StockPiler.Perf.Begin("PlanRebuild")
         end
+        Planner._lazyWatchTips = true
         Planner.GetOrBuild(true)
+        Planner._lazyWatchTips = nil
         if StockPiler.Perf and StockPiler.Perf.End then
             StockPiler.Perf.End("PlanRebuild")
         end

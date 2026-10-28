@@ -1577,9 +1577,6 @@ end
 local function WakeBrewAfterBuyFill(reason)
     reason = tostring(reason or "buy-fill")
     local Planner = StockPiler.Planner
-    if Planner and Planner.InvalidateHaveWarm then
-        Planner.InvalidateHaveWarm()
-    end
     local PS = StockPiler.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     local planRows = type(plan) == "table" and plan.rows or nil
@@ -1589,10 +1586,11 @@ local function WakeBrewAfterBuyFill(reason)
         Planner.SyncLiveStatusClosedWindow()
     end
     if Planner and Planner.LiveRecount then
+        -- Have warms on the inventory FrameWork slice. Do not bag-walk here.
         Planner.LiveRecount({
             clearClosedSnap = true,
             invalidateStamps = true,
-            allowWarmHave = true,
+            allowWarmHave = false,
             syncSnapshot = true,
         })
     end
