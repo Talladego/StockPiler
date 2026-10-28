@@ -4045,7 +4045,8 @@ local function PickApoLeftoverResinPlant(apoTier)
         if not CanUseCraftingSample(item) then
             return
         end
-        local spec = MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem(item, nil)
         if type(spec) ~= "table" then
             return
         end
@@ -4248,7 +4249,8 @@ function SkillUp.ResolveBuyContainerTarget()
         if uid <= 0 or type(item) ~= "table" then
             return
         end
-        local spec = MS.FromItemData and MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem and parseItem(item, nil)
         if not IsValidApoContainer(item, spec) then
             return
         end

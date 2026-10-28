@@ -2728,7 +2728,8 @@ function Buy.DumpBuyPlan(opts)
             local row = index.rows[i]
             local item = row and row.item
             if type(item) == "table" then
-                local parsed = MS and MS.FromItemData and MS.FromItemData(item, nil)
+                local parseItem = MS and (MS.FromItemDataCached or MS.FromItemData)
+                local parsed = parseItem and parseItem(item, nil)
                 local req = tonumber(item.craftingSkillRequirement) or 0
                 local pSkill = tonumber(parsed and parsed.skillLevel) or 0
                 local pSlot = tonumber(parsed and parsed.slotType) or 0

@@ -598,9 +598,13 @@ end
 local function SortMatchList(list, exemplarUid, role)
     exemplarUid = tonumber(exemplarUid) or 0
     role = tostring(role or "")
+    local growable = {}
+    for i = 1, #list do
+        growable[list[i]] = MatchIsGrowable(list[i], role)
+    end
     table.sort(list, function(a, b)
-        local ag = MatchIsGrowable(a, role)
-        local bg = MatchIsGrowable(b, role)
+        local ag = growable[a] == true
+        local bg = growable[b] == true
         if ag ~= bg then
             return ag
         end
