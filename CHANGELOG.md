@@ -12,6 +12,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - AutoBuy prints its purchase queue in chat when the queue changes, remembers vendor prices for cost estimates, and formats gold, silver, and brass with coin icons.
 - SkillUp AutoBuy only tops up the seed line it is planting, not leftover lower-tier seeds.
 - SkillUp no longer briefly queues vials to buy while Apothecary is waiting on seeds or Cultivation.
+- SkillUp and seed upgrades keep refining after a plant moves inside the craft bag. A stale slot no longer leaves both of them idle.
 - Turning Optimistic mode off warns in chat when rare Potent recipes may queue large material purchases, and sizes material buys even before your first Potent proc.
 - Watch finishes painting status, icons, priority, and Brew after login and when you open the tab. A potion or plant you just mark watched shows up immediately.
 - Tooltips no longer keep a leftover "Right-click opens the StockPiler window" line. Checkbox tips open upward, recipe and Watch status tips open downward, and item tips sit like bag tips.

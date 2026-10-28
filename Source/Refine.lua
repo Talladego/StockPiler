@@ -693,6 +693,13 @@ function Refine.InvalidateIntentCache()
     Refine._emptyIntentSnapGen = nil
 end
 
+--- Snap gen can stay put while stacks slide inside the craft bag. The slot
+--- index built for that gen then points at the wrong item forever.
+function Refine.InvalidateBagIndex()
+    Refine._bagIndex = nil
+    Refine._bagIndexGen = -1
+end
+
 function Refine.InvalidateBufferFlags()
     -- Keep sticky for orch peek; latch idle rebuild (never sync on Orch plant frame).
     if type(Refine._bufferFlags) == "table" then
@@ -1174,7 +1181,10 @@ function Refine.CollectIntents(opts)
             end
             local snapMoved = tonumber(Refine._emptyIntentSnapGen) ~= snapGen
             local harvestDirty = Refine._refineDirtyReason == "harvest"
-            if snapMoved or harvestDirty then
+            -- skill-up / upgrade MarkRefineDue does not move bags. An empty
+            -- latch from the previous check must not hide that new work.
+            local workDirty = Refine._refineDirty == true
+            if snapMoved or harvestDirty or workDirty then
                 Refine.InvalidateIntentCache()
             else
                 -- Warm hit must not defer IssueOne on this frame.
@@ -1486,6 +1496,26 @@ local function BagKeyForType(bagType)
     return "craft"
 end
 
+--- Live craft/backpack table, not the snap-gen slot index. Stacks move inside
+--- a bag without a new inventory generation.
+local function FindUidInBagTable(bagTable, plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 or type(bagTable) ~= "table" then
+        return nil, nil
+    end
+    for slot, item in pairs(bagTable) do
+        local nslot = tonumber(slot)
+        if nslot and nslot > 0 and type(item) == "table" then
+            local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+            local qty = tonumber(item.stackCount) or tonumber(item.StackCount) or 0
+            if uid == plantUid and qty > 0 then
+                return nslot, item
+            end
+        end
+    end
+    return nil, nil
+end
+
 --- Intent cache omits snapGen, so the slot from CollectIntents can point at
 --- a different item after a bag move (EXE-8). Re-resolve and abort when the
 --- live slot is not this plant. A missing bag table falls back to the index.
@@ -1501,9 +1531,34 @@ local function ResolveIntentSlot(intent)
     else
         slot, item, bagType = FindPlantSlot(plantUid, spec)
     end
+    -- Index slot can name a neighbor after an in-bag move that did not bump
+    -- snap gen. Search the live tables before giving up.
+    local function fromLiveBags()
+        local BA = StockPiler.BagAdapter
+        if not (BA and BA.GetBagTable) or plantUid <= 0 then
+            Refine.InvalidateBagIndex()
+            return nil
+        end
+        local hinted = BagKeyForType(bagType)
+        local order = { "craft", "main" }
+        if hinted == "main" then
+            order = { "main", "craft" }
+        end
+        for i = 1, #order do
+            local key = order[i]
+            local bag = BA.GetBagTable(key)
+            local liveSlot, liveItem = FindUidInBagTable(bag, plantUid)
+            if liveSlot ~= nil and type(liveItem) == "table" then
+                Refine.InvalidateBagIndex()
+                return liveSlot, liveItem, BagTypeForKey(key)
+            end
+        end
+        Refine.InvalidateBagIndex()
+        return nil
+    end
     slot = tonumber(slot) or 0
     if slot <= 0 or type(item) ~= "table" then
-        return nil
+        return fromLiveBags()
     end
     local expected = ItemUidOf(item)
     if plantUid > 0 and expected > 0 and expected ~= plantUid then
@@ -1511,7 +1566,7 @@ local function ResolveIntentSlot(intent)
             intent.plantUid = expected
             plantUid = expected
         else
-            return nil
+            return fromLiveBags()
         end
     end
     local BA = StockPiler.BagAdapter
@@ -1523,11 +1578,8 @@ local function ResolveIntentSlot(intent)
             local liveUid, liveQty, liveItem = BA.ReadSlotFromTable(bag, slot)
             liveUid = tonumber(liveUid) or 0
             liveQty = tonumber(liveQty) or 0
-            if expected > 0 and liveUid ~= expected then
-                return nil
-            end
-            if liveUid <= 0 or liveQty <= 0 then
-                return nil
+            if (expected > 0 and liveUid ~= expected) or liveUid <= 0 or liveQty <= 0 then
+                return fromLiveBags()
             end
             if type(liveItem) == "table" then
                 item = liveItem
