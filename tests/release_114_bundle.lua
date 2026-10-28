@@ -861,6 +861,16 @@ eq(type(warm), "table", "a warm collect returns the cache")
 eq(Refine.CollectedThisFrame(), false, "a warm collect clears the cold-rebuild flag")
 eq(Refine.ShouldDeferIssue(), false, "a warm collect does not defer")
 
+Refine.MarkRefineDue("skill-up")
+local marked = Refine.CollectIntents()
+eq(type(marked), "table", "a fresh MarkRefineDue returns intents")
+eq(Refine.CollectedThisFrame(), true, "a fresh MarkRefineDue busts one empty latch")
+eq(Refine.ShouldDeferIssue(), true, "a fresh MarkRefineDue defers the issue")
+local markedAgain = Refine.CollectIntents()
+eq(type(markedAgain), "table", "a second collect after the mark returns the cache")
+eq(Refine.CollectedThisFrame(), false, "a second collect with no new mark stays warm")
+eq(Refine.ShouldDeferIssue(), false, "a second collect with no new mark does not defer")
+
 quietArms = 0
 tracks = 0
 begins = 0
@@ -903,6 +913,82 @@ eq(Refine.IssueOne(intent, "op"), false, "a refused SendUseItem does not count a
 eq(quietArms, 0, "a refused SendUseItem does not arm quiet")
 eq(Refine._liveSeedBaseline[71], nil, "a refused SendUseItem does not record a live seed")
 eq(begins, 1, "the snapshot still happens before a refused send")
+
+-- Same snap gen: a moved stack issues from the live slot. A missing plant
+-- still logs stale-slot.
+local sentSlots = {}
+SendUseItem = function(_, slot)
+    sends = sends + 1
+    sentSlots[#sentSlots + 1] = slot
+    if sendOk ~= true then
+        error("refuse")
+    end
+    return true
+end
+local refineLogs = {}
+StockPiler.Debug = StockPiler.Debug or {}
+StockPiler.Debug.LogOp = function(channel, msg)
+    if channel == "refine" then
+        refineLogs[#refineLogs + 1] = tostring(msg)
+    end
+end
+local craftLive = {
+    [4] = { uniqueID = 99, stackCount = 1, isRefinable = true },
+    [7] = { uniqueID = 50, stackCount = 2, isRefinable = true },
+}
+StockPiler.BagAdapter.GetBagTable = function(key)
+    if key == "craft" then
+        return craftLive
+    end
+    return {}
+end
+StockPiler.BagAdapter.ReadSlotFromTable = function(bag, slot)
+    local item = type(bag) == "table" and bag[tonumber(slot) or 0] or nil
+    if type(item) ~= "table" then
+        return 0, 0, nil
+    end
+    return tonumber(item.uniqueID) or 0, tonumber(item.stackCount) or 0, item
+end
+StockPiler.FrameCounter = 10
+Refine._engineIssueFrame = 0
+Refine._issuedSeedThisTick = nil
+Refine._pendingByPlant = {}
+Refine._pendingSeedByPlant = {}
+sendOk = true
+sends = 0
+begins = 0
+quietArms = 0
+intent.seedUid = 80
+intent.plantUid = 50
+intent.slot = 4
+intent.item = { uniqueID = 50, stackCount = 1, isRefinable = true }
+eq(Refine.IssueOne(intent, "op"), true, "a moved plant issues from the live slot")
+eq(sends, 1, "the moved plant sends once")
+eq(sentSlots[1], 7, "the moved plant uses the live slot, not the stale index")
+local sawStale = false
+for i = 1, #refineLogs do
+    if string.find(refineLogs[i], "stale-slot", 1, true) ~= nil then
+        sawStale = true
+    end
+end
+check(sawStale ~= true, "a live slot does not log stale-slot")
+
+craftLive[7] = nil
+refineLogs = {}
+sentSlots = {}
+StockPiler.FrameCounter = 11
+Refine._engineIssueFrame = 0
+Refine._issuedSeedThisTick = nil
+sends = 0
+begins = 0
+quietArms = 0
+eq(Refine.IssueOne(intent, "op"), false, "a plant that is gone does not issue")
+eq(sends, 0, "a missing plant does not SendUseItem")
+eq(begins, 0, "a missing plant does not snapshot")
+eq(quietArms, 0, "a missing plant does not arm quiet")
+local staleLogged = type(refineLogs[1]) == "string"
+    and string.find(refineLogs[1], "stale-slot", 1, true) ~= nil
+check(staleLogged == true, "a plant that is truly gone still logs stale-slot")
 
 ----------------------------------------------------------------
 -- SkillUp AutoBuy: active seed line, vial holds, resin top-up.

@@ -15,10 +15,12 @@ Refine.MAX_USES_PER_ISSUE = 1
 
 Refine._refineDirty = false
 Refine._refineDirtyReason = nil
+Refine._refineDueGen = 0
 Refine._refineWaitTicks = 0
 Refine._intentCacheKey = nil
 Refine._intentCache = nil
 Refine._emptyIntentSnapGen = nil
+Refine._emptyIntentDueGen = nil
 Refine._bufferFlags = nil
 Refine._bufferFlagsKey = nil
 Refine._bufferFlagsStructKey = nil
@@ -691,6 +693,7 @@ function Refine.InvalidateIntentCache()
     Refine._intentCacheKey = nil
     Refine._intentCache = nil
     Refine._emptyIntentSnapGen = nil
+    Refine._emptyIntentDueGen = nil
 end
 
 --- Snap gen can stay put while stacks slide inside the craft bag. The slot
@@ -764,6 +767,9 @@ end
 
 function Refine.MarkRefineDue(reason)
     Refine._refineDirty = true
+    -- One generation per call. CollectIntents busts an empty latch once for
+    -- this value, then stays warm while _refineDirty is still set.
+    Refine._refineDueGen = (tonumber(Refine._refineDueGen) or 0) + 1
     reason = tostring(reason or "")
     if reason == "harvest" then
         Refine._refineDirtyReason = "harvest"
@@ -1181,10 +1187,12 @@ function Refine.CollectIntents(opts)
             end
             local snapMoved = tonumber(Refine._emptyIntentSnapGen) ~= snapGen
             local harvestDirty = Refine._refineDirtyReason == "harvest"
-            -- skill-up / upgrade MarkRefineDue does not move bags. An empty
-            -- latch from the previous check must not hide that new work.
-            local workDirty = Refine._refineDirty == true
-            if snapMoved or harvestDirty or workDirty then
+            -- skill-up / upgrade MarkRefineDue does not move bags. Bust the
+            -- empty latch once for that mark. _refineDirty stays true until
+            -- TryTick, so a later collect with no new mark must stay warm.
+            local dueGen = tonumber(Refine._refineDueGen) or 0
+            local dueMoved = tonumber(Refine._emptyIntentDueGen) ~= dueGen
+            if snapMoved or harvestDirty or dueMoved then
                 Refine.InvalidateIntentCache()
             else
                 -- Warm hit must not defer IssueOne on this frame.
@@ -1403,8 +1411,10 @@ function Refine.CollectIntents(opts)
             snapGen = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
         end
         Refine._emptyIntentSnapGen = snapGen
+        Refine._emptyIntentDueGen = tonumber(Refine._refineDueGen) or 0
     else
         Refine._emptyIntentSnapGen = nil
+        Refine._emptyIntentDueGen = nil
     end
     if Perf and Perf.End then
         Perf.End("CollectIntents")
