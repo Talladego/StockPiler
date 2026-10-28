@@ -4,6 +4,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.4
 
+- With Optimistic mode on, empty plots can keep growing for measured brew and harvest odds after craftable and AutoBuy are already covered, including when seed counts sit near the buffer floor.
 - The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
 - Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
 - AutoGrow keeps planting while watched potions still need grown ingredients, even when shared materials already cover the bottle count.

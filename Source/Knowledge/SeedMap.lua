@@ -320,17 +320,23 @@ function SM.HarvestSuccessRate(seedUid)
     return rate, successes, attempts, fails
 end
 
---- Plants still wanted -> seeds to plant when Optimistic is off and rate is known.
-function SM.PlantingsForExpectedPlants(seedUid, plantsNeeded)
+--- Plants still wanted -> seeds to plant when harvest success rate is known.
+--- Default: only when Optimistic is off. opts.force: always apply rate when known
+--- (Optimistic empty-plot estimate backfill).
+function SM.PlantingsForExpectedPlants(seedUid, plantsNeeded, opts)
     plantsNeeded = math.max(0, math.floor((tonumber(plantsNeeded) or 0) + 0.5))
     if plantsNeeded <= 0 then
         return 0
     end
-    local Watch = StockPiler.Watch
-    if not (Watch and Watch.IsOptimisticOutcomeEstimate
-        and Watch.IsOptimisticOutcomeEstimate() == false)
-    then
-        return plantsNeeded
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true
+    if force ~= true then
+        local Watch = StockPiler.Watch
+        if not (Watch and Watch.IsOptimisticOutcomeEstimate
+            and Watch.IsOptimisticOutcomeEstimate() == false)
+        then
+            return plantsNeeded
+        end
     end
     local rate = SM.HarvestSuccessRate(seedUid)
     if rate == nil or rate <= 0 then
