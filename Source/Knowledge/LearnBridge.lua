@@ -55,7 +55,30 @@ local function DrainHarvestCompleteLearn(force)
     return learned
 end
 
+function LB.EnsurePerformCraftingHook()
+    if LB._performHooked == true or type(PerformCrafting) ~= "function" then
+        return false
+    end
+    local orig = PerformCrafting
+    PerformCrafting = function(tradeSkill, count)
+        local AA = StockPiler.ApothecaryAdapter
+        local apo = AA and AA.TradeSkill and tonumber(AA.TradeSkill()) or 4
+        if tonumber(tradeSkill) == apo then
+            local BL = StockPiler.BrewLearn
+            local fresh = BL and BL.HasFreshPendingCraftForFrame
+                and BL.HasFreshPendingCraftForFrame(tradeSkill) == true
+            if fresh ~= true and BL and BL.BeginPendingCraft then
+                pcall(BL.BeginPendingCraft)
+            end
+        end
+        return orig(tradeSkill, count)
+    end
+    LB._performHooked = true
+    return true
+end
+
 function LB.EnsureApothecaryHook()
+    LB.EnsurePerformCraftingHook()
     if type(ApothecaryWindow) ~= "table" then
         return false
     end
@@ -305,6 +328,7 @@ end
 
 function LB.Initialize()
     LB.EnsureApothecaryHook()
+    LB.EnsurePerformCraftingHook()
     LB.EnsureUseItemRefineHook()
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RelinkPotionRecipeKeysFromOutcomes then
         StockPiler.RecipeSpec.RelinkPotionRecipeKeysFromOutcomes()

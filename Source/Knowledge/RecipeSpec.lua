@@ -3498,6 +3498,7 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     local recipe = recipes[fingerprint]
     local isNew = type(recipe) ~= "table"
     local structuralChange = isNew
+    local beforeYield, beforeRate
     if isNew then
         recipe = {
             recipeSpecKey = fingerprint,
@@ -3516,6 +3517,9 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         }
     else
         EnsureBrewStats(recipe)
+        local beforeUid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+        beforeYield = RS.StableCraftYield(recipe, beforeUid)
+        beforeRate = RS.OutcomeSuccessRate(recipe, beforeUid)
         recipe.slots = SlimSlotsForStorage(slots)
     end
     if opts.skillUpOrigin == true then
@@ -3543,7 +3547,7 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
             local _, potionIsNew, recipeKeyAdded, replacedSubset = RS.RegisterKnownPotion(
                 uid, out, fingerprint, quality, skillUpOpts
             )
-            if potionIsNew == true or recipeKeyAdded == true then
+            if potionIsNew == true or recipeKeyAdded == true or replacedSubset == true then
                 structuralChange = true
             end
             local announce = potionIsNew == true
@@ -3622,10 +3626,42 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         end
     end
     RS.SlimRecipeForStorage(recipe)
-    BumpRecipeStatsGen()
-    local relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
-    if relinked > 0 then
-        structuralChange = true
+    if structuralChange then
+        local relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
+        if relinked > 0 then
+            structuralChange = true
+        end
+    end
+    -- Repeat 1x of a known single-outcome recipe keeps yield and a 1.0 rate.
+    -- Potent / multi-outcome / a 0% Laplace rate still move expected crafts.
+    local statsMoved = structuralChange
+    if statsMoved ~= true then
+        local uid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+        local yieldNow = RS.StableCraftYield(recipe, uid)
+        local rateNow = RS.OutcomeSuccessRate(recipe, uid)
+        local outcomes = 0
+        if type(recipe.outcomes) == "table" then
+            for _ in pairs(recipe.outcomes) do
+                outcomes = outcomes + 1
+                if outcomes > 1 then
+                    break
+                end
+            end
+        end
+        if outcomes > 1
+            or (tonumber(recipe.brewCrits) or 0) > 0
+            or (tonumber(recipe.brewSuperCrits) or 0) > 0
+            or (tonumber(recipe.brewVolatiles) or 0) > 0
+            or (tonumber(recipe.brewFailures) or 0) > 0
+            or (rateNow ~= nil and rateNow <= 0)
+            or beforeYield ~= yieldNow
+            or beforeRate ~= rateNow
+        then
+            statsMoved = true
+        end
+    end
+    if statsMoved then
+        BumpRecipeStatsGen()
     end
 
     if structuralChange

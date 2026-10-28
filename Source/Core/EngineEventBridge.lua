@@ -103,6 +103,10 @@ function Bridge.OnInventoryUpdated(updatedSlots)
 end
 
 function Bridge.OnCraftingSlotUpdated(updatedSlots)
+    local AA = StockPiler.ApothecaryAdapter
+    if AA and AA.InvalidateCraftSlotCache then
+        AA.InvalidateCraftSlotCache()
+    end
     -- Stock: PLAYER_CRAFTING_SLOT_UPDATED -> DataUtils.ReloadCraftingItems (craft bag).
     -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here->main.
     if GameData and GameData.Player then
@@ -186,6 +190,10 @@ function Bridge.FlushPendingCraftSlots()
 end
 
 function Bridge.OnCraftingUpdated()
+    local AA = StockPiler.ApothecaryAdapter
+    if AA and AA.InvalidateCraftSlotCache then
+        AA.InvalidateCraftSlotCache()
+    end
     if StockPiler.LearnBridge and StockPiler.LearnBridge.OnCraftingUpdated then
         StockPiler.LearnBridge.OnCraftingUpdated()
     end

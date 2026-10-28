@@ -415,7 +415,18 @@ function BA.FetchLight()
 end
 
 function BA.FetchForce()
-    return FetchBags(true)
+    local player = GameData and GameData.Player
+    local prevItems, prevCraft
+    if type(player) == "table" then
+        prevItems = player.itemsDirty == true
+        prevCraft = player.craftingItemsDirty == true
+    end
+    local bags = FetchBags(true)
+    if type(player) == "table" then
+        player.itemsDirty = prevItems == true
+        player.craftingItemsDirty = prevCraft == true
+    end
+    return bags
 end
 
 function BA.FetchBag(bagType, forceRefresh)

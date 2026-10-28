@@ -586,6 +586,193 @@ P.CacheKeyFromGens()
 check(liveReads > tickReads, "a new game tick reads trade skills again")
 planTick = 500
 
+----------------------------------------------------------------
+-- Brew frametime: defer cold WarmHave, skip repeat relink, cache slots.
+----------------------------------------------------------------
+
+StockPiler.Util.TryCall = StockPiler.Util.TryCall or function(_, fn, ...)
+    local ok, a, b = pcall(fn, ...)
+    if ok then
+        return a, b
+    end
+    return false
+end
+
+GameData.Player = GameData.Player or {}
+GameData.Player.itemsDirty = false
+GameData.Player.craftingItemsDirty = false
+load_module("Source/Adapters/BagAdapter.lua")
+local BA = StockPiler.BagAdapter
+GameData.Player.itemsDirty = false
+GameData.Player.craftingItemsDirty = false
+BA.FetchForce()
+eq(GameData.Player.itemsDirty, false, "FetchForce does not leave itemsDirty set")
+eq(GameData.Player.craftingItemsDirty, false, "FetchForce does not leave craftingItemsDirty set")
+
+load_module("Source/Adapters/ApothecaryAdapter.lua")
+local AA = StockPiler.ApothecaryAdapter
+local slotReads = 0
+local backpackReads = 0
+StockPiler.FrameCounter = 4
+GetCraftingBackPackSlots = function()
+    slotReads = slotReads + 1
+    return { [0] = { slot = 1, backpack = 2 } }
+end
+EA_Window_Backpack = {
+    TYPE_INVENTORY = 2,
+    TYPE_CRAFTING = 4,
+    GetItemsFromBackpack = function()
+        backpackReads = backpackReads + 1
+        return { [1] = { uniqueID = 42, stackCount = 3 } }
+    end,
+}
+AA.TradeSkill = function()
+    return 4
+end
+AA.CraftingBackpackType = function()
+    return 4
+end
+eq(AA.GetSlottedItem(0) ~= nil, true, "a slotted item resolves from the backpack")
+eq(AA.GetSlottedItem(0) ~= nil, true, "the same frame resolves the slotted item again")
+eq(slotReads, 1, "GetCraftingBackPackSlots is cached for the frame")
+eq(backpackReads, 1, "GetItemsFromBackpack is cached for the frame")
+AA.InvalidateCraftSlotCache()
+eq(AA.GetSlottedItem(0) ~= nil, true, "an invalidated cache reads the slot again")
+eq(slotReads, 2, "invalidating the slot cache reads slots again")
+
+local walks = 0
+StockPiler.Inventory.ForEachItem = function(fn)
+    walks = walks + 1
+    fn({ uniqueID = 77, stackCount = 2, type = 31 })
+end
+StockPiler.Inventory.IsReady = function()
+    return true
+end
+StockPiler.Brew = {
+    GetSession = function()
+        return {
+            recipe = {
+                slots = {
+                    { role = "container", uniqueID = 1, perCraft = 1 },
+                    { role = "main", uniqueID = 2, perCraft = 1 },
+                },
+            },
+            recipeSpecKey = "brew-test",
+        }
+    end,
+}
+load_module("Source/Knowledge/BrewLearn.lua")
+local BL = StockPiler.BrewLearn
+StockPiler.FrameCounter = 6
+eq(BL.BeginPendingCraft(), true, "the first perform captures the pending craft")
+eq(walks, 1, "the first capture snapshots potion counts")
+eq(BL.HasFreshPendingCraftForFrame(4), true, "the pending craft is fresh this frame")
+eq(BL.BeginPendingCraft(), true, "a second capture on the same frame is skipped")
+eq(walks, 1, "the same-frame capture does not walk bags again")
+
+load_module("Source/Knowledge/MaterialSpec.lua")
+load_module("Source/Knowledge/RecipeSpec.lua")
+local RS = StockPiler.RecipeSpec
+StockPiler.Account = { recipes = {}, potions = {}, items = {} }
+local relinks = 0
+local origRelink = RS.RelinkPotionRecipeKeysFromOutcomes
+RS.RelinkPotionRecipeKeysFromOutcomes = function()
+    relinks = relinks + 1
+    return origRelink()
+end
+local function brewOnce()
+    return RS.StoreLearnedRecipeSpec({
+        {
+            uniqueID = 11,
+            role = "container",
+            itemData = { uniqueID = 11, name = "Vial" },
+        },
+        {
+            uniqueID = 12,
+            role = "main",
+            itemData = { uniqueID = 12, name = "Leaf", stability = 1 },
+        },
+    }, {
+        { uniqueID = 77, name = "Tonic", lastDelta = 1 },
+    })
+end
+local genBefore = RS.GetRecipeStatsGen()
+eq(brewOnce(), true, "the first brew of a recipe is stored")
+check(RS.GetRecipeStatsGen() > genBefore, "a new recipe bumps recipe stats")
+check(relinks >= 1, "a new recipe relinks potion keys")
+local genMid = RS.GetRecipeStatsGen()
+local relinksMid = relinks
+eq(brewOnce(), true, "a repeat brew of the same recipe is stored")
+eq(relinks, relinksMid, "a repeat single-outcome brew does not relink keys")
+-- Yield may still be settling across the first samples, so only require that
+-- a later identical 1x brew stops moving the stats generation.
+for _ = 1, 6 do
+    brewOnce()
+end
+local genSettled = RS.GetRecipeStatsGen()
+local relinksSettled = relinks
+eq(brewOnce(), true, "another identical brew is stored")
+eq(RS.GetRecipeStatsGen(), genSettled, "a settled 1x brew does not bump recipe stats")
+eq(relinks, relinksSettled, "a settled 1x brew does not relink keys")
+
+load_module("Source/Brew.lua")
+local Brew = StockPiler.Brew
+local allows = {}
+local prewarms = 0
+local dirtyRecount = nil
+StockPiler.Planner.LiveRecount = function(opts)
+    allows[#allows + 1] = opts and opts.allowWarmHave
+    return 1
+end
+StockPiler.Planner.IsHaveCacheWarmForSnap = function()
+    return false
+end
+local origPrewarm = StockPiler.Scheduler.RequestCachePrewarm
+StockPiler.Scheduler.RequestCachePrewarm = function(reason)
+    prewarms = prewarms + 1
+    return origPrewarm(reason)
+end
+local origDirty = StockPiler.EventBus.FireWatchUiDirty
+StockPiler.EventBus.FireWatchUiDirty = function(payload)
+    if payload and payload.reason == "after-brew-counts" then
+        dirtyRecount = payload.recount
+    end
+    return origDirty(payload)
+end
+StockPiler.Inventory.IsSnapshotPending = function()
+    return false
+end
+StockPiler.Inventory.CountByUid = function()
+    return 5
+end
+StockPiler.Inventory._snapPending = false
+StockPiler.FrameCounter = 8
+StockPiler.Scheduler.NoteHeavyWork()
+Brew._session = {
+    phase = "loaded",
+    uniqueID = 77,
+    potionKey = "uid:77",
+    potionMin = 10,
+    potionHave = 4,
+    potionDeficit = 6,
+    craftable = 2,
+}
+Brew._brewHaveBefore = 5
+Brew._postBrewClearArmed = false
+Brew._loadSource = "auto"
+Brew.RefreshSessionAfterBrew()
+eq(allows[#allows], false, "a cold bag-flush frame does not WarmHave")
+check(prewarms >= 1, "a cold bag-flush frame enqueues WarmHave")
+eq(dirtyRecount, nil, "after-brew watch dirty does not request another recount")
+allows = {}
+prewarms = 0
+StockPiler.FrameCounter = 9
+Brew._session.phase = "loaded"
+Brew._brewHaveBefore = 5
+Brew._postBrewClearArmed = false
+Brew.RefreshSessionAfterBrew()
+eq(allows[#allows], true, "off the bag-flush frame a cold cache still WarmHaves")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

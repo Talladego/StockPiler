@@ -2803,7 +2803,7 @@ function SkillUp.CountApoContainers()
     end
     local MS = StockPiler.MaterialSpec
     local SM = StockPiler.SeedMap
-    if not (Inv and Inv.ForEachItem and MS and MS.FromItemData) then
+    if not (Inv and Inv.ForEachItem and MS and (MS.FromItemDataCached or MS.FromItemData)) then
         return 0
     end
     local total = 0
@@ -2817,7 +2817,8 @@ function SkillUp.CountApoContainers()
             return
         end
         seen[uid] = true
-        local spec = MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem(item, nil)
         if type(spec) ~= "table" or tostring(spec.role or "") ~= "container" then
             return
         end
@@ -3432,7 +3433,7 @@ function SkillUp.ListApoBagMaterials(role, opts)
     local MS = StockPiler.MaterialSpec
     local SM = StockPiler.SeedMap
     local list = {}
-    if not (Inv and Inv.ForEachItem and MS and MS.FromItemData) then
+    if not (Inv and Inv.ForEachItem and MS and (MS.FromItemDataCached or MS.FromItemData)) then
         matCache.lists[slot] = list
         return CopyApoMatList(list)
     end
@@ -3454,7 +3455,8 @@ function SkillUp.ListApoBagMaterials(role, opts)
         if not CanUseCraftingSample(item) then
             return
         end
-        local spec = MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem(item, nil)
         if type(spec) ~= "table" then
             return
         end
