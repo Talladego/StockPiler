@@ -424,8 +424,13 @@ local function PotionListCacheKey(effectFilter)
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.GetRecipeStatsGen then
         stats = tonumber(StockPiler.RecipeSpec.GetRecipeStatsGen()) or 0
     end
+    local display = 0
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.GetRecipeDisplayGen then
+        display = tonumber(StockPiler.RecipeSpec.GetRecipeDisplayGen()) or 0
+    end
     return tostring(know) .. ":" .. tostring(watch)
-        .. ":" .. tostring(stats) .. ":" .. tostring(effectFilter or "")
+        .. ":" .. tostring(stats) .. ":" .. tostring(display)
+        .. ":" .. tostring(effectFilter or "")
 end
 
 local function BuildVisibleList()

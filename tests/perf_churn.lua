@@ -715,6 +715,52 @@ eq(brewOnce(), true, "another identical brew is stored")
 eq(RS.GetRecipeStatsGen(), genSettled, "a settled 1x brew does not bump recipe stats")
 eq(relinks, relinksSettled, "a settled 1x brew does not relink keys")
 
+local learnedRecipe = nil
+for _, row in pairs(StockPiler.Account.recipes) do
+    learnedRecipe = row
+end
+local displayBefore = RS.GetRecipeDisplayGen()
+local attemptsBefore = RS.OutcomeSuccessStats(learnedRecipe, 77).brewAttempts
+eq(brewOnce(), true, "one more settled brew is stored")
+eq(RS.GetRecipeStatsGen(), genSettled, "the extra settled brew still does not bump recipe stats")
+check(RS.GetRecipeDisplayGen() > displayBefore, "the Potions tab display generation moves")
+local attemptsAfter = RS.OutcomeSuccessStats(learnedRecipe, 77).brewAttempts
+check(attemptsAfter > attemptsBefore, "the live recipe attempt count moves")
+load_module("Source/View/RecipeTooltip.lua")
+local prevTipT = StockPiler.Util.T
+StockPiler.Util.T = function(key, tokens)
+    local s = tostring(key)
+    if key == "recipe.success" then
+        s = "Success: {pct}% ({ok}/{att})"
+    end
+    if type(tokens) == "table" then
+        for k, v in pairs(tokens) do
+            s = string.gsub(s, "{" .. tostring(k) .. "}", tostring(v))
+        end
+    end
+    return s
+end
+local tipRows = StockPiler.RecipeTooltip.BuildRows({
+    name = "Tonic",
+    potionUid = 77,
+    recipe = learnedRecipe,
+    recipeYield = 1,
+    brewAttempts = 1,
+    brewSuccesses = 1,
+    successRate = 1,
+})
+StockPiler.Util.T = prevTipT
+local tipLine = ""
+for i = 1, #tipRows do
+    local text = tostring(tipRows[i].text or "")
+    if string.find(text, "Success:", 1, true) ~= nil then
+        tipLine = text
+    end
+end
+check(attemptsAfter > 1, "the live attempt count is past the stale snapshot")
+local showsLive = string.find(tipLine, tostring(attemptsAfter), 1, true) ~= nil
+check(showsLive == true, "the recipe tooltip shows the live attempt count")
+
 load_module("Source/Brew.lua")
 local Brew = StockPiler.Brew
 local allows = {}
@@ -772,6 +818,36 @@ Brew._brewHaveBefore = 5
 Brew._postBrewClearArmed = false
 Brew.RefreshSessionAfterBrew()
 eq(allows[#allows], true, "off the bag-flush frame a cold cache still WarmHaves")
+
+local craftArgs = {}
+PerformCrafting = function(a, b, c)
+    craftArgs[#craftArgs + 1] = { a, b, c }
+    return "crafted", b
+end
+load_module("Source/Knowledge/LearnBridge.lua")
+local LB = StockPiler.LearnBridge
+LB._performHooked = false
+eq(LB.EnsurePerformCraftingHook(), true, "PerformCrafting is hooked")
+AA.TradeSkill = function()
+    error("trade skill down")
+end
+local craftResult, craftEcho = PerformCrafting(4, 9, "tail")
+eq(craftResult, "crafted", "a throwing trade-skill prologue still crafts")
+eq(craftEcho, 9, "the craft return value is forwarded")
+eq(craftArgs[1][1], 4, "the trade skill argument is forwarded")
+eq(craftArgs[1][2], 9, "the count argument is forwarded")
+eq(craftArgs[1][3], "tail", "the extra argument is forwarded")
+AA.TradeSkill = function()
+    return 4
+end
+BL.HasFreshPendingCraftForFrame = function()
+    error("fresh check down")
+end
+craftResult, craftEcho = PerformCrafting(4, 2, "more")
+eq(craftResult, "crafted", "a throwing fresh-check prologue still crafts")
+eq(craftEcho, 2, "the second craft return value is forwarded")
+eq(#craftArgs, 2, "both crafts reached the original function")
+eq(craftArgs[2][3], "more", "the second extra argument is forwarded")
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

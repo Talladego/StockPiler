@@ -1085,6 +1085,17 @@ function RS.GetRecipeStatsGen()
     return tonumber(RS._recipeStatsGen) or 0
 end
 
+-- Potions-tab hover only. Does not invalidate plans or craftable stamps.
+RS._recipeDisplayGen = tonumber(RS._recipeDisplayGen) or 0
+
+function RS.GetRecipeDisplayGen()
+    return tonumber(RS._recipeDisplayGen) or 0
+end
+
+local function BumpRecipeDisplayGen()
+    RS._recipeDisplayGen = (tonumber(RS._recipeDisplayGen) or 0) + 1
+end
+
 local function BumpRecipeStatsGen()
     RS._recipeStatsGen = (tonumber(RS._recipeStatsGen) or 0) + 1
 end
@@ -3663,6 +3674,7 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     if statsMoved then
         BumpRecipeStatsGen()
     end
+    BumpRecipeDisplayGen()
 
     if structuralChange
         and StockPiler.Knowledge

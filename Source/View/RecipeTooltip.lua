@@ -907,9 +907,25 @@ function RecipeTooltip.BuildRows(recipeData)
     if yield > 0 then
         appendMeta(T("recipe.yield", { yield = tostring(yield) }))
     end
+    local recipe = recipeData.recipe
+    local RS = StockPiler.RecipeSpec
     local rate = tonumber(recipeData.successRate)
     local ok = tonumber(recipeData.brewSuccesses) or 0
     local att = tonumber(recipeData.brewAttempts) or 0
+    -- Cached row counts freeze after a repeat brew that does not bump stats gen.
+    -- The saved recipe table is live; read attempts from it at hover time.
+    if type(recipe) == "table" and RS and RS.OutcomeSuccessStats then
+        local uid = tonumber(recipeData.potionUid) or tonumber(recipe.outputUid)
+            or tonumber(recipe.activeOutcomeUid) or 0
+        local ocStats = RS.OutcomeSuccessStats(recipe, uid)
+        if type(ocStats) == "table" then
+            att = tonumber(ocStats.brewAttempts) or att
+            ok = tonumber(ocStats.brewSuccesses) or ok
+            if ocStats.successRate ~= nil then
+                rate = tonumber(ocStats.successRate)
+            end
+        end
+    end
     if rate ~= nil and att > 0 then
         local pct = math.floor((rate * 100) + 0.5)
         appendMeta(T("recipe.success", {
@@ -918,9 +934,6 @@ function RecipeTooltip.BuildRows(recipeData)
             att = tostring(att),
         }))
     end
-
-    local recipe = recipeData.recipe
-    local RS = StockPiler.RecipeSpec
     if type(recipe) == "table" and RS and RS.HydrateRecipeSlots then
         RS.HydrateRecipeSlots(recipe)
     end

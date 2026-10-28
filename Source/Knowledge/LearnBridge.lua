@@ -60,18 +60,22 @@ function LB.EnsurePerformCraftingHook()
         return false
     end
     local orig = PerformCrafting
-    PerformCrafting = function(tradeSkill, count)
-        local AA = StockPiler.ApothecaryAdapter
-        local apo = AA and AA.TradeSkill and tonumber(AA.TradeSkill()) or 4
-        if tonumber(tradeSkill) == apo then
-            local BL = StockPiler.BrewLearn
-            local fresh = BL and BL.HasFreshPendingCraftForFrame
-                and BL.HasFreshPendingCraftForFrame(tradeSkill) == true
-            if fresh ~= true and BL and BL.BeginPendingCraft then
-                pcall(BL.BeginPendingCraft)
+    PerformCrafting = function(...)
+        -- The whole prologue stays inside pcall. A learn error must not block crafting.
+        pcall(function(...)
+            local tradeSkill = ...
+            local AA = StockPiler.ApothecaryAdapter
+            local apo = AA and AA.TradeSkill and tonumber(AA.TradeSkill()) or 4
+            if tonumber(tradeSkill) == apo then
+                local BL = StockPiler.BrewLearn
+                local fresh = BL and BL.HasFreshPendingCraftForFrame
+                    and BL.HasFreshPendingCraftForFrame(tradeSkill) == true
+                if fresh ~= true and BL and BL.BeginPendingCraft then
+                    BL.BeginPendingCraft()
+                end
             end
-        end
-        return orig(tradeSkill, count)
+        end, ...)
+        return orig(...)
     end
     LB._performHooked = true
     return true
