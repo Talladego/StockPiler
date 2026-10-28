@@ -412,6 +412,9 @@ local function RebuildPlanIfDue()
         Planner._lazyWatchTips = true
         Planner.GetOrBuild(true)
         Planner._lazyWatchTips = nil
+        if Planner.EnqueueLazyWatchTips then
+            Planner.EnqueueLazyWatchTips()
+        end
         if StockPiler.Perf and StockPiler.Perf.End then
             StockPiler.Perf.End("PlanRebuild")
         end

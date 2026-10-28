@@ -3458,13 +3458,14 @@ function SM.GetGenusLadder(genus)
     local Inv = StockPiler.Inventory
     local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
     local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
-    if SM._genusLadderKnow ~= know then
+    if SM._genusLadderKnow ~= know or SM._genusLadderSnap ~= snap then
         SM._genusLadderCache = {}
         SM._genusLadderKnow = know
+        SM._genusLadderSnap = snap
     end
     local cache = SM._genusLadderCache or {}
     SM._genusLadderCache = cache
-    local key = genus .. ":" .. tostring(snap)
+    local key = genus
     local hit = cache[key]
     if hit ~= nil then
         if hit == false then

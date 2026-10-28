@@ -875,6 +875,189 @@ eq(BA.CraftBagFreeSlots(), 3, "a forced fetch recounts free slots")
 check(freeReads > 1, "FetchForce invalidates the free-slot cache")
 BA.CountBagOccupancy = realCount
 
+-- Lazy watch tips fill on FrameWork and match an eager Build.
+do
+    local RS = StockPiler.RecipeSpec
+    local prevRecipe = RS.RecipeSpecForPotion
+    local prevAuto = RS.ShouldAutoGrowPotion
+    local prevHydrate = RS.HydrateRecipeSlots
+    local prevSM = StockPiler.SeedMap
+    local prevCount = StockPiler.Inventory.CountByUid
+    local recipe = {
+        slots = {
+            {
+                role = "main",
+                spec = { role = "main", key = "leaf", uid = 11, uniqueID = 11 },
+            },
+        },
+    }
+    RS.HydrateRecipeSlots = function() end
+    RS.RecipeSpecForPotion = function(key)
+        local text = tostring(key or "")
+        if text == "uid:501" or text == "uid:502" or text == "uid:503" or text == "uid:504" then
+            return recipe
+        end
+        return prevRecipe(key)
+    end
+    RS.ShouldAutoGrowPotion = function()
+        return true
+    end
+    StockPiler.SeedMap = {
+        IsGrowableSpec = function()
+            return true
+        end,
+        ResolveSeedForSpec = function()
+            return { uniqueID = 900, uid = 900, plantUid = 901 }
+        end,
+        FindPlantUidForSpec = function()
+            return 901
+        end,
+    }
+    StockPiler.Inventory.CountByUid = function(uid)
+        uid = tonumber(uid) or 0
+        if uid >= 501 and uid <= 504 then
+            return 10
+        end
+        return 0
+    end
+    local function arm(key)
+        Watch.SetEnabled(key, true)
+        Watch.SetAutoGrow(key, true)
+        Watch.SetTarget(key, 2)
+    end
+    arm("uid:501")
+    arm("uid:502")
+    arm("uid:503")
+    arm("uid:504")
+    local function sig(plan)
+        local parts = {}
+        local rows = plan and plan.rows or {}
+        for i = 1, #rows do
+            local row = rows[i]
+            local key = tostring(row.potionKey or "")
+            if key == "uid:501" or key == "uid:502" or key == "uid:503" or key == "uid:504" then
+                local tips = type(row.statusTipSlots) == "table" and #row.statusTipSlots or -1
+                local seeds = {}
+                if type(row.seedBufferSeedUids) == "table" then
+                    for u = 1, #row.seedBufferSeedUids do
+                        seeds[#seeds + 1] = tostring(row.seedBufferSeedUids[u])
+                    end
+                end
+                local tipSeeds = {}
+                local tip = row.seedBufferTip
+                if type(tip) == "table" and type(tip.seedUids) == "table" then
+                    for u = 1, #tip.seedUids do
+                        tipSeeds[#tipSeeds + 1] = tostring(tip.seedUids[u])
+                    end
+                end
+                parts[#parts + 1] = table.concat({
+                    key,
+                    tostring(tips),
+                    table.concat(seeds, ","),
+                    table.concat(tipSeeds, ","),
+                    tostring(row.seedBufferShort),
+                    tostring(row.statusKey),
+                }, "|")
+            end
+        end
+        table.sort(parts)
+        return table.concat(parts, ";")
+    end
+    P._lazyWatchTips = nil
+    local eager = P.Build({ force = true })
+    check(type(eager) == "table", "eager BuildFull publishes a plan")
+    local eagerSig = sig(eager)
+    check(string.find(eagerSig, "900", 1, true) ~= nil, "eager tips keep the seed uid")
+    P._lazyWatchTips = true
+    local lazy = P.Build({ force = true })
+    P._lazyWatchTips = nil
+    check(type(lazy) == "table", "lazy BuildFull publishes a plan")
+    local lazyRows = lazy and lazy.rows or {}
+    local sawLazy = false
+    local snap = StockPiler.Inventory.GetSnapGen()
+    for i = 1, #lazyRows do
+        local row = lazyRows[i]
+        local key = tostring(row.potionKey or "")
+        if key == "uid:501" or key == "uid:502" or key == "uid:503" or key == "uid:504" then
+            sawLazy = true
+            eq(type(row.statusTipSlots), "nil", "lazy build leaves status tips empty")
+            row.seedBufferSeedUids = { 1 }
+            row._seedBufferUidSnapGen = snap
+        end
+    end
+    check(sawLazy == true, "lazy build includes the watch rows")
+    local hoverRow = nil
+    for i = 1, #lazyRows do
+        if tostring(lazyRows[i].potionKey or "") == "uid:504" then
+            hoverRow = lazyRows[i]
+            break
+        end
+    end
+    eq(P.EnsureWatchRowTip(hoverRow) ~= nil, true, "hover fills a tip before the slice")
+    check(type(hoverRow.statusTipSlots) == "table", "hover writes statusTipSlots")
+    eq(P.EnqueueLazyWatchTips(), true, "PlanRebuild enqueues the tip slice")
+    StockPiler.FrameCounter = 80
+    local FW = StockPiler.FrameWork
+    local spins = 0
+    while FW.IsActive("watch-row-tips") and spins < 12 do
+        spins = spins + 1
+        StockPiler.FrameCounter = 80 + spins
+        FW.Pump()
+    end
+    eq(FW.IsActive("watch-row-tips"), false, "the tip slice finishes")
+    eq(sig(lazy), eagerSig, "drained lazy tips match the eager build")
+    check(string.find(sig(lazy), "900", 1, true) ~= nil, "tip seed uids replace the stale snap stamp")
+    RS.RecipeSpecForPotion = prevRecipe
+    RS.ShouldAutoGrowPotion = prevAuto
+    RS.HydrateRecipeSlots = prevHydrate
+    StockPiler.SeedMap = prevSM
+    StockPiler.Inventory.CountByUid = prevCount
+end
+
+-- A zero-delta slot update defers the engine reread to the bag flush.
+do
+    load_module("Source/Stores/InventoryStore.lua")
+    local Inv = StockPiler.Inventory
+    Inv._ready = true
+    Inv._snapPending = false
+    Inv._dirty = false
+    Inv._dirtyFull = false
+    Inv._dirtyEngine = false
+    Inv._needQueue = false
+    Inv._slotIndex = { main = { [1] = { uid = 5, qty = 1 } }, craft = {} }
+    Inv._itemBySlot = { main = {}, craft = {} }
+    Inv._countByUid = { [5] = 1 }
+    local refreshCalls = 0
+    local realRefresh = Inv.ForceFullRefresh
+    Inv.ForceFullRefresh = function(...)
+        refreshCalls = refreshCalls + 1
+        return realRefresh(...)
+    end
+    local forceReads = 0
+    local lightReads = 0
+    BA.FetchBag = function()
+        return { data = { [1] = { uniqueID = 5, stackCount = 1 } } }
+    end
+    BA.FetchForce = function()
+        forceReads = forceReads + 1
+        return {}
+    end
+    BA.FetchLight = function()
+        lightReads = lightReads + 1
+        return {}
+    end
+    eq(Inv.ApplySlotUpdates("main", { 1 }, "slot"), true, "a zero-delta slot update is accepted")
+    eq(refreshCalls, 0, "the event does not ForceFullRefresh")
+    eq(forceReads, 0, "the event does not reread the engine")
+    eq(Inv._dirtyEngine, true, "the stale read marks an engine reread")
+    eq(Inv._needQueue, true, "the stale read requests the queue")
+    local queued = Inv.Flush({ forceEngine = false })
+    eq(queued, true, "the bag flush keeps needQueue")
+    eq(forceReads, 1, "the bag flush rereads the engine")
+    eq(lightReads, 0, "the bag flush does not use the light snapshot")
+    eq(Inv._dirtyEngine, false, "the flush clears the engine flag")
+end
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

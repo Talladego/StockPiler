@@ -4161,6 +4161,8 @@ local function FillWatchRowTips(row, demand)
         return
     end
     if type(row.statusTipSlots) == "table" and #row.statusTipSlots > 0 then
+        -- A prior stamp on this snap ignored tips. Force the merge.
+        row._seedBufferUidSnapGen = nil
         StampRowSeedBufferUids(row)
         return
     end
@@ -4181,6 +4183,17 @@ local function FillWatchRowTips(row, demand)
         end
     end
     row.statusTipSlots = entries
+    row.seedBufferTip = {
+        seedUids = {},
+    }
+    for i = 1, #entries do
+        local tip = entries[i]
+        local seedUid = tonumber(tip and tip.seedUid) or 0
+        if seedUid > 0 then
+            row.seedBufferTip.seedUids[#row.seedBufferTip.seedUids + 1] = seedUid
+        end
+    end
+    row._seedBufferUidSnapGen = nil
     StampRowSeedBufferUids(row)
 end
 
@@ -4619,7 +4632,9 @@ local function BuildWatchRows(ctx, watches)
                 local recipe = row.recipe
                 DecideStatus(row, target, recipe, demand)
                 FillWatchRowCraftable(row, ctx)
-                FillWatchRowTips(row, demand)
+                if Planner._lazyWatchTips ~= true then
+                    FillWatchRowTips(row, demand)
+                end
                 statusChanged = true
             end
         end
@@ -5645,14 +5660,115 @@ function Planner.CacheKeyFromGens()
     return FormatCacheKey(ReadGens())
 end
 
+local function RefreshSharedSeedBuffer(rows)
+    if PropagateSharedSeedBufferStatus(rows) == true then
+        return true
+    end
+    return false
+end
+
+local function ApplyRowTipSideEffects(row)
+    if type(row) ~= "table" then
+        return
+    end
+    SyncTipSlotNeeds(row, row.craftsNeeded)
+    local Grow = StockPiler.Grow
+    local tips = row.statusTipSlots
+    if Grow and Grow.GrowingNotesForSpec and type(tips) == "table" then
+        for t = 1, #tips do
+            local entry = tips[t]
+            if type(entry) == "table" and type(entry.spec) == "table" then
+                local notes = Grow.GrowingNotesForSpec(entry.spec, { cacheOnly = true })
+                if notes ~= nil then
+                    entry.growingNotes = notes
+                end
+            end
+        end
+    end
+end
+
 function Planner.EnsureWatchRowTip(row)
     if type(row) ~= "table" then
         return nil
     end
-    if type(row.statusTipSlots) ~= "table" then
+    if type(row.statusTipSlots) ~= "table" or #row.statusTipSlots == 0 then
+        row._seedBufferUidSnapGen = nil
         FillWatchRowTips(row, Planner._lastDemand)
+        ApplyRowTipSideEffects(row)
+        local PS = StockPiler.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        if type(plan) == "table" and type(plan.rows) == "table" then
+            for i = 1, #plan.rows do
+                if plan.rows[i] == row then
+                    RefreshSharedSeedBuffer(plan.rows)
+                    if type(plan.seedBufferTipData) ~= "table" then
+                        plan.seedBufferTipData = BuildSeedBufferTipData({
+                            previous = plan.seedBufferTipData,
+                        })
+                    end
+                    break
+                end
+            end
+        end
     end
     return row.statusTipSlots
+end
+
+function Planner.EnqueueLazyWatchTips()
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) ~= "table" or #rows == 0 then
+        return false
+    end
+    local function fillOne(row)
+        if type(row) ~= "table" then
+            return
+        end
+        if type(row.statusTipSlots) == "table" and #row.statusTipSlots > 0 then
+            row._seedBufferUidSnapGen = nil
+            StampRowSeedBufferUids(row)
+            return
+        end
+        row._seedBufferUidSnapGen = nil
+        FillWatchRowTips(row, Planner._lastDemand)
+        ApplyRowTipSideEffects(row)
+    end
+    local FW = StockPiler.FrameWork
+    if not FW or not FW.Start then
+        for i = 1, #rows do
+            fillOne(rows[i])
+        end
+        RefreshSharedSeedBuffer(rows)
+        plan.seedBufferTipData = BuildSeedBufferTipData({
+            previous = plan.seedBufferTipData,
+        })
+        return true
+    end
+    FW.Start({
+        id = "watch-row-tips",
+        gen = tostring(plan.planGen or 0) .. ":" .. tostring(#rows),
+        stepsPerFrame = 1,
+        resume = function(state)
+            local index = tonumber(state.index) or 1
+            local last = math.min(#rows, index + 2)
+            for i = index, last do
+                fillOne(rows[i])
+            end
+            state.index = last + 1
+            if state.index <= #rows then
+                return "continue"
+            end
+            RefreshSharedSeedBuffer(rows)
+            if type(plan) == "table" then
+                plan.seedBufferTipData = BuildSeedBufferTipData({
+                    previous = plan.seedBufferTipData,
+                })
+            end
+            return "done"
+        end,
+    })
+    return true
 end
 
 function Planner.BuildWatchRowTips(row, demand)

@@ -610,9 +610,14 @@ local function RunUpdateProcessed(timeElapsed)
     if heavySlots ~= true then
         RunStage("scheduler", function()
             if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
-                StockPiler.Scheduler.OnUpdate(timeElapsed)
+                local carried = tonumber(Bridge._pendingDt) or 0
+                Bridge._pendingDt = 0
+                local dt = (tonumber(timeElapsed) or 0) + carried
+                StockPiler.Scheduler.OnUpdate(dt)
             end
         end)
+    else
+        Bridge._pendingDt = (tonumber(Bridge._pendingDt) or 0) + (tonumber(timeElapsed) or 0)
     end
 
     RunStage("open-paint", function()

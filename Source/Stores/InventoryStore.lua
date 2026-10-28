@@ -218,6 +218,9 @@ function Inv.MarkDirty(opts)
     if opts.full == true then
         Inv._dirtyFull = true
     end
+    if opts.forceEngine == true then
+        Inv._dirtyEngine = true
+    end
     if opts.needQueue == true then
         Inv._needQueue = true
     end
@@ -384,18 +387,17 @@ function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
             any = true
         end
     end
-    -- No net delta: do not force a 3-bag engine reread on this event.
-    -- A real delta still refreshes so Watch craftable can follow.
-    if Inv._ready == true and pendingBefore ~= true and Inv._snapPending ~= true then
-        if any ~= true then
-            Inv.MarkDirty({ reason = reason .. "-stale" })
-        else
-            Inv.ForceFullRefresh({
-                forceEngine = true,
-                needQueue = true,
-                reason = reason .. "-stale",
-            })
-        end
+    -- No net delta and no snap already queued: the slot read may be stale.
+    -- Defer the engine reread to the bag flush instead of scanning on this event.
+    -- A real delta sets _snapPending inside AdjustUid, so it does not reach here.
+    if any ~= true and pendingBefore ~= true and Inv._snapPending ~= true then
+        Inv._dirtyEngine = true
+        Inv.MarkDirty({
+            bagType = bagType,
+            forceEngine = true,
+            needQueue = true,
+            reason = tostring(reason or "slot") .. "-stale",
+        })
     end
     return true
 end

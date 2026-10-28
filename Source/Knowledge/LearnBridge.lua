@@ -294,9 +294,15 @@ function LB.OnUpdateProcessed()
     local Inv = StockPiler.Inventory
     local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
     local now = StockPiler.Util and StockPiler.Util.NowSec and tonumber(StockPiler.Util.NowSec()) or 0
+    local BL = StockPiler.BrewLearn
+    local SMEarly = StockPiler.SeedMap
+    local pollDue = BL and BL._inventoryCraftPollDue == true
+    local refinePending = SMEarly and SMEarly._pendingRefine ~= nil
     local sameSnap = snap > 0 and LB._harvestSnap == snap
     local fresh = (now <= 0) or ((now - (tonumber(LB._harvestSnapAt) or 0)) < 2)
-    if sameSnap and fresh and LB._harvestCompletePending ~= true then
+    if sameSnap and fresh and LB._harvestCompletePending ~= true
+        and pollDue ~= true and refinePending ~= true
+    then
         return false
     end
     LB._harvestSnap = snap
