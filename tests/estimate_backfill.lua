@@ -63,10 +63,21 @@ local outcomeRate = 0.5
 local bagSeeds = 20
 local bagPlants = 10
 local emptyPlot = true
+local snapGen = 1
+local planGen = 1
+local statsGen = 1
+local harvestGen = 0
+local bufferShort = false
+local bufferPending = false
+local clock = 1000
+local upgradeEnabled = false
+local holdRefine = false
+local holdPlots = false
+local craftShared = false
 
 StockPiler = {}
 StockPiler.Util = {
-    NowSec = function() return 1000 end,
+    NowSec = function() return clock end,
     ToNarrow = function(v) return tostring(v or "") end,
 }
 StockPiler.T = function(k) return tostring(k) end
@@ -77,7 +88,7 @@ StockPiler.Scheduler = {
 }
 StockPiler.Inventory = {
     IsReady = function() return true end,
-    GetSnapGen = function() return 1 end,
+    GetSnapGen = function() return snapGen end,
     CountByUid = function(uid)
         uid = tonumber(uid) or 0
         if uid == SEED_UID then
@@ -107,16 +118,28 @@ StockPiler.Watch = {
     GetPlantWatches = function() return {} end,
 }
 StockPiler.UpgradeSeed = {
-    IsEnabled = function() return false end,
+    IsEnabled = function() return upgradeEnabled == true end,
+    NeedsRefineFirst = function() return holdRefine == true end,
+    ShouldHoldEmptyPlots = function() return holdPlots == true end,
+    StatusForWatch = function()
+        return { why = "need_cult" }
+    end,
+    GetActiveStatus = function()
+        return { why = "need_cult" }
+    end,
+    FreshTargetsPending = function() return false end,
 }
-StockPiler.Refine = {}
+StockPiler.Refine = {
+    HasAnyBufferShort = function() return bufferShort == true end,
+    HasPendingBufferRefine = function() return bufferPending == true end,
+}
 StockPiler.SkillUp = {
     ShouldCultPlant = function() return false end,
 }
 StockPiler.PlanSnapshot = {
     Get = function()
         return {
-            planGen = 1,
+            planGen = planGen,
             rows = {
                 {
                     kind = "potion",
@@ -126,6 +149,7 @@ StockPiler.PlanSnapshot = {
                     potionHave = 0,
                     potionDeficit = 20,
                     craftable = 20,
+                    craftableShared = craftShared == true,
                     bottleGap = 0,
                     recipe = {
                         outputUid = POTION_UID,
@@ -159,6 +183,12 @@ StockPiler.RecipeSpec = {
     OutcomeSuccessRate = function()
         return outcomeRate
     end,
+    GetRecipeStatsGen = function()
+        return statsGen
+    end,
+    GetHarvestStatsGen = function()
+        return harvestGen
+    end,
     CraftsNeededForDeficit = function(deficit)
         deficit = math.max(0, tonumber(deficit) or 0)
         return deficit
@@ -185,6 +215,9 @@ StockPiler.RecipeSpec = {
     end,
 }
 StockPiler.SeedMap = {
+    GetHarvestStatsGen = function()
+        return harvestGen
+    end,
     IsGrowableSpec = function() return true end,
     IsHarvestByproduct = function() return false end,
     ResolveSeedForSpec = function()
@@ -232,8 +265,11 @@ load_module("Source/Grow.lua")
 local Grow = StockPiler.Grow
 
 -- Helper: measured rate below 1 yields extra crafts; unknown rate does not.
-eq(Grow.EstimateBackfillCraftsExtra({ outputUid = POTION_UID }, POTION_UID, 20), 20,
-    "rate 0.5 doubles crafts vs optimistic")
+local extraCrafts, expectedCrafts = Grow.EstimateBackfillCraftsExtra(
+    { outputUid = POTION_UID }, POTION_UID, 20
+)
+eq(extraCrafts, 20, "rate 0.5 doubles crafts vs optimistic")
+eq(expectedCrafts, 40, "expected crafts is the measured total")
 outcomeRate = nil
 eq(Grow.EstimateBackfillCraftsExtra({ outputUid = POTION_UID }, POTION_UID, 20), 0,
     "unknown rate yields no speculative extra")
@@ -266,6 +302,109 @@ emptyPlot = false
 job = Grow.PickPlantCandidate()
 eq(job, nil, "full plots skip estimate backfill")
 emptyPlot = true
+
+-- No free seeds: do not scan spec item counts.
+local specScans = 0
+local prevCountSpec = StockPiler.RecipeSpec.CountItemsMatchingSpec
+StockPiler.RecipeSpec.CountItemsMatchingSpec = function(...)
+    specScans = specScans + 1
+    return prevCountSpec(...)
+end
+bagSeeds = 0
+job = Grow.PickPlantCandidate()
+eq(job, nil, "no free seeds does not backfill")
+eq(specScans, 0, "no free seeds skips the spec item count")
+bagSeeds = 20
+specScans = 0
+job = Grow.PickPlantCandidate()
+eq(job and job.plantReason, "estimate_backfill", "free seeds still backfill")
+check(specScans >= 1, "free seeds still count matching items")
+StockPiler.RecipeSpec.CountItemsMatchingSpec = prevCountSpec
+
+-- Missing cultivator adapter still reports an empty plot.
+local savedAdapter = StockPiler.CultivatorAdapter
+StockPiler.CultivatorAdapter = nil
+eq(Grow.HasEmptyPlot(), true, "HasEmptyPlot works without CultivatorAdapter")
+StockPiler.CultivatorAdapter = savedAdapter
+
+-- Upgrade Seed hold blocks the early stocked-plan path and the late path.
+upgradeEnabled = true
+holdRefine = true
+job = Grow.PickPlantCandidate()
+eq(job, nil, "NeedsRefineFirst blocks early estimate backfill")
+holdRefine = false
+holdPlots = true
+job = Grow.PickPlantCandidate()
+eq(job, nil, "ShouldHoldEmptyPlots blocks early estimate backfill")
+holdPlots = false
+craftShared = true
+holdRefine = true
+job = Grow.PickPlantCandidate()
+eq(job, nil, "NeedsRefineFirst blocks late estimate backfill")
+holdRefine = false
+holdPlots = true
+job = Grow.PickPlantCandidate()
+eq(job, nil, "ShouldHoldEmptyPlots blocks late estimate backfill")
+holdPlots = false
+job = Grow.PickPlantCandidate()
+eq(job and job.plantReason, "estimate_backfill", "late path backfills when the climb is not holding")
+upgradeEnabled = false
+craftShared = false
+
+-- Nil plant-job cache re-probes only when backfill inputs change.
+outcomeRate = nil
+Grow.InvalidatePlantQueue({ reason = "test" })
+local picks = 0
+local realPick = Grow.PickPlantCandidate
+Grow.PickPlantCandidate = function(...)
+    picks = picks + 1
+    return realPick(...)
+end
+eq(Grow.GetPlantJob(), nil, "unknown rate caches a nil plant job")
+eq(picks, 1, "the first nil probe runs PickPlantCandidate")
+clock = 1005
+eq(Grow.GetPlantJob(), nil, "an unchanged nil stays cached")
+eq(picks, 1, "two seconds later does not re-probe unchanged inputs")
+snapGen = 2
+clock = 1006
+eq(Grow.GetPlantJob(), nil, "a snap change still has no backfill job")
+eq(picks, 2, "a snap change re-probes once")
+statsGen = 4
+clock = 1007
+eq(Grow.GetPlantJob(), nil, "a stats change inside the cooldown stays cached")
+eq(picks, 2, "the cooldown holds a second input change")
+clock = 1009
+eq(Grow.GetPlantJob(), nil, "after the cooldown the new stats gen is probed")
+eq(picks, 3, "recipeStatsGen re-probes once the cooldown ends")
+planGen = 2
+clock = 1012
+eq(Grow.GetPlantJob(), nil, "a new plan is probed")
+eq(picks, 4, "planGen re-probes once")
+harvestGen = 2
+clock = 1015
+eq(Grow.GetPlantJob(), nil, "a harvest stats change is probed")
+eq(picks, 5, "harvest stats gen re-probes once")
+bufferShort = true
+clock = 1018
+eq(Grow.GetPlantJob(), nil, "a buffer-short change is probed")
+eq(picks, 6, "buffer state re-probes once")
+clock = 1022
+eq(Grow.GetPlantJob(), nil, "the same buffer state does not re-probe")
+eq(picks, 6, "unchanged inputs stay cached after a re-probe")
+emptyPlot = false
+Grow.InvalidatePlantQueue({ reason = "plots" })
+eq(Grow.GetPlantJob(), nil, "a full garden caches nil")
+eq(picks, 7, "a full garden probe runs once")
+clock = 1026
+eq(Grow.GetPlantJob(), nil, "a full garden does not re-probe")
+eq(picks, 7, "no empty plot does not re-probe")
+emptyPlot = true
+clock = 1029
+eq(Grow.GetPlantJob(), nil, "an empty plot after a full garden is probed")
+eq(picks, 8, "plot state re-probes once")
+Grow.PickPlantCandidate = realPick
+outcomeRate = 0.5
+bufferShort = false
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

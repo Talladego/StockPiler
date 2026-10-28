@@ -90,7 +90,19 @@ local function LogOnce(key, msg)
 end
 
 local function StageEmpty()
-    return StockPiler.CultivatorAdapter.StageEmpty()
+    local CA = StockPiler.CultivatorAdapter
+    if CA and CA.StageEmpty then
+        local stage = CA.StageEmpty()
+        if stage ~= nil then
+            return stage
+        end
+    end
+    local stages = GameData and GameData.CultivationStage
+    local empty = stages and stages.EMPTY
+    if empty ~= nil then
+        return empty
+    end
+    return 0
 end
 
 local function StageGrown()
@@ -785,8 +797,13 @@ function Grow.HasEmptyPlot()
     if type(plots) ~= "table" then
         return false
     end
+    -- StageEmpty falls back when CultivatorAdapter is missing.
+    local emptyStage = StageEmpty()
     for plotNum, row in pairs(plots) do
-        if not IsPlotLocked(row, tonumber(plotNum) or 0) and IsPlotEmptyRow(row) then
+        if type(row) == "table" and row.locked ~= true
+            and not IsPlotLocked(row, tonumber(plotNum) or 0)
+            and NormalizeStage(row.stage) == emptyStage
+        then
             if (tonumber(Grow._pendingPlant[plotNum]) or 0) <= 0 then
                 return true
             end
@@ -950,15 +967,21 @@ end
 
 --- Record a plant-queue probe result without re-running PickPlantCandidate.
 --- Used by Orchestrator refine-first to clear plant-probe-pending cheaply.
+local EstimateBackfillStateKey
+
 function Grow.MarkPlantJobProbed(job)
     if type(job) == "table" then
         Grow._cachedPlantJob = job
         Grow._plantNilPlanGen = nil
+        Grow._estimateBackfillKey = nil
     else
         Grow._cachedPlantJob = nil
         local plan = StockPiler.PlanSnapshot and StockPiler.PlanSnapshot.Get
             and StockPiler.PlanSnapshot.Get()
         Grow._plantNilPlanGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+        if EstimateBackfillStateKey then
+            Grow._estimateBackfillKey = EstimateBackfillStateKey()
+        end
     end
     Grow._plantJobProbed = true
     Grow._plantQueueDirty = false
@@ -1624,11 +1647,11 @@ function Grow.EstimateBackfillCraftsExtra(recipe, potionUid, bottleDeficit)
     local RS = StockPiler.RecipeSpec
     bottleDeficit = math.max(0, tonumber(bottleDeficit) or 0)
     if bottleDeficit <= 0 or type(recipe) ~= "table" or type(RS) ~= "table" then
-        return 0
+        return 0, 0
     end
     potionUid = tonumber(potionUid) or tonumber(recipe.outputUid) or 0
     if not RS.OutcomeSuccessRate or RS.OutcomeSuccessRate(recipe, potionUid) == nil then
-        return 0
+        return 0, 0
     end
     local expected = 0
     if RS.ExpectedCraftsForDeficit then
@@ -1641,7 +1664,7 @@ function Grow.EstimateBackfillCraftsExtra(recipe, potionUid, bottleDeficit)
         local n = RS.CraftsNeededForDeficit(bottleDeficit, recipe, potionUid)
         optimistic = tonumber(n) or 0
     end
-    return math.max(0, expected - optimistic)
+    return math.max(0, expected - optimistic), expected
 end
 
 --- Bag seeds available for estimate backfill (same pool as potion_stock lift).
@@ -1662,7 +1685,87 @@ local function EstimateBackfillSeedPlantable(seedUid)
     return free
 end
 
---- Nil plant-job cache: re-probe estimate backfill while Optimistic + empty plots.
+--- Upgrade Seed refine-first / empty-plot hold. Shared by the stocked-plan
+--- path and the late backfill stage.
+local function UpgradeSeedHoldsBackfill()
+    local US = StockPiler.UpgradeSeed
+    if not (US and US.IsEnabled and US.IsEnabled() == true) then
+        return false
+    end
+    if US.NeedsRefineFirst and US.NeedsRefineFirst() == true then
+        return true
+    end
+    if US.ShouldHoldEmptyPlots then
+        local climb = US.StatusForWatch and US.StatusForWatch() or nil
+        if type(climb) ~= "table" and US.GetActiveStatus then
+            climb = US.GetActiveStatus()
+        end
+        if type(climb) == "table" and US.ShouldHoldEmptyPlots(climb) == true then
+            return true
+        end
+    end
+    return false
+end
+
+local function SeedCommitKey()
+    local parts = {}
+    local committed = Grow._seedCommitted
+    if type(committed) == "table" then
+        for uid, n in pairs(committed) do
+            local count = tonumber(n) or 0
+            if count > 0 then
+                parts[#parts + 1] = tostring(uid) .. ":" .. tostring(count)
+            end
+        end
+    end
+    if #parts > 1 then
+        table.sort(parts)
+    end
+    return table.concat(parts, ",")
+end
+
+--- Inputs that can change an estimate-backfill answer. A cached nil is
+--- re-probed only when this key moves.
+EstimateBackfillStateKey = function()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local RS = StockPiler.RecipeSpec
+    local stats = RS and RS.GetRecipeStatsGen and tonumber(RS.GetRecipeStatsGen()) or 0
+    local SM = StockPiler.SeedMap
+    local harvest = 0
+    if SM and SM.GetHarvestStatsGen then
+        harvest = tonumber(SM.GetHarvestStatsGen()) or 0
+    elseif RS and RS.GetHarvestStatsGen then
+        harvest = tonumber(RS.GetHarvestStatsGen()) or 0
+    elseif SM and SM._harvestStatsGen ~= nil then
+        harvest = tonumber(SM._harvestStatsGen) or 0
+    end
+    local Refine = StockPiler.Refine
+    local bufferShort = Refine and Refine.HasAnyBufferShort and Refine.HasAnyBufferShort() == true
+    local bufferPending = Refine and Refine.HasPendingBufferRefine
+        and Refine.HasPendingBufferRefine() == true
+    local empty = Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    local hold = UpgradeSeedHoldsBackfill()
+    return table.concat({
+        tostring(snap),
+        tostring(planGen),
+        tostring(stats),
+        tostring(harvest),
+        tostring(tonumber(Grow._invalidateGen) or 0),
+        tostring(tonumber(Grow._upgradeInvalidateGen) or 0),
+        SeedCommitKey(),
+        empty and "1" or "0",
+        bufferShort and "1" or "0",
+        bufferPending and "1" or "0",
+        hold and "1" or "0",
+    }, "|")
+end
+
+--- Nil plant-job cache: re-probe only when backfill inputs changed.
+--- The 2s guard rate-limits those re-probes.
 local function EstimateBackfillRetryDue()
     local Watch = StockPiler.Watch
     if not (Watch and Watch.IsOptimisticOutcomeEstimate
@@ -1671,6 +1774,10 @@ local function EstimateBackfillRetryDue()
         return false
     end
     if Grow.HasEmptyPlot and Grow.HasEmptyPlot() ~= true then
+        return false
+    end
+    local key = EstimateBackfillStateKey()
+    if key == Grow._estimateBackfillKey then
         return false
     end
     local now = NowSec()
@@ -1694,7 +1801,7 @@ local function PickEstimateBackfillCandidate(SM, RS, watches)
     then
         return nil
     end
-    if Grow.HasEmptyPlot and Grow.HasEmptyPlot() ~= true then
+    if UpgradeSeedHoldsBackfill() then
         return nil
     end
     local Refine = StockPiler.Refine
@@ -1712,6 +1819,9 @@ local function PickEstimateBackfillCandidate(SM, RS, watches)
     if type(watches) ~= "table" or #watches < 1 then
         return nil
     end
+    if Grow.HasEmptyPlot and Grow.HasEmptyPlot() ~= true then
+        return nil
+    end
     local best, bestShort = nil, -1
     for w = 1, #watches do
         local watch = watches[w]
@@ -1722,13 +1832,11 @@ local function PickEstimateBackfillCandidate(SM, RS, watches)
             end
             local potionUid = tonumber(recipe.outputUid) or 0
             local deficit = tonumber(watch.deficit) or 0
-            local extraCrafts = Grow.EstimateBackfillCraftsExtra(recipe, potionUid, deficit)
+            local extraCrafts, expectedCrafts = Grow.EstimateBackfillCraftsExtra(
+                recipe, potionUid, deficit
+            )
+            expectedCrafts = tonumber(expectedCrafts) or 0
             if extraCrafts >= 1 then
-                local expectedCrafts = 0
-                if RS.ExpectedCraftsForDeficit then
-                    local n = RS.ExpectedCraftsForDeficit(deficit, recipe, potionUid)
-                    expectedCrafts = tonumber(n) or 0
-                end
                 local slots = recipe.slots
                 if type(slots) == "table" then
                     for i = 1, #slots do
@@ -1751,43 +1859,45 @@ local function PickEstimateBackfillCandidate(SM, RS, watches)
                                 local seed, seedUid, plantUid = ResolveSeedForLiftSpec(spec, SM, nil)
                                 seedUid = tonumber(seedUid) or 0
                                 if seedUid > 0 then
-                                    local bagPlants = 0
-                                    if RS.CountItemsMatchingSpec then
-                                        bagPlants = tonumber(RS.CountItemsMatchingSpec(spec)) or 0
-                                    end
-                                    local ground = CountSeedPlotCredit(seedUid)
-                                    local have = bagPlants + ground
-                                    local need = expectedCrafts * perCraft
-                                    local itemShort = math.max(0, need - have)
-                                    if itemShort >= 1 then
-                                        if SM.PlantingsForExpectedPlants then
-                                            itemShort = tonumber(SM.PlantingsForExpectedPlants(
-                                                seedUid, itemShort, { force = true }
-                                            )) or itemShort
+                                    local plantable = EstimateBackfillSeedPlantable(seedUid)
+                                    if plantable >= 1 then
+                                        local bagPlants = 0
+                                        if RS.CountItemsMatchingSpec then
+                                            bagPlants = tonumber(RS.CountItemsMatchingSpec(spec)) or 0
                                         end
-                                        local plantable = EstimateBackfillSeedPlantable(seedUid)
-                                        if plantable >= 1 and itemShort > bestShort then
-                                            local MS = StockPiler.MaterialSpec
-                                            bestShort = itemShort
-                                            best = {
-                                                spec = spec,
-                                                specKey = (MS and MS.Key and MS.Key(spec))
-                                                    or (MS and MS.ProductKey and MS.ProductKey(spec))
-                                                    or "",
-                                                seed = seed or { uniqueID = seedUid },
-                                                seedUid = seedUid,
-                                                plantUid = tonumber(plantUid) or 0,
-                                                seedHave = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid)),
-                                                plantable = math.min(plantable, itemShort),
-                                                deficit = itemShort,
-                                                craftsShort = math.min(plantable, itemShort),
-                                                role = SpecRole(spec),
-                                                plantReason = "estimate_backfill",
-                                                pickMode = "estimate_backfill",
-                                                watchKey = watch.potionKey,
-                                                watchName = watch.name,
-                                                potionDeficit = deficit,
-                                            }
+                                        local ground = CountSeedPlotCredit(seedUid)
+                                        local have = bagPlants + ground
+                                        local need = expectedCrafts * perCraft
+                                        local itemShort = math.max(0, need - have)
+                                        if itemShort >= 1 then
+                                            if SM.PlantingsForExpectedPlants then
+                                                itemShort = tonumber(SM.PlantingsForExpectedPlants(
+                                                    seedUid, itemShort, { force = true }
+                                                )) or itemShort
+                                            end
+                                            if itemShort > bestShort then
+                                                local MS = StockPiler.MaterialSpec
+                                                bestShort = itemShort
+                                                best = {
+                                                    spec = spec,
+                                                    specKey = (MS and MS.Key and MS.Key(spec))
+                                                        or (MS and MS.ProductKey and MS.ProductKey(spec))
+                                                        or "",
+                                                    seed = seed or { uniqueID = seedUid },
+                                                    seedUid = seedUid,
+                                                    plantUid = tonumber(plantUid) or 0,
+                                                    seedHave = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid)),
+                                                    plantable = math.min(plantable, itemShort),
+                                                    deficit = itemShort,
+                                                    craftsShort = math.min(plantable, itemShort),
+                                                    role = SpecRole(spec),
+                                                    plantReason = "estimate_backfill",
+                                                    pickMode = "estimate_backfill",
+                                                    watchKey = watch.potionKey,
+                                                    watchName = watch.name,
+                                                    potionDeficit = deficit,
+                                                }
+                                            end
                                         end
                                     end
                                 end
@@ -1839,27 +1949,12 @@ function Grow.PickPlantCandidate()
     end
     if PlanRowsLackPlantDemand() == true then
         -- Optimistic ON: fill empty plots for measured outcome shortfall before SkillUp.
+        -- Upgrade Seed hold lives inside PickEstimateBackfillCandidate (late path too).
         local USIdle = StockPiler.UpgradeSeed
-        local holdBackfill = false
-        if USIdle and USIdle.IsEnabled and USIdle.IsEnabled() == true then
-            if USIdle.NeedsRefineFirst and USIdle.NeedsRefineFirst() == true then
-                holdBackfill = true
-            elseif USIdle.ShouldHoldEmptyPlots then
-                local climb = USIdle.StatusForWatch and USIdle.StatusForWatch() or nil
-                if type(climb) ~= "table" and USIdle.GetActiveStatus then
-                    climb = USIdle.GetActiveStatus()
-                end
-                if type(climb) == "table" and USIdle.ShouldHoldEmptyPlots(climb) == true then
-                    holdBackfill = true
-                end
-            end
-        end
-        if holdBackfill ~= true then
-            local bf = PickEstimateBackfillCandidate(SM, RS, nil)
-            if type(bf) == "table" and (tonumber(bf.seedUid) or 0) > 0 then
-                LogPlantPick(bf)
-                return done(bf)
-            end
+        local bf = PickEstimateBackfillCandidate(SM, RS, nil)
+        if type(bf) == "table" and (tonumber(bf.seedUid) or 0) > 0 then
+            LogPlantPick(bf)
+            return done(bf)
         end
         local SkillUp = StockPiler.SkillUp
         if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
