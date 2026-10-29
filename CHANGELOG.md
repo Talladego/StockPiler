@@ -2,6 +2,29 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.4
+
+- With Optimistic mode on, AutoGrow uses empty plots to grow extra ingredients based on your actual brew and harvest success, once your watched potions are covered.
+- The Craftable count turns green only when a watched potion is ready to brew and its ingredients cover the target. Brew on that row follows the same rule.
+- Watch status stays yellow while ingredients can still be grown, or while shared flasks are waiting on those plants.
+- AutoGrow keeps planting while watched potions still need grown ingredients, even when shared materials already cover the bottle count.
+- Harvesting, refining, and planting no longer close open quest, trainer, flight master, bank, or other NPC windows. Refining waits until the window closes, and chat notes when refine is stalled on the merchant or another NPC dialog.
+- Zoning while cultivation is active no longer leaves backpack items or mounts unusable.
+- AutoBuy prints its purchase queue in chat when the queue changes, remembers vendor prices for cost estimates, and formats gold, silver, and brass with coin icons.
+- SkillUp AutoBuy only tops up the seed line it is planting, not leftover lower-tier seeds.
+- SkillUp no longer briefly queues vials to buy while Apothecary is waiting on seeds or Cultivation.
+- SkillUp and seed upgrades keep refining after a plant moves inside the craft bag. A stale slot no longer leaves both of them idle.
+- Turning Optimistic mode off warns in chat when rare Potent recipes may queue large material purchases, and sizes material buys even before your first Potent proc.
+- Watch finishes painting status, icons, priority, and Brew after login and when you open the tab. A potion or plant you just mark watched shows up immediately.
+- Tooltips no longer keep a leftover "Right-click opens the StockPiler window" line. Checkbox tips open upward, recipe and Watch status tips open downward, and item tips sit like bag tips.
+- A material you can grow is not treated as something you must buy when the recipe names a butcher ingredient. Brew still uses that butcher ingredient first when it is in your bags.
+- A recipe tip shows a repeated ingredient once, with a count, instead of repeating the whole section.
+- Some special ingredients no longer cause an error when StockPiler checks whether they can be grown.
+- Resizing the Craft button in the Layout Editor keeps the button square and remembers the size.
+- Saving in the Layout Editor works again with StockPiler enabled.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.3
 
 - Shared recipes now prefer growable plants over butcher or vendor ingredients when known, and learning a shared recipe updates its ingredient list.

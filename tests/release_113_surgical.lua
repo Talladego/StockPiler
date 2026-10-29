@@ -525,8 +525,8 @@ end
 eq(Buy.IssueOne("budget-probe"), false, "a spent lifetime budget stops the visit")
 eq(Buy._visitStopReason, "budget", "the visit stops on budget")
 eq(Buy._visitSpentBrass, 0, "this visit has not spent brass")
-eq(budgetLine, "50/50", "the budget notice uses lifetime spend")
-eq(chat[#chat], "50/50", "the budget chat line is the lifetime spend")
+eq(budgetLine, "50g/50g", "the budget notice uses lifetime spend")
+eq(chat[#chat], "50g/50g", "the budget chat line is the lifetime spend")
 
 local resumeJobs = {}
 local resumeWakes = 0

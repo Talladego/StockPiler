@@ -172,7 +172,7 @@ function BrewTooltip.ShowRow(mouseoverWindow, row, anchor)
         tip = T("brew.not_ready")
     end
     Tooltips.CreateTextOnlyTooltip(mouseoverWindow, tip)
-    Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)
+    Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_TOP)
 end
 
 function BrewTooltip.MaybeRefresh()

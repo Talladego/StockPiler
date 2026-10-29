@@ -320,17 +320,23 @@ function SM.HarvestSuccessRate(seedUid)
     return rate, successes, attempts, fails
 end
 
---- Plants still wanted -> seeds to plant when Optimistic is off and rate is known.
-function SM.PlantingsForExpectedPlants(seedUid, plantsNeeded)
+--- Plants still wanted -> seeds to plant when harvest success rate is known.
+--- Default: only when Optimistic is off. opts.force: always apply rate when known
+--- (Optimistic empty-plot estimate backfill).
+function SM.PlantingsForExpectedPlants(seedUid, plantsNeeded, opts)
     plantsNeeded = math.max(0, math.floor((tonumber(plantsNeeded) or 0) + 0.5))
     if plantsNeeded <= 0 then
         return 0
     end
-    local Watch = StockPiler.Watch
-    if not (Watch and Watch.IsOptimisticOutcomeEstimate
-        and Watch.IsOptimisticOutcomeEstimate() == false)
-    then
-        return plantsNeeded
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true
+    if force ~= true then
+        local Watch = StockPiler.Watch
+        if not (Watch and Watch.IsOptimisticOutcomeEstimate
+            and Watch.IsOptimisticOutcomeEstimate() == false)
+        then
+            return plantsNeeded
+        end
     end
     local rate = SM.HarvestSuccessRate(seedUid)
     if rate == nil or rate <= 0 then
@@ -1541,6 +1547,11 @@ end
 
 local _growableCache = {}
 local _growableCacheGen = nil
+-- Same spec re-entering growability (seed lookup asking "is this growable?")
+-- must stop. A stuck flag answers non-growable instead of overflowing.
+-- Cleared even when the check errors; the error is then raised again.
+local _growableInProgress = {}
+local SpecialMainHasSeedEvidence
 
 local function PlantUidCacheGen()
     local snap = 0
@@ -1576,13 +1587,12 @@ local function IsGrowableSpecUncached(spec)
     end
     -- Unlinked hybrid/liniment specials: growable only when a related seed resolves
     -- (Eternal / infertile / Bloodseed). Dungeon drops (Primal / Daemonic) stay non-growable.
+    -- Seed evidence must not call IsGrowableSpec: ResolveSeedForSpec asks that
+    -- first, and the answer is not cached yet.
     local ME = StockPiler.MaterialExceptions
     local specialMain = ME and ME.LooksSpecialApoMain and ME.LooksSpecialApoMain(spec) == true
     if specialMain == true then
-        local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
-        local seedUid = type(seed) == "table"
-            and (tonumber(seed.uniqueID) or tonumber(seed.uid) or 0) or 0
-        return seedUid > 0
+        return SpecialMainHasSeedEvidence(spec) == true
     end
     local refinable = SM.ResolveIsRefinable(spec, specialMain)
     if refinable == false then
@@ -1630,6 +1640,29 @@ local function IsGrowableSpecUncached(spec)
     return false
 end
 
+--- One guard for every cache miss. Not rebuilt on each IsGrowableSpec call.
+--- The in-progress flag is cleared before an error is raised again, so one
+--- failed check cannot leave that spec stuck as non-growable.
+local function FinishGrowableUncached(spec, cacheKey)
+    if _growableInProgress[spec] or (cacheKey and _growableInProgress[cacheKey]) then
+        -- Do not cache the cycle break. The outer call still computes.
+        return false, true
+    end
+    _growableInProgress[spec] = true
+    if cacheKey then
+        _growableInProgress[cacheKey] = true
+    end
+    local ok, growable = pcall(IsGrowableSpecUncached, spec)
+    _growableInProgress[spec] = nil
+    if cacheKey then
+        _growableInProgress[cacheKey] = nil
+    end
+    if ok ~= true then
+        error(growable, 0)
+    end
+    return growable == true, false
+end
+
 --- Memo per uid and role for the bag snapshot and knowledge generation.
 --- The answer depends on role (and the stabilizer/goldweed name check), so one
 --- uid can be growable as a main and not as a stabilizer in the same snapshot.
@@ -1643,6 +1676,7 @@ function SM.IsGrowableSpec(spec)
     if gen ~= _growableCacheGen then
         _growableCache = {}
         _growableCacheGen = gen
+        _growableInProgress = {}
     end
     local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
     local role = tostring(spec.role or "")
@@ -1659,17 +1693,18 @@ function SM.IsGrowableSpec(spec)
     else
         local productKey = SpecProductCacheKey(spec)
         if productKey == "" then
-            return IsGrowableSpecUncached(spec) == true
+            local growable = FinishGrowableUncached(spec, nil)
+            return growable
         end
         cacheKey = "s:" .. productKey .. ":" .. role .. ":" .. nameKey
     end
     if _growableCache[cacheKey] ~= nil then
         return _growableCache[cacheKey] == true
     end
-    local growable = IsGrowableSpecUncached(spec) == true
+    local growable, cycled = FinishGrowableUncached(spec, cacheKey)
     -- Nameless + unknown uid: SpecLooksButchering cannot see the butcher name,
     -- so the cult-role guess must not stick for this snapshot.
-    if not (uid > 0 and nameKey == "" and knownItem ~= true) then
+    if cycled ~= true and not (uid > 0 and nameKey == "" and knownItem ~= true) then
         _growableCache[cacheKey] = growable
     end
     return growable
@@ -1677,7 +1712,8 @@ end
 
 --- Scan bags / Account.items / grows for a cultivable ProductMatches twin.
 --- Skips butcher/vendor names (LooksButcher) unless goldweed/gobswort.
-local function SearchGrowProducerUid(spec)
+--- opts.cacheOnly skips the live bag walk (hover, hydrate, Watch tips).
+local function SearchGrowProducerUid(spec, opts)
     local MS = StockPiler.MaterialSpec
     if type(spec) ~= "table" or not (MS and MS.ProductMatches) then
         return 0
@@ -1696,16 +1732,20 @@ local function SearchGrowProducerUid(spec)
     end
 
     -- 1) Live bags. Scan the whole tier so the lowest matching uid wins.
-    local Inv = StockPiler.Inventory
-    if Inv and Inv.ForEachItem then
-        Inv.ForEachItem(function(item)
-            if type(item) == "table" then
-                considerItem(item, item.uniqueID or item.uniqueId or item.uid)
-            end
-        end)
-    end
-    if bestUid > 0 then
-        return bestUid
+    -- Hover / hydrate passes cacheOnly and must not start this walk.
+    local cacheOnly = type(opts) == "table" and opts.cacheOnly == true
+    if not cacheOnly then
+        local Inv = StockPiler.Inventory
+        if Inv and Inv.ForEachItem then
+            Inv.ForEachItem(function(item)
+                if type(item) == "table" then
+                    considerItem(item, item.uniqueID or item.uniqueId or item.uid)
+                end
+            end)
+        end
+        if bestUid > 0 then
+            return bestUid
+        end
     end
 
     -- 2) Learned Items store
@@ -1794,10 +1834,11 @@ end
 --- Prefer a cultivable plant twin over butcher/vendor ProductMatches twins.
 --- Returns the current uid when it is already growable, a known plant twin when
 --- one exists, or 0 when butcher/vendor is the only option (caller keeps it).
-function SM.FindGrowableTwinUid(spec)
+function SM.FindGrowableTwinUid(spec, opts)
     if type(spec) ~= "table" then
         return 0
     end
+    opts = type(opts) == "table" and opts or {}
     if SM.IsHarvestByproduct(spec) then
         return 0
     end
@@ -1819,9 +1860,22 @@ function SM.FindGrowableTwinUid(spec)
     if twinKey ~= "" and SM._growTwinCache[twinKey] ~= nil then
         return tonumber(SM._growTwinCache[twinKey]) or 0
     end
+    -- A fingerprint plant search already walked bags for this product.
+    if opts.cacheOnly == true and cacheKey ~= "" and SM._plantUidCacheSnap == gen
+        and type(SM._plantUidCache) == "table" and SM._plantUidCache[cacheKey] ~= nil
+    then
+        return tonumber(SM._plantUidCache[cacheKey]) or 0
+    end
 
-    local bestUid = SearchGrowProducerUid(spec)
+    local bestUid = SearchGrowProducerUid(spec, opts)
     -- Bound butcher uid must not win: SearchGrowProducerUid already skips LooksButcher.
+    -- cacheOnly must not store a miss: the bag twin may show up on a later full search.
+    if opts.cacheOnly == true then
+        if bestUid > 0 and twinKey ~= "" then
+            SM._growTwinCache[twinKey] = bestUid
+        end
+        return bestUid
+    end
     if twinKey ~= "" then
         SM._growTwinCache[twinKey] = bestUid
     end
@@ -1861,12 +1915,84 @@ local function SeedUidsFromGrowsMatchingSpec(spec)
     return out
 end
 
+--- True when an unlinked special main has a plant/seed link, a grow whose
+--- product matches it, or a learned seed/spore with a related name.
+--- Does not call IsGrowableSpec or ResolveSeedForSpec, and does not walk the
+--- live bag. Ordinary callers still use ResolveSeedForSpec for twins.
+SpecialMainHasSeedEvidence = function(spec)
+    if type(spec) ~= "table" then
+        return false
+    end
+    local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
+    if uid > 0 then
+        local linked = SM.GetSeedUidsForPlant(uid)
+        if type(linked) == "table" then
+            for i = 1, #linked do
+                local seedUid = tonumber(linked[i]) or 0
+                if seedUid > 0 and SM.IsSeedPacketUid(seedUid) ~= true then
+                    return true
+                end
+            end
+        end
+    end
+    local matched = SeedUidsFromGrowsMatchingSpec(spec)
+    if type(matched) == "table" then
+        for i = 1, #matched do
+            if (tonumber(matched[i]) or 0) > 0 then
+                return true
+            end
+        end
+    end
+    local plantName = spec.name
+    if (not plantName or ToNarrow(plantName) == "") and uid > 0
+        and StockPiler.Items and StockPiler.Items.GetByUid
+    then
+        local row = StockPiler.Items.GetByUid(uid)
+        plantName = row and row.name
+    end
+    if not plantName or ToNarrow(plantName) == "" then
+        return false
+    end
+    local items = nil
+    if StockPiler.Account and type(StockPiler.Account.items) == "table" then
+        items = StockPiler.Account.items
+    elseif StockPiler.Knowledge and StockPiler.Knowledge.Items then
+        items = StockPiler.Knowledge.Items()
+    end
+    if type(items) ~= "table" then
+        return false
+    end
+    for key, row in pairs(items) do
+        if type(row) == "table" then
+            local seedUid = tonumber(row.uniqueID) or tonumber(row.uid) or tonumber(key) or 0
+            local kind = tostring(row.kind or "")
+            local looksSeed = kind == "seed" or kind == "spore" or IsBagSeedOrSporeItem(row)
+            if seedUid > 0 and SM.IsSeedPacketUid(seedUid) ~= true and looksSeed
+                and GrowNamesRelated(plantName, row.name)
+            then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- Resolve best seed for a plant/spec. Uses grows/refines; falls back to bag name match.
 function SM.ResolveSeedForSpec(spec)
     if type(spec) ~= "table" then
         return nil
     end
-    local plantUid = SM.FindPlantUidForSpec(spec)
+    -- A butcher/vendor exemplar is not itself growable. Use the cultivable twin
+    -- so seed and plant links are not the butcher uid.
+    local plantUid = 0
+    local role = tostring(spec.role or "")
+    if not (SM.IsHarvestByproduct(spec) or role == "container") then
+        if SM.IsGrowableSpec(spec) == true then
+            plantUid = SM.FindPlantUidForSpec(spec)
+        elseif SM.FindGrowableTwinUid then
+            plantUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+        end
+    end
     -- Skill-matched plant->seed first (never let owned L1 vendor seeds win).
     if plantUid > 0 and SM.ResolveSeedUidForPlant then
         local matched = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
@@ -3426,6 +3552,24 @@ function SM.GetGenusLadder(genus)
     if genus == "" then
         return nil
     end
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    if SM._genusLadderKnow ~= know or SM._genusLadderSnap ~= snap then
+        SM._genusLadderCache = {}
+        SM._genusLadderKnow = know
+        SM._genusLadderSnap = snap
+    end
+    local cache = SM._genusLadderCache or {}
+    SM._genusLadderCache = cache
+    local key = genus
+    local hit = cache[key]
+    if hit ~= nil then
+        if hit == false then
+            return nil
+        end
+        return hit
+    end
     local all = SM.BuildAllFamilyLadders()
     local merged = nil
     local roles = {}
@@ -3586,6 +3730,7 @@ function SM.GetGenusLadder(genus)
             end
         end
     end
+    cache[key] = merged or false
     return merged
 end
 

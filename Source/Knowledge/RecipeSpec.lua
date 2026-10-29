@@ -666,6 +666,13 @@ local function HydrateRecipeSlots(recipe)
     for i = 1, #recipe.slots do
         ResolveSlotSpec(recipe.slots[i])
     end
+    -- Butcher/vendor exemplars (Brutal Zoic Gore) flip Shared -> Buy materials
+    -- because ContestedBuyOnlyKind treats the slot as non-growable. Rewrite to a
+    -- cultivable twin when known (Majestic Goldweed); fingerprint unchanged.
+    if RS.PreferGrowableSlotExemplars then
+        -- Hover and plan hydrate must not cold-scan bags for a cultivable twin.
+        RS.PreferGrowableSlotExemplars(recipe.slots, { cacheOnly = true })
+    end
     StampIncompleteMainEffect(recipe)
 end
 
@@ -745,7 +752,12 @@ local function MaterialsToSpecSlots(materials)
             end
         end
     end
-    return MergeSlotsByFingerprint(slots)
+    local merged = MergeSlotsByFingerprint(slots)
+    -- Brew/board capture can bind Zoic Gore; store the cultivable twin when known.
+    if RS.PreferGrowableSlotExemplars then
+        RS.PreferGrowableSlotExemplars(merged)
+    end
+    return merged
 end
 
 local function SpecStabilityTotal(slots)
@@ -1071,6 +1083,17 @@ RS._recipeStatsGen = tonumber(RS._recipeStatsGen) or 0
 
 function RS.GetRecipeStatsGen()
     return tonumber(RS._recipeStatsGen) or 0
+end
+
+-- Potions-tab hover only. Does not invalidate plans or craftable stamps.
+RS._recipeDisplayGen = tonumber(RS._recipeDisplayGen) or 0
+
+function RS.GetRecipeDisplayGen()
+    return tonumber(RS._recipeDisplayGen) or 0
+end
+
+local function BumpRecipeDisplayGen()
+    RS._recipeDisplayGen = (tonumber(RS._recipeDisplayGen) or 0) + 1
 end
 
 local function BumpRecipeStatsGen()
@@ -2147,25 +2170,33 @@ function RS.ExpectedCraftableBottles(recipe, potionUid, opts)
 end
 
 --- Crafts expected to cover a deficit when only `rate` of brews produce this potion.
---- Falls back to optimistic CraftsNeededForDeficit when rate is unknown.
+--- Too few samples (OutcomeSuccessRate nil): optimistic CraftsNeededForDeficit.
+--- Measured 0% after enough attempts: Laplace (s+1)/(n+2) so AutoBuy still sizes
+--- vials/mains instead of under-buying as if every craft succeeds.
 function RS.ExpectedCraftsForDeficit(deficit, recipe, potionUid)
     deficit = math.max(0, tonumber(deficit) or 0)
     if deficit <= 0 then
         return 0, nil
     end
     potionUid = tonumber(potionUid) or tonumber(recipe and recipe.outputUid) or 0
-    local rate = RS.OutcomeSuccessRate(recipe, potionUid)
+    local rate, successes, attempts = RS.OutcomeSuccessRate(recipe, potionUid)
     local yield = RS.StableCraftYield(recipe, potionUid)
     if yield < 1 then
         yield = 1
     end
-    if rate == nil or rate <= 0 then
-        return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), rate
+    if rate == nil then
+        return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), nil
     end
-    if rate > 1 then
-        rate = 1
+    local rateEff = tonumber(rate) or 0
+    if rateEff <= 0 then
+        -- rate is only non-nil after OUTCOME_RATE_MIN_ATTEMPTS samples.
+        successes = tonumber(successes) or 0
+        attempts = tonumber(attempts) or 0
+        rateEff = (successes + 1) / (attempts + 2)
+    elseif rateEff > 1 then
+        rateEff = 1
     end
-    local perCraft = yield * rate
+    local perCraft = yield * rateEff
     if perCraft <= 0 then
         return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), rate
     end
@@ -2962,7 +2993,7 @@ end
 
 --- Rewrite slot exemplars to a cultivable twin when one is known.
 --- Fingerprint stays the same (uid-agnostic). Butcher/vendor kept when alone.
-function RS.PreferGrowableSlotExemplars(slots)
+function RS.PreferGrowableSlotExemplars(slots, opts)
     if type(slots) ~= "table" then
         return slots
     end
@@ -2970,6 +3001,7 @@ function RS.PreferGrowableSlotExemplars(slots)
     if not (SM and SM.FindGrowableTwinUid) then
         return slots
     end
+    opts = type(opts) == "table" and opts or {}
     for i = 1, #slots do
         local slot = slots[i]
         if type(slot) == "table" then
@@ -2979,7 +3011,7 @@ function RS.PreferGrowableSlotExemplars(slots)
                 if role ~= "" and (spec.role == nil or spec.role == "" or spec.role == "ingredient") then
                     spec.role = role
                 end
-                local plantUid = tonumber(SM.FindGrowableTwinUid(spec)) or 0
+                local plantUid = tonumber(SM.FindGrowableTwinUid(spec, opts)) or 0
                 local curUid = tonumber(slot.uid) or tonumber(spec.uid) or tonumber(spec.boundUid) or 0
                 if plantUid > 0 and plantUid ~= curUid then
                     slot.uid = plantUid
@@ -3350,6 +3382,47 @@ function RS.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
     return true
 end
 
+function RS.RelinkPotionUid(outputUid)
+    outputUid = tonumber(outputUid) or 0
+    if outputUid <= 0 then
+        return 0
+    end
+    local recipes = RecipesTable()
+    local potions = PotionsTable()
+    if type(recipes) ~= "table" or type(potions) ~= "table" then
+        return 0
+    end
+    local potionKey = RS.PotionKeyFromUid(outputUid)
+    local potion = potions[potionKey]
+    if type(potion) ~= "table" then
+        return 0
+    end
+    local added = 0
+    for recipeKey, recipe in pairs(recipes) do
+        recipeKey = tostring(recipeKey or "")
+        local outcomes = type(recipe) == "table" and recipe.outcomes or nil
+        local oc = type(outcomes) == "table" and (outcomes[tostring(outputUid)] or outcomes[outputUid]) or nil
+        if recipeKey ~= "" and type(oc) == "table" then
+            local keys = CollectPotionRecipeKeyList(potion)
+            local seen = false
+            for i = 1, #keys do
+                if keys[i] == recipeKey then
+                    seen = true
+                    break
+                end
+            end
+            if not seen then
+                if type(potion.recipeKeys) ~= "table" then
+                    potion.recipeKeys = {}
+                end
+                potion.recipeKeys[#potion.recipeKeys + 1] = recipeKey
+                added = added + 1
+            end
+        end
+    end
+    return added
+end
+
 function RS.RelinkPotionRecipeKeysFromOutcomes()
     local recipes = RecipesTable()
     local potions = PotionsTable()
@@ -3477,6 +3550,7 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     local recipe = recipes[fingerprint]
     local isNew = type(recipe) ~= "table"
     local structuralChange = isNew
+    local beforeYield, beforeRate
     if isNew then
         recipe = {
             recipeSpecKey = fingerprint,
@@ -3495,6 +3569,9 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         }
     else
         EnsureBrewStats(recipe)
+        local beforeUid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+        beforeYield = RS.StableCraftYield(recipe, beforeUid)
+        beforeRate = RS.OutcomeSuccessRate(recipe, beforeUid)
         recipe.slots = SlimSlotsForStorage(slots)
     end
     if opts.skillUpOrigin == true then
@@ -3522,7 +3599,7 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
             local _, potionIsNew, recipeKeyAdded, replacedSubset = RS.RegisterKnownPotion(
                 uid, out, fingerprint, quality, skillUpOpts
             )
-            if potionIsNew == true or recipeKeyAdded == true then
+            if potionIsNew == true or recipeKeyAdded == true or replacedSubset == true then
                 structuralChange = true
             end
             local announce = potionIsNew == true
@@ -3601,11 +3678,50 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         end
     end
     RS.SlimRecipeForStorage(recipe)
-    BumpRecipeStatsGen()
-    local relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
-    if relinked > 0 then
-        structuralChange = true
+    if structuralChange then
+        local uid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+        local relinked = 0
+        if uid > 0 and RS.RelinkPotionUid then
+            relinked = tonumber(RS.RelinkPotionUid(uid)) or 0
+        else
+            relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
+        end
+        if relinked > 0 then
+            structuralChange = true
+        end
     end
+    -- Repeat 1x of a known single-outcome recipe keeps yield and a 1.0 rate.
+    -- Potent / multi-outcome / a 0% Laplace rate still move expected crafts.
+    local statsMoved = structuralChange
+    if statsMoved ~= true then
+        local uid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+        local yieldNow = RS.StableCraftYield(recipe, uid)
+        local rateNow = RS.OutcomeSuccessRate(recipe, uid)
+        local outcomes = 0
+        if type(recipe.outcomes) == "table" then
+            for _ in pairs(recipe.outcomes) do
+                outcomes = outcomes + 1
+                if outcomes > 1 then
+                    break
+                end
+            end
+        end
+        if outcomes > 1
+            or (tonumber(recipe.brewCrits) or 0) > 0
+            or (tonumber(recipe.brewSuperCrits) or 0) > 0
+            or (tonumber(recipe.brewVolatiles) or 0) > 0
+            or (tonumber(recipe.brewFailures) or 0) > 0
+            or (rateNow ~= nil and rateNow <= 0)
+            or beforeYield ~= yieldNow
+            or beforeRate ~= rateNow
+        then
+            statsMoved = true
+        end
+    end
+    if statsMoved then
+        BumpRecipeStatsGen()
+    end
+    BumpRecipeDisplayGen()
 
     if structuralChange
         and StockPiler.Knowledge

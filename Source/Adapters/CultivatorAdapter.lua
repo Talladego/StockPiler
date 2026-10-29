@@ -283,11 +283,15 @@ function CA.SetCurrentPlot(plotNum)
     return true
 end
 
---- AddCraftingItem opens Cultivation a moment later. That show joins the
---- automatic layout and closes the bag and bank. The bag close is a queued
---- toggle, so putting the window back inside OnShown is already too late.
---- While this plant's show is still pending, layout may not close a bag or
---- bank that was already open. Opening Cultivation yourself is unchanged.
+--- AddCraftingItem opens Cultivation a moment later. That show runs
+--- WindowUtils.Cascade.Resolve and closes other open windows. The bag close
+--- is a queued toggle, so putting the window back inside OnShown is already
+--- too late. While this plant's show is still pending, layout may not close
+--- a window that was already open (bag, bank, quest, flight master, ...).
+--- A window the player closed before that show stays closed.
+--- Opening Cultivation yourself is unchanged.
+local NowSec
+
 local function CompanionWindowNames()
     local bag = "EA_Window_Backpack"
     if type(EA_Window_Backpack) == "table" and type(EA_Window_Backpack.windowName) == "string" then
@@ -296,21 +300,155 @@ local function CompanionWindowNames()
     return { bag, "BankWindow" }
 end
 
+local function WindowEntryName(entry)
+    if type(entry) == "string" and entry ~= "" then
+        return entry
+    end
+    if type(entry) == "table" then
+        if type(entry.name) == "string" and entry.name ~= "" then
+            return entry.name
+        end
+        if type(entry.windowName) == "string" and entry.windowName ~= "" then
+            return entry.windowName
+        end
+    end
+    return nil
+end
+
+local function ForEachWindowName(list, fn)
+    if type(list) ~= "table" then
+        return
+    end
+    if #list > 0 then
+        for i = 1, #list do
+            local name = WindowEntryName(list[i])
+            if name then
+                fn(name)
+            end
+        end
+        return
+    end
+    for key, value in pairs(list) do
+        local name = nil
+        if type(key) == "string" and key ~= "" and (value == true or type(value) == "table") then
+            name = WindowEntryName(value) or key
+        else
+            name = WindowEntryName(value)
+        end
+        if name then
+            fn(name)
+        end
+    end
+end
+
+local function OpenListContains(list, want)
+    local found = false
+    ForEachWindowName(list, function(name)
+        if name == want then
+            found = true
+        end
+    end)
+    return found
+end
+
+local function ExplicitlyHidden(name)
+    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
+        return false
+    end
+    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= false then
+        return false
+    end
+    return true
+end
+
+local function ShowingTrue(name)
+    -- DoesWindowExist first: WindowGetShowing on a never-created name errors in client.
+    if type(DoesWindowExist) == "function" and DoesWindowExist(name) ~= true then
+        return false
+    end
+    if type(WindowGetShowing) ~= "function" or WindowGetShowing(name) ~= true then
+        return false
+    end
+    return true
+end
+
+--- Player closed this window before Cascade.Resolve (hidden, or gone from
+--- the open list and not still showing). A window that is still showing
+--- stays protected.
+local function ClosedBeforeCascade(name)
+    if type(name) ~= "string" or name == "" then
+        return true
+    end
+    if type(WindowGetShowing) == "function" then
+        local existsKnown = type(DoesWindowExist) ~= "function" or DoesWindowExist(name) == true
+        if existsKnown then
+            if WindowGetShowing(name) == false then
+                return true
+            end
+            if WindowGetShowing(name) == true then
+                return false
+            end
+        end
+    end
+    local utils = WindowUtils
+    if type(utils) == "table" and type(utils.openWindowList) == "table" then
+        if not OpenListContains(utils.openWindowList, name) then
+            return true
+        end
+    end
+    return false
+end
+
+local function RememberIfOpen(shown, name)
+    if type(name) ~= "string" or name == "" or name == "CultivationWindow" then
+        return
+    end
+    if ExplicitlyHidden(name) then
+        return
+    end
+    shown[name] = true
+end
+
 local function SnapshotCompanionWindows()
     local shown = {}
     local names = CompanionWindowNames()
     for i = 1, #names do
-        local name = names[i]
-        if type(DoesWindowExist) == "function" and DoesWindowExist(name)
-            and WindowGetShowing(name) == true
-        then
-            shown[name] = true
+        if ShowingTrue(names[i]) then
+            shown[names[i]] = true
+        end
+    end
+    local utils = WindowUtils
+    if type(utils) == "table" then
+        ForEachWindowName(utils.openWindowList, function(name)
+            RememberIfOpen(shown, name)
+        end)
+        local cascade = utils.Cascade
+        if type(cascade) == "table" then
+            ForEachWindowName(cascade.List, function(name)
+                RememberIfOpen(shown, name)
+            end)
+        end
+    end
+    local pending = CA._keepOpenAfterPlant
+    if type(pending) == "table" and type(pending.shown) == "table"
+        and NowSec() <= (tonumber(pending.untilSec) or 0)
+    then
+        for name, on in pairs(pending.shown) do
+            if on == true and type(name) == "string" and name ~= "CultivationWindow"
+                and not ExplicitlyHidden(name)
+            then
+                local list = type(utils) == "table" and utils.openWindowList or nil
+                local listed = type(list) == "table" and OpenListContains(list, name) or false
+                if ShowingTrue(name) or listed then
+                    shown[name] = true
+                end
+            end
         end
     end
     return shown
 end
 
-local function NowSec()
+function NowSec()
     if StockPiler.Util and StockPiler.Util.NowSec then
         return tonumber(StockPiler.Util.NowSec()) or 0
     end
@@ -338,6 +476,17 @@ local function InstallPlantCascadeGuard()
     local orig = Cascade.Resolve
     Cascade.Resolve = function(...)
         local shown = PlantKeepActive()
+        if type(shown) == "table" then
+            local drop = {}
+            for name, on in pairs(shown) do
+                if on == true and ClosedBeforeCascade(name) then
+                    drop[#drop + 1] = name
+                end
+            end
+            for i = 1, #drop do
+                shown[drop[i]] = nil
+            end
+        end
         local list = Cascade.List
         local saved = nil
         if type(shown) == "table" and type(list) == "table" then
@@ -358,6 +507,15 @@ local function InstallPlantCascadeGuard()
                 local prior = type(entry) == "table" and saved[entry.name] or nil
                 if prior then
                     entry.closeFunction = prior.fn
+                end
+            end
+        end
+        if type(shown) == "table" and type(WindowSetShowing) == "function"
+            and type(WindowGetShowing) == "function"
+        then
+            for name, on in pairs(shown) do
+                if on == true and WindowGetShowing(name) == false then
+                    WindowSetShowing(name, true)
                 end
             end
         end
@@ -389,6 +547,8 @@ function CA.PlantSeed(plotNum, bagSlot, backpackType)
         if StockPiler.Debug and StockPiler.Debug.LogOp then
             StockPiler.Debug.LogOp("grow", "plant-keep windows=" .. tostring(keepCount))
         end
+    else
+        CA._keepOpenAfterPlant = nil
     end
     local ok, err = TryCall("AddCraftingItem", AddCraftingItem, CA.TradeSkill(), plotNum, bagSlot, backpackType)
     if not ok then

@@ -55,7 +55,34 @@ local function DrainHarvestCompleteLearn(force)
     return learned
 end
 
+function LB.EnsurePerformCraftingHook()
+    if LB._performHooked == true or type(PerformCrafting) ~= "function" then
+        return false
+    end
+    local orig = PerformCrafting
+    PerformCrafting = function(...)
+        -- The whole prologue stays inside pcall. A learn error must not block crafting.
+        pcall(function(...)
+            local tradeSkill = ...
+            local AA = StockPiler.ApothecaryAdapter
+            local apo = AA and AA.TradeSkill and tonumber(AA.TradeSkill()) or 4
+            if tonumber(tradeSkill) == apo then
+                local BL = StockPiler.BrewLearn
+                local fresh = BL and BL.HasFreshPendingCraftForFrame
+                    and BL.HasFreshPendingCraftForFrame(tradeSkill) == true
+                if fresh ~= true and BL and BL.BeginPendingCraft then
+                    BL.BeginPendingCraft()
+                end
+            end
+        end, ...)
+        return orig(...)
+    end
+    LB._performHooked = true
+    return true
+end
+
 function LB.EnsureApothecaryHook()
+    LB.EnsurePerformCraftingHook()
     if type(ApothecaryWindow) ~= "table" then
         return false
     end
@@ -132,11 +159,19 @@ function LB.EnsureUseItemRefineHook()
     SendUseItem = function(location, slot, a, b, c)
         local item = ResolveItemForUse(location, slot)
         local SM = StockPiler.SeedMap
-        if type(item) == "table" and SM and SM.ItemLooksLikeRefinablePlant
+        local refinable = type(item) == "table" and SM and SM.ItemLooksLikeRefinablePlant
             and SM.ItemLooksLikeRefinablePlant(item) == true
-            and SM.BeginPendingRefine
-        then
-            pcall(SM.BeginPendingRefine, item)
+        -- SendUseItem ends the NPC visit (INTERACT_DONE). Silently refuse plant
+        -- refine while quest/trainer/store/bank is open; AutoBuy and non-plant
+        -- uses still go through.
+        if refinable == true then
+            local VA = StockPiler.VendorAdapter
+            if VA and VA.IsInteractionOpen and VA.IsInteractionOpen({ includeStore = true }) == true then
+                return
+            end
+            if SM.BeginPendingRefine then
+                pcall(SM.BeginPendingRefine, item)
+            end
         end
         return orig(location, slot, a, b, c)
     end
@@ -256,6 +291,22 @@ end
 
 --- Drain harvest-complete learn on UPDATE_PROCESSED (EngineEventBridge order).
 function LB.OnUpdateProcessed()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local now = StockPiler.Util and StockPiler.Util.NowSec and tonumber(StockPiler.Util.NowSec()) or 0
+    local BL = StockPiler.BrewLearn
+    local SMEarly = StockPiler.SeedMap
+    local pollDue = BL and BL._inventoryCraftPollDue == true
+    local refinePending = SMEarly and SMEarly._pendingRefine ~= nil
+    local sameSnap = snap > 0 and LB._harvestSnap == snap
+    local fresh = (now <= 0) or ((now - (tonumber(LB._harvestSnapAt) or 0)) < 2)
+    if sameSnap and fresh and LB._harvestCompletePending ~= true
+        and pollDue ~= true and refinePending ~= true
+    then
+        return false
+    end
+    LB._harvestSnap = snap
+    LB._harvestSnapAt = now
     if StockPiler.BrewLearn and StockPiler.BrewLearn.DrainInventoryCraftPoll then
         StockPiler.BrewLearn.DrainInventoryCraftPoll()
     end
@@ -297,10 +348,9 @@ end
 
 function LB.Initialize()
     LB.EnsureApothecaryHook()
+    LB.EnsurePerformCraftingHook()
     LB.EnsureUseItemRefineHook()
-    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.RelinkPotionRecipeKeysFromOutcomes then
-        StockPiler.RecipeSpec.RelinkPotionRecipeKeysFromOutcomes()
-    end
+    -- Bootstrap already relinks recipes at startup. Do not scrub them again here.
 
     local Bus = StockPiler.EventBus
     local E = StockPiler.Events

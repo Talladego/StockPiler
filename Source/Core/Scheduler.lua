@@ -28,6 +28,8 @@ Sch.POLL_SEC = 0.25
 -- Cover plant/refine inventory + CultivationUpdated lag (0.75 left WarmHave
 -- miss storms between IssueOne and the next orch tick).
 Sch.PLANT_QUIET_BASE_SEC = 1.25
+-- Real issue activity may hold Watch/plan, but not across an idle refine wait.
+Sch.ISSUE_BURST_MAX_SEC = 4.0
 
 Sch._bagDue = false
 Sch._bagAt = 0
@@ -57,6 +59,7 @@ Sch._awaitingSessionLoad = false
 Sch._orchDecisionHoldTicks = 0
 Sch._heavyWorkFrame = -1
 Sch._pendingBufferFlagsRebuild = false
+Sch._burstHoldStartedAt = 0
 Sch._busTokens = nil
 
 local function Now()
@@ -90,12 +93,28 @@ local function InvalidatePlantQueue(reason)
     end
 end
 
-local function RequestCachePrewarm(reason)
-    -- Defer prewarm during plant/refine quiet - sync WarmHave.miss under
-    -- Inv.ApplySlots was the dominant ~90-100ms trail after every IssueOne.
-    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
-        Sch._pendingPrewarmAfterQuiet = true
+local function LatchPrewarm(reason)
+    Sch._pendingPrewarmAfterQuiet = true
+    if Sch._pendingPrewarmReason == nil then
         Sch._pendingPrewarmReason = reason
+    end
+    Sch._pendingPlanAfterPrewarm = true
+end
+
+local function IssueBurstActive()
+    return Sch.IsAutoGrowIssueBurstActive and Sch.IsAutoGrowIssueBurstActive() == true
+end
+
+local function RequestCachePrewarm(reason)
+    reason = tostring(reason or "unknown")
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("prewarm", reason)
+    end
+    -- Defer prewarm during plant/refine quiet and the seed-buffer issue burst.
+    -- Bag coalesce is 2s; quiet is only 1.25s, so the flush was landing in the
+    -- gap and running WarmHave + Demand + a full Watch refresh.
+    if (Sch.IsSuppressed and Sch.IsSuppressed() == true) or IssueBurstActive() then
+        LatchPrewarm(reason)
         return
     end
     local FW = StockPiler.FrameWork
@@ -134,6 +153,47 @@ local function FlushPendingPrewarmAfterQuiet()
     Sch._pendingPlanAfterPrewarm = true
 end
 
+--- True only for a recent plant-quiet arm or an outstanding refine.
+--- Idle wait ticks, a dirty flag, and a cached buffer pending bit are not a
+--- burst: those stay set while nothing is issuing and were freezing Watch.
+--- The hold also caps so a lingering outstanding or a repeated arm cannot
+--- freeze the plan for the whole session. now<=0 does not hold forever.
+local function AutoGrowIssueBurstActive(now)
+    now = tonumber(now) or Now()
+    if now <= 0 then
+        return false
+    end
+    local cap = tonumber(Sch.ISSUE_BURST_MAX_SEC) or 4.0
+    if cap < 0 then
+        cap = 0
+    end
+    local lastArm = tonumber(Sch._lastPlantQuietArmAt) or 0
+    local recentArm = lastArm > 0 and (now - lastArm) < cap
+    local RP = StockPiler.RefinePipeline
+    local outstanding = RP and RP.HasOutstanding and RP.HasOutstanding() == true
+    if recentArm ~= true and outstanding ~= true then
+        Sch._burstHoldStartedAt = 0
+        return false
+    end
+    local started = tonumber(Sch._burstHoldStartedAt) or 0
+    if started <= 0 or started > now then
+        Sch._burstHoldStartedAt = now
+        started = now
+    end
+    if (now - started) >= cap then
+        return false
+    end
+    return true
+end
+
+function Sch.IsAutoGrowIssueBurstActive(now)
+    return AutoGrowIssueBurstActive(now) == true
+end
+
+local function HoldPrewarmForIssueBurst(reason)
+    LatchPrewarm(reason)
+end
+
 --- After quiet/storm prewarm: enqueue one coalesced rebuild when FrameWork is idle.
 local function FlushPendingPlanAfterPrewarm()
     if Sch._pendingPlanAfterPrewarm ~= true then
@@ -143,6 +203,9 @@ local function FlushPendingPlanAfterPrewarm()
         return false
     end
     if Sch.IsSuppressed and Sch.IsSuppressed() == true then
+        return false
+    end
+    if IssueBurstActive() then
         return false
     end
     local FW = StockPiler.FrameWork
@@ -268,6 +331,11 @@ local function RebuildPlanIfDue()
     if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return false
     end
+    -- Seed-buffer phase keeps issuing after quiet expires. A plan every 2s
+    -- was CheapRebuild + Status.Craftable on that same beat.
+    if IssueBurstActive() then
+        return false
+    end
     -- Orch probe remounts have; wait for hold to drop before CheapRebuild.
     if Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true then
         return false
@@ -276,10 +344,8 @@ local function RebuildPlanIfDue()
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
         return false
     end
-    local RP = StockPiler.RefinePipeline
-    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
-        return false
-    end
+    -- Outstanding refine holds the plan only inside the capped issue burst.
+    -- A second uncapped HasOutstanding check kept the plan frozen after the cap.
     if Now() < (tonumber(Sch._planAt) or 0) then
         return false
     end
@@ -343,7 +409,12 @@ local function RebuildPlanIfDue()
         if StockPiler.Perf and StockPiler.Perf.Begin then
             StockPiler.Perf.Begin("PlanRebuild")
         end
+        Planner._lazyWatchTips = true
         Planner.GetOrBuild(true)
+        Planner._lazyWatchTips = nil
+        if Planner.EnqueueLazyWatchTips then
+            Planner.EnqueueLazyWatchTips()
+        end
         if StockPiler.Perf and StockPiler.Perf.End then
             StockPiler.Perf.End("PlanRebuild")
         end
@@ -367,6 +438,13 @@ local function FlushWatchUiIfDue(didHeavy)
         return false
     end
     if Sch._skipUiThisFrame == true then
+        return false
+    end
+    -- No Watch flush during harvest storm / plant quiet / seed-buffer burst.
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
+        return false
+    end
+    if IssueBurstActive() then
         return false
     end
     local openPaint = StockPilerWindow and StockPilerWindow._openPaintPending == true
@@ -485,9 +563,10 @@ local function OnInventorySnapshot()
     -- never WarmHave or PatchWatch inside this handler.
     local RP = StockPiler.RefinePipeline
     local refineBusy = RP and RP.HasOutstanding and RP.HasOutstanding() == true
-    if not suppressed and not brewSession and not refineBusy then
+    local burst = IssueBurstActive()
+    if not suppressed and not brewSession and not refineBusy and not burst then
         Sch.EnqueuePlanRebuild({ nudge = true })
-    elseif suppressed then
+    elseif suppressed or burst then
         -- Bag moves during quiet/storm: latch rebuild after quiet-end invalidate.
         -- Without this, remounted WarmHave stamps stale craftable and Watch only
         -- catches up on a later stack move.
@@ -701,6 +780,10 @@ local function ExpireHarvestStorm(now)
             Sch.EnqueuePlanRebuild({ nudge = true })
         end
         Sch.MarkWatchUiDirty()
+        if AutoGrowIssueBurstActive(now) then
+            HoldPrewarmForIssueBurst("storm-end-burst")
+            return
+        end
         FlushPendingPrewarmAfterQuiet()
     end
 end
@@ -712,10 +795,14 @@ local function ExpirePlantQuiet(now)
     end
     if now >= untilT then
         Sch._plantQuietUntil = 0
-        -- Quiet-end: drop remounted have, prewarm, then rebuild (bag moves during
-        -- quiet never EnqueuePlanRebuild - without this Watch sits one stack behind).
+        -- Quiet must clear so Orch can IssueOne. Do not WarmHave between issues.
         Sch.SkipPlanThisFrame()
         Sch.SkipUiThisFrame()
+        if AutoGrowIssueBurstActive(now) then
+            HoldPrewarmForIssueBurst("quiet-end-burst")
+            Sch.MarkWatchUiDirty()
+            return
+        end
         local Planner = StockPiler.Planner
         if Planner and Planner.InvalidateHaveCacheAfterQuiet then
             Planner.InvalidateHaveCacheAfterQuiet()
@@ -751,6 +838,7 @@ function Sch.ArmHarvestStorm(seconds)
     if quietUntil > curQuiet then
         Sch._plantQuietUntil = quietUntil
     end
+    Sch._lastPlantQuietArmAt = Now()
 end
 
 function Sch.IsHarvestStorm()
@@ -776,6 +864,7 @@ function Sch.ArmPlantQuiet(seconds)
     if untilT > cur then
         Sch._plantQuietUntil = untilT
     end
+    Sch._lastPlantQuietArmAt = Now()
 end
 
 function Sch.SkipPlanThisFrame()
@@ -987,9 +1076,13 @@ function Sch.IsPlanRebuildPending()
 end
 
 function Sch.MarkWatchUiDirty(payload)
+    payload = type(payload) == "table" and payload or {}
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("watchDirty", tostring(payload.reason or "mark"))
+    end
     local Bus = StockPiler.EventBus
     if Bus and Bus.FireWatchUiDirty then
-        Bus.FireWatchUiDirty(type(payload) == "table" and payload or {})
+        Bus.FireWatchUiDirty(payload)
     end
 end
 
@@ -1128,6 +1221,16 @@ function Sch.OnUpdate(timeElapsed)
     local brewSession = StockPiler.Orchestrator
         and StockPiler.Orchestrator.IsBrewSessionActive
         and StockPiler.Orchestrator.IsBrewSessionActive() == true
+    if StockPiler.Ui and StockPiler.Ui.FlushBurstHeldWatchRecount then
+        StockPiler.Ui.FlushBurstHeldWatchRecount()
+    end
+    -- Quiet often expires before the seed-buffer burst does. Flush the latched
+    -- prewarm once, when the burst is idle, instead of on the next 2s bag flush.
+    if Sch._pendingPrewarmAfterQuiet == true and not IssueBurstActive()
+        and not (Sch.IsSuppressed and Sch.IsSuppressed() == true)
+    then
+        FlushPendingPrewarmAfterQuiet()
+    end
     local skipPump = brewSession
         or Sch._skipPlanThisFrame == true
         or (Sch.IsSuppressed and Sch.IsSuppressed() == true)

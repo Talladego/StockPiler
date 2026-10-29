@@ -409,25 +409,28 @@ local function CommitPotionRows(rows)
     StockPilerTabPotions._listStructureKey = structureKey
 end
 
+--- Structural cache only. Bag snaps update Have via PatchLiveHave so a tab
+--- switch after inventory churn does not rebuild fingerprint stats for every row.
 local function PotionListCacheKey(effectFilter)
     local know = 0
     local watch = 0
-    local snap = 0
     if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
         know = tonumber(StockPiler.Knowledge.GetGen()) or 0
     end
     if StockPiler.Watch and StockPiler.Watch.GetGen then
         watch = tonumber(StockPiler.Watch.GetGen()) or 0
     end
-    if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
-        snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
-    end
     local stats = 0
     if StockPiler.RecipeSpec and StockPiler.RecipeSpec.GetRecipeStatsGen then
         stats = tonumber(StockPiler.RecipeSpec.GetRecipeStatsGen()) or 0
     end
-    return tostring(know) .. ":" .. tostring(watch) .. ":" .. tostring(snap)
-        .. ":" .. tostring(stats) .. ":" .. tostring(effectFilter or "")
+    local display = 0
+    if StockPiler.RecipeSpec and StockPiler.RecipeSpec.GetRecipeDisplayGen then
+        display = tonumber(StockPiler.RecipeSpec.GetRecipeDisplayGen()) or 0
+    end
+    return tostring(know) .. ":" .. tostring(watch)
+        .. ":" .. tostring(stats) .. ":" .. tostring(display)
+        .. ":" .. tostring(effectFilter or "")
 end
 
 local function BuildVisibleList()
@@ -680,6 +683,9 @@ function StockPilerTabPotions.Refresh()
     if not DoesWindowExist(TAB_ROOT) then
         return
     end
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("RefreshPotions")
+    end
     PaintClearButton()
     local effectSig = StockPiler.ViewList.EffectFilterSignature("potion")
     if effectSig ~= StockPilerTabPotions._effectSig then
@@ -699,6 +705,52 @@ function StockPilerTabPotions.Refresh()
             ListBoxSetDisplayOrder("SPTabPotionsList", StockPilerTabPotions.displayOrder)
         end
         StockPilerTabPotions.UpdateRows()
+    end
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("RefreshPotions")
+    end
+end
+
+--- Tab click onto Potions: skip full catalog rebuild when rows are already bound.
+--- Have counts patch in place (same as bag catch-up while the tab is open).
+function StockPilerTabPotions.PaintTabSwitch()
+    if not DoesWindowExist(TAB_ROOT) then
+        return
+    end
+    if StockPiler.Perf and StockPiler.Perf.Begin then
+        StockPiler.Perf.Begin("PaintTab.Potions")
+    end
+    PaintClearButton()
+    local effectSig = StockPiler.ViewList.EffectFilterSignature("potion")
+    if effectSig ~= StockPilerTabPotions._effectSig then
+        StockPilerTabPotions._effectSig = effectSig
+        InitEffectCombo()
+    else
+        SyncEffectComboSelection()
+    end
+    UpdateSortHeaders()
+    local s = GetSettings()
+    local effectFilter = (type(s) == "table" and s.potionEffectFilter) or ""
+    local cacheKey = PotionListCacheKey(effectFilter)
+    local listData = StockPilerTabPotions.listData
+    local listCount = type(listData) == "table" and #listData or 0
+    local indices = SPTabPotionsList and SPTabPotionsList.PopulatorIndices
+    local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+    local cacheWarm = StockPilerTabPotions._builtKey == cacheKey
+        and type(StockPilerTabPotions._builtRows) == "table"
+    if cacheWarm and listCount > 0 and hasPopulated then
+        if StockPilerTabPotions.PatchLiveHave then
+            StockPilerTabPotions.PatchLiveHave()
+        end
+        StockPilerTabPotions.UpdateRows()
+        if StockPiler.Perf and StockPiler.Perf.End then
+            StockPiler.Perf.End("PaintTab.Potions")
+        end
+        return
+    end
+    StockPilerTabPotions.Refresh()
+    if StockPiler.Perf and StockPiler.Perf.End then
+        StockPiler.Perf.End("PaintTab.Potions")
     end
 end
 
@@ -918,7 +970,11 @@ function StockPilerTabPotions.OnMouseOverIcon()
         return
     end
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, data.name or T("ui.potion_fallback"))
-    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+    if StockPiler.Inventory and StockPiler.Inventory.AnchorLikeBagItemTooltip then
+        StockPiler.Inventory.AnchorLikeBagItemTooltip()
+    elseif Tooltips.AnchorTooltip then
+        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
+    end
 end
 
 function StockPilerTabPotions.OnMouseOverRecipe()

@@ -103,6 +103,10 @@ function Bridge.OnInventoryUpdated(updatedSlots)
 end
 
 function Bridge.OnCraftingSlotUpdated(updatedSlots)
+    local AA = StockPiler.ApothecaryAdapter
+    if AA and AA.InvalidateCraftSlotCache then
+        AA.InvalidateCraftSlotCache()
+    end
     -- Stock: PLAYER_CRAFTING_SLOT_UPDATED -> DataUtils.ReloadCraftingItems (craft bag).
     -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here->main.
     if GameData and GameData.Player then
@@ -154,6 +158,12 @@ function Bridge.FlushPendingMainSlots()
     if StockPiler.Perf and StockPiler.Perf.End then
         StockPiler.Perf.End("Inv.ApplySlots")
     end
+    -- Same-frame FrameWork.Pump used to run ui-force-watch-recount + WarmHave.miss
+    -- on top of ApplySlots (libperf Inv.ApplySlots + Status.Craftable x18).
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.NoteHeavyWork then
+        Sch.NoteHeavyWork()
+    end
     return true
 end
 
@@ -172,10 +182,18 @@ function Bridge.FlushPendingCraftSlots()
     if StockPiler.Perf and StockPiler.Perf.End then
         StockPiler.Perf.End("Inv.ApplySlots")
     end
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.NoteHeavyWork then
+        Sch.NoteHeavyWork()
+    end
     return true
 end
 
 function Bridge.OnCraftingUpdated()
+    local AA = StockPiler.ApothecaryAdapter
+    if AA and AA.InvalidateCraftSlotCache then
+        AA.InvalidateCraftSlotCache()
+    end
     if StockPiler.LearnBridge and StockPiler.LearnBridge.OnCraftingUpdated then
         StockPiler.LearnBridge.OnCraftingUpdated()
     end
@@ -424,6 +442,17 @@ end
 --- Trainer / interact closed: GameData may update a tick after TRADE_SKILL_UPDATED.
 function Bridge.OnInteractDone()
     Bridge.OnTradeSkillUpdated()
+    local VA = StockPiler.VendorAdapter
+    local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+    local interactionOpen = VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true
+    if storeOpen ~= true and interactionOpen ~= true then
+        if StockPiler.Refine and StockPiler.Refine.MarkRefineDue then
+            StockPiler.Refine.MarkRefineDue("interaction-closed")
+        end
+        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
+            StockPiler.Scheduler.WakeAutoGrow()
+        end
+    end
 end
 
 function Bridge.OnStoreShow()
@@ -549,9 +578,11 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
+    local heavySlots = false
     RunStage("slots", function()
-        Bridge.FlushPendingMainSlots()
-        Bridge.FlushPendingCraftSlots()
+        if Bridge.FlushPendingMainSlots() == true or Bridge.FlushPendingCraftSlots() == true then
+            heavySlots = true
+        end
     end)
 
     RunStage("snapshot", function()
@@ -560,11 +591,13 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
-    RunStage("learn", function()
-        if StockPiler.LearnBridge and StockPiler.LearnBridge.OnUpdateProcessed then
-            StockPiler.LearnBridge.OnUpdateProcessed()
-        end
-    end)
+    if heavySlots ~= true then
+        RunStage("learn", function()
+            if StockPiler.LearnBridge and StockPiler.LearnBridge.OnUpdateProcessed then
+                StockPiler.LearnBridge.OnUpdateProcessed()
+            end
+        end)
+    end
 
     RunStage("refine", function()
         if StockPiler.Refine and StockPiler.Refine.OnUpdateProcessed then
@@ -574,15 +607,25 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
-    RunStage("scheduler", function()
-        if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
-            StockPiler.Scheduler.OnUpdate(timeElapsed)
-        end
-    end)
+    if heavySlots ~= true then
+        RunStage("scheduler", function()
+            if StockPiler.Scheduler and StockPiler.Scheduler.OnUpdate then
+                local carried = tonumber(Bridge._pendingDt) or 0
+                Bridge._pendingDt = 0
+                local dt = (tonumber(timeElapsed) or 0) + carried
+                StockPiler.Scheduler.OnUpdate(dt)
+            end
+        end)
+    else
+        Bridge._pendingDt = (tonumber(Bridge._pendingDt) or 0) + (tonumber(timeElapsed) or 0)
+    end
 
     RunStage("open-paint", function()
         if StockPilerWindow and StockPilerWindow.FlushOpenPaint then
             StockPilerWindow.FlushOpenPaint()
+        end
+        if StockPilerTabWatch and StockPilerTabWatch.FlushChromeRepaint then
+            StockPilerTabWatch.FlushChromeRepaint()
         end
     end)
 
@@ -612,13 +655,15 @@ local function RunUpdateProcessed(timeElapsed)
         end
     end)
 
-    RunStage("list", function()
-        if StockPilerWindow and StockPilerWindow.FlushPendingListRepopulate
-            and StockPilerWindow._repopulatePending == true
-        then
-            StockPilerWindow.FlushPendingListRepopulate()
-        end
-    end)
+    if heavySlots ~= true then
+        RunStage("list", function()
+            if StockPilerWindow and StockPilerWindow.FlushPendingListRepopulate
+                and StockPilerWindow._repopulatePending == true
+            then
+                StockPilerWindow.FlushPendingListRepopulate()
+            end
+        end)
+    end
 end
 
 function Bridge.OnUpdateProcessed(timeElapsed)

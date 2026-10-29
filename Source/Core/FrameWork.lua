@@ -71,6 +71,11 @@ local function ShouldSkipPump()
         if Sch.IsSuppressed and Sch.IsSuppressed() == true then
             return true
         end
+        -- Bag-apply / BagFlush already heavy this frame: defer Pump one frame
+        -- so ui-force-watch-recount does not WarmHave.miss on the same Update.
+        if Sch.ShouldDeferWarmHaveBag and Sch.ShouldDeferWarmHaveBag() == true then
+            return true
+        end
     end
     local Orch = StockPiler.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
@@ -165,6 +170,13 @@ function FW.Start(opts)
     return true
 end
 
+function FW.Enqueue(id, fn)
+    if type(fn) ~= "function" then
+        return false
+    end
+    return FW.StartOnce(id, nil, fn)
+end
+
 function FW.StartOnce(id, gen, fn)
     return FW.Start({
         id = id,
@@ -224,14 +236,33 @@ function FW.EnqueueWarmHave(gen)
 end
 
 function FW.EnqueueDemand(gen)
-    return FW.StartOnce("prewarm-demand", gen, function()
-        local P = StockPiler.Planner
-        if P and P.WarmDemand then
-            P.WarmDemand()
-        elseif P and P.BuildBalancedSpecDemand then
-            P.BuildBalancedSpecDemand({ cacheOnly = true })
-        end
-    end)
+    return FW.Start({
+        id = "prewarm-demand",
+        gen = gen,
+        stepsPerFrame = 1,
+        resume = function(state)
+            local P = StockPiler.Planner
+            if not P then
+                return "done"
+            end
+            if state.phase == nil then
+                state.phase = "build"
+                if P.BeginDemandSlice then
+                    local result = P.BeginDemandSlice()
+                    if result == "done" then
+                        return "done"
+                    end
+                    return "continue"
+                end
+            end
+            if P.WarmDemand then
+                P.WarmDemand()
+            elseif P.BuildBalancedSpecDemand then
+                P.BuildBalancedSpecDemand()
+            end
+            return "done"
+        end,
+    })
 end
 
 --- True while any prewarm job is queued/running (hold PlanRebuild + Watch flush).

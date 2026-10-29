@@ -9,7 +9,7 @@ local Know = StockPiler.Knowledge
 -- Same list Persistence allows through shutdown. Includes skillUpRates so
 -- Ensure creates the table when a fresh account has not filled it yet.
 local ACCOUNT_TABLES = StockPiler.Persistence.ACCOUNT_TABLES
-    or { "items", "grows", "refines", "recipes", "potions", "skillUpRates" }
+    or { "items", "grows", "refines", "recipes", "potions", "skillUpRates", "vendorCosts" }
 
 Know._gen = 0
 Know._ensuring = false
@@ -203,13 +203,58 @@ function Know.Potions()
     return Know.GetTable("potions")
 end
 
---- Session-only vendor sightings. Persisting served no purpose: AutoBuy matches
---- the open store; Items.StoreItem already seeds Account.items for fingerprints.
+--- Session-only vendor sightings (full rows). Unit costs also go to vendorCosts.
 function Know.VendorItems()
     if type(Know._sessionVendorItems) ~= "table" then
         Know._sessionVendorItems = {}
     end
     return Know._sessionVendorItems
+end
+
+function Know.VendorCosts()
+    return Know.GetTable("vendorCosts")
+end
+
+--- Persist brass unit cost for a vendor/craft mat uid (last seen or last paid).
+function Know.RememberVendorCost(uid, costBrass)
+    uid = tonumber(uid) or 0
+    local cost = math.max(0, math.floor(tonumber(costBrass) or 0))
+    if uid <= 0 or cost <= 0 then
+        return false
+    end
+    local costs = Know.VendorCosts()
+    if type(costs) ~= "table" then
+        return false
+    end
+    local key = tostring(uid)
+    if (tonumber(costs[key]) or 0) == cost then
+        return false
+    end
+    costs[key] = cost
+    if Know.Touch then
+        Know.Touch("vendor-cost")
+    end
+    return true
+end
+
+--- Known unit cost: session vendor row, then persisted vendorCosts.
+function Know.GetVendorCost(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return 0
+    end
+    local key = tostring(uid)
+    local session = Know.VendorItems()
+    local row = type(session) == "table" and session[key] or nil
+    local cost = type(row) == "table" and tonumber(row.cost) or 0
+    if cost > 0 then
+        return cost
+    end
+    local costs = Know.VendorCosts()
+    if type(costs) == "table" then
+        return math.max(0, tonumber(costs[key]) or 0)
+    end
+    return 0
 end
 
 function Know.Touch(reason)

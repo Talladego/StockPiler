@@ -1044,21 +1044,17 @@ function SkillUp.PickMovableBagSeed()
     return nil
 end
 
---- First movable bag main that still needs seeds (buffer or empty plots).
+--- Active SkillUp bag line that still needs seeds (buffer or empty plots).
+--- Only the current movable plant line (highest free bag main) - not leftover
+--- lower-tier seeds (e.g. L25 Parsley while planting L100 Thief's Nettle).
 function SkillUp.PickCultSupplySeed()
-    SkillUp.PickBestBagSeed()
-    local list = SkillUp._bagMainList
-    if type(list) ~= "table" then
+    local pick = SkillUp.PickMovableBagSeed and SkillUp.PickMovableBagSeed() or nil
+    if type(pick) ~= "table" or (tonumber(pick.seedUid) or 0) <= 0 then
         return nil
     end
-    for i = 1, #list do
-        local pick = list[i]
-        if SkillUp.FreeBagSeeds(pick) >= 1 then
-            local deficit = tonumber(SkillUp.SeedDeficit(pick.seedUid)) or 0
-            if deficit >= 1 then
-                return pick
-            end
-        end
+    local deficit = tonumber(SkillUp.SeedDeficit(pick.seedUid)) or 0
+    if deficit >= 1 then
+        return pick
     end
     return nil
 end
@@ -2807,7 +2803,7 @@ function SkillUp.CountApoContainers()
     end
     local MS = StockPiler.MaterialSpec
     local SM = StockPiler.SeedMap
-    if not (Inv and Inv.ForEachItem and MS and MS.FromItemData) then
+    if not (Inv and Inv.ForEachItem and MS and (MS.FromItemDataCached or MS.FromItemData)) then
         return 0
     end
     local total = 0
@@ -2821,7 +2817,8 @@ function SkillUp.CountApoContainers()
             return
         end
         seen[uid] = true
-        local spec = MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem(item, nil)
         if type(spec) ~= "table" or tostring(spec.role or "") ~= "container" then
             return
         end
@@ -2867,7 +2864,15 @@ function SkillUp.ApoVialObtainable()
     return SkillUp._apoNoVendorContainer ~= true
 end
 
-function SkillUp.ShouldApoBuyContainer()
+-- Forward-declared so the buy gate can reuse the brew memo defined below.
+local ApoBrewMemoKey
+
+--- knownWhy: stall reason already returned by BuildApoBrewRecipe this snapshot.
+--- seed_buffer and wait_cult skip the bag walk. A resin wait does not.
+function SkillUp.ShouldApoBuyContainer(knownWhy)
+    if knownWhy == "seed_buffer" or knownWhy == "wait_cult" then
+        return false
+    end
     if SkillUp.ShouldApoBrew() ~= true then
         return false
     end
@@ -2875,16 +2880,47 @@ function SkillUp.ShouldApoBuyContainer()
     if not (Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true) then
         return false
     end
-    -- Buy vials when an exact-tier main exists (even if held for seed buffer).
-    if SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) == nil then
+
+    local key = ApoBrewMemoKey()
+    local cache = SkillUp._apoBrewCache
+    local hit = type(cache) == "table" and cache.key == key
+    -- Memo already knows there is no exact-tier main, or the hold is seeds / Cult.
+    if hit and (cache.hasExactMain ~= true
+        or cache.why == "seed_buffer" or cache.why == "wait_cult")
+    then
         return false
+    end
+
+    if not (hit and cache.hasExactMain == true) then
+        -- Exact-tier main still in bags (ignore seed-buffer reserve) means this Apo band.
+        if SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) == nil then
+            return false
+        end
     end
     local want = SkillUp.ApoContainerBuyTarget()
     if want < 1 then
         return false
     end
     local have = SkillUp.CountApoContainers()
-    return have < want
+    if have >= want then
+        return false
+    end
+
+    local why = knownWhy
+    if hit then
+        why = cache.why
+    elseif knownWhy == nil or knownWhy == "" then
+        local _
+        _, why = SkillUp.BuildApoBrewRecipe()
+    end
+    -- Only seed buffer and Cultivation suppress a vial top-up (the main is not
+    -- ready, so the queued buy flickered off when those plants were used).
+    -- need_resin still tops up: the exact-tier main is ready and vials already
+    -- in bags can sit below the band.
+    if why == "seed_buffer" or why == "wait_cult" then
+        return false
+    end
+    return true
 end
 
 local function SpecStability(spec)
@@ -2925,11 +2961,13 @@ function SkillUp.WatchDemandReserve(specOrUid)
     -- Yield and per-craft counts follow the recipe stats generation. That
     -- bump does not move the bag snap or the watch generation (FullCacheKey).
     local statsGen = RS and RS.GetRecipeStatsGen and tonumber(RS.GetRecipeStatsGen()) or 0
+    local knowGen = StockPiler.Knowledge and StockPiler.Knowledge.GetGen
+        and tonumber(StockPiler.Knowledge.GetGen()) or 0
     local cache = SkillUp._watchReserveCache
     if type(cache) ~= "table" or cache.snap ~= snap or cache.watchGen ~= watchGen
-        or cache.statsGen ~= statsGen
+        or cache.statsGen ~= statsGen or cache.knowGen ~= knowGen
     then
-        cache = { snap = snap, watchGen = watchGen, statsGen = statsGen, byUid = {} }
+        cache = { snap = snap, watchGen = watchGen, statsGen = statsGen, knowGen = knowGen, byUid = {} }
         SkillUp._watchReserveCache = cache
     end
     local cached = cache.byUid[wantUid]
@@ -3298,6 +3336,66 @@ local function IsValidApoContainer(item, spec)
     return true
 end
 
+--- Shallow copy so a caller can sort one role list without reordering the memo.
+local function CopyApoMatList(list)
+    local out = {}
+    if type(list) ~= "table" then
+        return out
+    end
+    for i = 1, #list do
+        out[i] = list[i]
+    end
+    return out
+end
+
+--- Brew-result memo key: bag snapshot + plan generation, plus Apo skill, tier
+--- (band), and settings that can change the recipe between snapshots.
+function ApoBrewMemoKey()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local planGen = 0
+    local Planner = StockPiler.Planner
+    if Planner and Planner.GetPlanGen then
+        planGen = tonumber(Planner.GetPlanGen()) or 0
+    end
+    local snapPlan = 0
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        snapPlan = tonumber(plan.planGen) or 0
+    end
+    local gardenGen = 0
+    local Garden = StockPiler.Garden
+    if Garden then
+        gardenGen = tonumber(
+            (Garden.GetPlanGen and Garden.GetPlanGen())
+            or (Garden.GetGen and Garden.GetGen())
+        ) or 0
+    end
+    local Watch = StockPiler.Watch
+    local watchGen = Watch and Watch.GetGen and tonumber(Watch.GetGen()) or 0
+    local RS = StockPiler.RecipeSpec
+    local statsGen = RS and RS.GetRecipeStatsGen and tonumber(RS.GetRecipeStatsGen()) or 0
+    local apo = tonumber(SkillUp.GetApoSkill()) or 0
+    local tier = tonumber(SkillUp.ApoTargetTier()) or 0
+    local enabled = SkillUp.IsApoEnabled() == true
+    local canBrew = true
+    local Caps = StockPiler.TradeSkillCaps
+    if Caps and Caps.CanBrewPotions then
+        canBrew = Caps.CanBrewPotions() == true
+    end
+    return tostring(snap)
+        .. ":" .. tostring(planGen)
+        .. ":" .. tostring(snapPlan)
+        .. ":" .. tostring(gardenGen)
+        .. ":" .. tostring(watchGen)
+        .. ":" .. tostring(statsGen)
+        .. ":" .. tostring(apo)
+        .. ":" .. tostring(tier)
+        .. ":" .. (enabled and "1" or "0")
+        .. ":" .. (canBrew and "1" or "0")
+end
+
 --- Units of resin stab needed so main+container+resin > 0 (engine HIGH).
 local function ResinStabNeeded(mainStab, containerStab)
     local base = (tonumber(mainStab) or 0) + (tonumber(containerStab) or 0)
@@ -3316,6 +3414,19 @@ function SkillUp.ListApoBagMaterials(role, opts)
     opts = type(opts) == "table" and opts or {}
     local ignoreReserve = opts.ignoreReserve == true
     local exactTier = opts.exactTier ~= false
+    local slot = role
+        .. ":" .. (ignoreReserve and "1" or "0")
+        .. ":" .. (exactTier and "1" or "0")
+    local memoKey = ApoBrewMemoKey()
+    local matCache = SkillUp._apoMatCache
+    if type(matCache) ~= "table" or matCache.key ~= memoKey then
+        matCache = { key = memoKey, lists = {} }
+        SkillUp._apoMatCache = matCache
+    end
+    local cachedList = matCache.lists[slot]
+    if cachedList ~= nil then
+        return CopyApoMatList(cachedList)
+    end
     local targetTier = SkillUp.ApoTargetTier()
     if targetTier < 1 then
         targetTier = 1
@@ -3324,9 +3435,12 @@ function SkillUp.ListApoBagMaterials(role, opts)
     local MS = StockPiler.MaterialSpec
     local SM = StockPiler.SeedMap
     local list = {}
-    if not (Inv and Inv.ForEachItem and MS and MS.FromItemData) then
-        return list
+    if not (Inv and Inv.ForEachItem and MS and (MS.FromItemDataCached or MS.FromItemData)) then
+        matCache.lists[slot] = list
+        return CopyApoMatList(list)
     end
+    -- Uncached full bag walk. Repeats in this snap + plan reuse matCache.
+    SkillUp._apoBagScans = (tonumber(SkillUp._apoBagScans) or 0) + 1
     local seen = {}
     Inv.ForEachItem(function(item)
         if type(item) ~= "table" then
@@ -3343,7 +3457,8 @@ function SkillUp.ListApoBagMaterials(role, opts)
         if not CanUseCraftingSample(item) then
             return
         end
-        local spec = MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem(item, nil)
         if type(spec) ~= "table" then
             return
         end
@@ -3443,7 +3558,8 @@ function SkillUp.ListApoBagMaterials(role, opts)
             resin = isResin == true,
         }
     end)
-    return list
+    matCache.lists[slot] = list
+    return CopyApoMatList(list)
 end
 
 --- Best bag item for role (see ListApoBagMaterials filters).
@@ -3491,6 +3607,21 @@ function SkillUp.BuildApoBrewRecipe()
     if SkillUp.ShouldApoBrew() ~= true then
         return nil
     end
+    local key = ApoBrewMemoKey()
+    local cache = SkillUp._apoBrewCache
+    if type(cache) == "table" and cache.key == key then
+        return cache.recipe, cache.why, cache.parts
+    end
+    local function finish(recipe, why, parts, hasExactMain)
+        SkillUp._apoBrewCache = {
+            key = key,
+            recipe = recipe,
+            why = why,
+            parts = parts,
+            hasExactMain = hasExactMain == true,
+        }
+        return recipe, why, parts
+    end
     local mains = SkillUp.ListApoBagMaterials("main")
     if #mains == 0 then
         local heldList = SkillUp.ListApoBagMaterials("main", { ignoreReserve = true })
@@ -3512,10 +3643,10 @@ function SkillUp.BuildApoBrewRecipe()
             end
         end
         if anyGrowable then
-            return nil, "seed_buffer"
+            return finish(nil, "seed_buffer", nil, true)
         end
         if anyHeld then
-            return nil, "need_mats"
+            return finish(nil, "need_mats", nil, true)
         end
         local lower = SkillUp.ListApoBagMaterials("main", { exactTier = false, ignoreReserve = true })
         local targetTier = SkillUp.ApoTargetTier()
@@ -3525,16 +3656,16 @@ function SkillUp.BuildApoBrewRecipe()
                 and SM and SM.IsGrowableSpec and type(cand.spec) == "table"
                 and SM.IsGrowableSpec(cand.spec) == true
             then
-                return nil, "wait_cult"
+                return finish(nil, "wait_cult", nil, false)
             end
         end
-        return nil, "need_mats"
+        return finish(nil, "need_mats", nil, false)
     end
 
     local containers = SkillUp.ListApoBagMaterials("container")
     local resins = SkillUp.ListApoBagMaterials("stabilizer")
     if #containers == 0 then
-        return nil, "need_mats"
+        return finish(nil, "need_mats", nil, true)
     end
 
     table.sort(containers, function(a, b)
@@ -3692,11 +3823,11 @@ function SkillUp.BuildApoBrewRecipe()
 
     if type(bestRecipe) ~= "table" then
         if #resins == 0 then
-            return nil, "need_resin"
+            return finish(nil, "need_resin", nil, true)
         end
-        return nil, "unstable"
+        return finish(nil, "unstable", nil, true)
     end
-    return bestRecipe, nil, bestParts
+    return finish(bestRecipe, nil, bestParts, true)
 end
 
 --- AutoBrew needs one free crafting-bag slot to pull mats. Nil occupancy is not full.
@@ -3914,7 +4045,8 @@ local function PickApoLeftoverResinPlant(apoTier)
         if not CanUseCraftingSample(item) then
             return
         end
-        local spec = MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem(item, nil)
         if type(spec) ~= "table" then
             return
         end
@@ -4117,7 +4249,8 @@ function SkillUp.ResolveBuyContainerTarget()
         if uid <= 0 or type(item) ~= "table" then
             return
         end
-        local spec = MS.FromItemData and MS.FromItemData(item, nil)
+        local parseItem = MS.FromItemDataCached or MS.FromItemData
+        local spec = parseItem and parseItem(item, nil)
         if not IsValidApoContainer(item, spec) then
             return
         end
@@ -4263,7 +4396,7 @@ function SkillUp.MapApoBuyStall(why)
     then
         return why
     end
-    if SkillUp.ShouldApoBuyContainer() ~= true then
+    if SkillUp.ShouldApoBuyContainer(why) ~= true then
         return why
     end
     local VA = StockPiler.VendorAdapter

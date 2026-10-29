@@ -180,20 +180,93 @@ if LibPerf and type(LibPerf.Scope) == "function" then
     Perf.Available = true
     function Perf.OnFrame(_timeElapsed)
     end
-    local thr = 0
-    if Perf.GetThreshold then
-        thr = tonumber(Perf.GetThreshold()) or 0
-    elseif Perf.GetFrameThreshold then
-        thr = tonumber(Perf.GetFrameThreshold()) or 0
-    end
-    if thr > 0 and thr < CAPTURE_FLOOR_MS then
-        if Perf.SetThreshold then
-            Perf.SetThreshold(CAPTURE_FLOOR_MS)
-        elseif Perf.SetFrameThreshold then
-            Perf.SetFrameThreshold(CAPTURE_FLOOR_MS)
-        end
-    end
+    -- Do not raise a saved /libperf threshold. LibPerf persists it; a 250ms
+    -- floor here overwrote /libperf StockPiler thr 50 on every reload.
     StockPiler.Perf = Perf
 else
     StockPiler.Perf = MakeInAddonPerf()
+end
+
+-- Reason tallies for idle-loop / prewarm diagnostics (always available).
+do
+    local Perf = StockPiler.Perf
+    Perf._reasonTally = Perf._reasonTally or {}
+
+    function Perf.Tally(bucket, reason)
+        -- Profiling off: do not allocate tally tables on prewarm or Watch dirty.
+        local enabled = false
+        if type(Perf.IsEnabled) == "function" then
+            enabled = Perf.IsEnabled() == true
+        else
+            enabled = Perf.Enabled == true
+        end
+        if enabled ~= true then
+            return
+        end
+        bucket = tostring(bucket or "?")
+        reason = tostring(reason or "?")
+        local byBucket = Perf._reasonTally
+        local map = byBucket[bucket]
+        if type(map) ~= "table" then
+            map = {}
+            byBucket[bucket] = map
+        end
+        map[reason] = (tonumber(map[reason]) or 0) + 1
+    end
+
+    function Perf.ResetReasonTally()
+        Perf._reasonTally = {}
+    end
+
+    function Perf.FormatReasonTally()
+        local byBucket = Perf._reasonTally
+        if type(byBucket) ~= "table" then
+            return "tally=(empty)"
+        end
+        local parts = {}
+        local buckets = {}
+        for bucket in pairs(byBucket) do
+            buckets[#buckets + 1] = bucket
+        end
+        table.sort(buckets)
+        for bi = 1, #buckets do
+            local bucket = buckets[bi]
+            local map = byBucket[bucket]
+            if type(map) == "table" then
+                local keys = {}
+                for reason in pairs(map) do
+                    keys[#keys + 1] = reason
+                end
+                table.sort(keys)
+                local rows = {}
+                for ki = 1, #keys do
+                    local reason = keys[ki]
+                    rows[#rows + 1] = string.format("%s=%d", reason, tonumber(map[reason]) or 0)
+                end
+                if #rows > 0 then
+                    parts[#parts + 1] = bucket .. "{" .. table.concat(rows, ",") .. "}"
+                end
+            end
+        end
+        if #parts == 0 then
+            return "tally=(empty)"
+        end
+        return "tally=" .. table.concat(parts, " ")
+    end
+
+    local prevPrint = Perf.PrintSummary
+    function Perf.PrintSummary()
+        if type(prevPrint) == "function" then
+            prevPrint()
+        end
+        local line = Perf.FormatReasonTally()
+        if StockPiler.Debug and StockPiler.Debug.Reply then
+            StockPiler.Debug.Reply(towstring("SP " .. line))
+        elseif StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(towstring("SP " .. line))
+        elseif StockPiler.Debug and StockPiler.Debug.LogAlways then
+            StockPiler.Debug.LogAlways("SP " .. line)
+        end
+    end
+    Perf.DumpSummary = Perf.PrintSummary
 end

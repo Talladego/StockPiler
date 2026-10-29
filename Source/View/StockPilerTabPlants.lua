@@ -298,17 +298,13 @@ end
 local function PlantListCacheKey()
     local know = 0
     local watch = 0
-    local snap = 0
     if StockPiler.Knowledge and StockPiler.Knowledge.GetGen then
         know = tonumber(StockPiler.Knowledge.GetGen()) or 0
     end
     if StockPiler.Watch and StockPiler.Watch.GetGen then
         watch = tonumber(StockPiler.Watch.GetGen()) or 0
     end
-    if StockPiler.Inventory and StockPiler.Inventory.GetSnapGen then
-        snap = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
-    end
-    return tostring(know) .. ":" .. tostring(watch) .. ":" .. tostring(snap)
+    return tostring(know) .. ":" .. tostring(watch)
 end
 
 local function BuildVisibleList()
@@ -442,6 +438,17 @@ function StockPilerTabPlants.Initialize()
     InitEffectCombo()
     InitLevelCombo()
     UpdateSortHeaders()
+    StockPilerTabPlants.Refresh()
+end
+
+function StockPilerTabPlants.PaintTabSwitch()
+    if type(StockPilerTabPlants.listData) == "table" and #StockPilerTabPlants.listData > 0 then
+        StockPilerTabPlants.PatchLiveHave()
+        if DoesWindowExist("SPTabPlantsList") then
+            StockPilerTabPlants.UpdateRows()
+        end
+        return
+    end
     StockPilerTabPlants.Refresh()
 end
 
@@ -725,8 +732,10 @@ function StockPilerTabPlants.OnMouseOverIcon()
             SystemData.ActiveWindow.name,
             data.name or T("ui.plant_fallback")
         )
-        if Tooltips.AnchorTooltip and Tooltips.ANCHOR_WINDOW_RIGHT then
-            Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+        if StockPiler.Inventory and StockPiler.Inventory.AnchorLikeBagItemTooltip then
+            StockPiler.Inventory.AnchorLikeBagItemTooltip()
+        elseif Tooltips.AnchorTooltip then
+            Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
         end
     end
 end
@@ -801,7 +810,7 @@ function StockPilerTabPlants.OnMouseOverRecipe()
         StockPiler.RecipeTooltip.ShowColoredRows(
             SystemData.ActiveWindow.name,
             tipRows,
-            Tooltips and Tooltips.ANCHOR_WINDOW_RIGHT
+            Tooltips and Tooltips.ANCHOR_WINDOW_BOTTOM
         )
         return
     end
@@ -811,7 +820,7 @@ function StockPilerTabPlants.OnMouseOverRecipe()
     end
     if Tooltips and Tooltips.CreateTextOnlyTooltip then
         Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, towstring(table.concat(lines, "\n")))
-        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_BOTTOM)
     end
 end
 

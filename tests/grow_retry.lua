@@ -122,8 +122,15 @@ Grow.ShouldHoldPlantForReadyHarvest = function()
     return false
 end
 
+Grow.IssuePlantOne("op")
+local plantedOnce = #plantCalls
+Grow.IssuePlantOne("op")
+eq(#plantCalls, plantedOnce, "a second plant this frame does not issue")
+eq(tonumber(Grow._pendingPlant[1]) or 0, 1, "the same-frame refusal keeps the first commit")
+
 for t = 1000, 1600 do
     now = t
+    StockPiler.FrameCounter = t
     Grow.ExpireStalePending()
     Grow.IssuePlantOne("op")
 end

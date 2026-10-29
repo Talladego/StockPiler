@@ -26,6 +26,10 @@ Buy._visitSpentBrass = 0
 Buy._visitMoneyBrass = 0
 Buy._visitBought = 0
 Buy._visitStopReason = nil
+Buy._queueAnnounceKey = nil
+Buy._queuePendingKey = nil
+Buy._queueAnnounceDue = nil
+Buy._queueHadItems = false
 Buy._visitAcquired = Buy._visitAcquired or {}
 -- Per confirmed buy: bag arrival clears that credit only (not every open credit).
 Buy._visitCreditLedger = Buy._visitCreditLedger or {}
@@ -588,9 +592,17 @@ local function ReconcileVisitAcquiredWithBags()
     SettleVisitAcquiredFromBags()
 end
 
---- Brass -> compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
+--- Brass -> backpack-style money string. Prefers MoneyFrame coin icons (gold /
+--- silver / brass) for chat and tips; falls back to compact "Ng Ns Nb" text.
+--- Returns a wstring when icons are used, otherwise a narrow string.
 function Buy.FormatMoneyBrass(brass)
     brass = math.max(0, math.floor((tonumber(brass) or 0) + 1e-9))
+    if MoneyFrame and MoneyFrame.FormatMoneyString then
+        local ok, text = pcall(MoneyFrame.FormatMoneyString, brass, true, true)
+        if ok and text ~= nil and text ~= L"" and text ~= "" then
+            return text
+        end
+    end
     local perGold = Buy.BRASS_PER_GOLD or 10000
     local perSilver = Buy.BRASS_PER_SILVER or 100
     local g = math.floor(brass / perGold)
@@ -618,6 +630,12 @@ function Buy.FormatMoneyBrass(brass)
     return string.format("%db", b)
 end
 
+--- Whole-gold amount (Reserve / Budget caps) as icon money.
+function Buy.FormatGoldAmount(gold)
+    gold = math.max(0, math.floor(tonumber(gold) or 0))
+    return Buy.FormatMoneyBrass(gold * (Buy.BRASS_PER_GOLD or 10000))
+end
+
 local function FormatSpentLabel(brass)
     return Buy.FormatMoneyBrass(brass)
 end
@@ -625,17 +643,401 @@ end
 local function ChatMaterialFill(uid, name, count, spentBrass)
     local CC = StockPiler.CraftChatAdapter
     local spentLabel = FormatSpentLabel(spentBrass)
-    if CC and CC.PrintWithItem then
+    if CC and CC.PrintParts and CC.ItemLink then
+        CC.PrintParts(
+            L"AutoBuy: " .. towstring(tostring(count)) .. L"x ",
+            CC.ItemLink(uid, name),
+            L" (spent ",
+            spentLabel,
+            L")"
+        )
+    elseif CC and CC.PrintWithItem then
+        local spentNarrow = spentLabel
+        if type(spentLabel) == "wstring" and StockPiler.Util and StockPiler.Util.ToNarrow then
+            spentNarrow = StockPiler.Util.ToNarrow(spentLabel)
+        end
         CC.PrintWithItem(
             "AutoBuy: " .. tostring(count) .. "x ",
             uid,
             name,
-            " (spent " .. spentLabel .. ")"
+            " (spent " .. tostring(spentNarrow) .. ")"
         )
     elseif CC and CC.Print then
-        CC.Print("AutoBuy: " .. tostring(count) .. "x " .. tostring(name or "?")
-            .. " (spent " .. spentLabel .. ")")
+        CC.PrintParts(
+            L"AutoBuy: " .. towstring(tostring(count)) .. L"x "
+                .. towstring(tostring(name or "?"))
+                .. L" (spent ",
+            spentLabel,
+            L")"
+        )
     end
+end
+
+local function JobChatName(job)
+    if type(job) ~= "table" then
+        return "?"
+    end
+    local name = job.name or job.label
+    if type(name) == "wstring" then
+        if StockPiler.Util and StockPiler.Util.ToNarrow then
+            name = StockPiler.Util.ToNarrow(name)
+        elseif type(WStringToString) == "function" then
+            name = WStringToString(name)
+        else
+            name = tostring(name)
+        end
+    end
+    name = tostring(name or "")
+    if name ~= "" then
+        return name
+    end
+    local uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+    if uid > 0 then
+        local Inv = StockPiler.Inventory
+        local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
+        if type(sample) == "table" and sample.name ~= nil then
+            return JobChatName({ name = sample.name, uid = uid })
+        end
+        return tostring(uid)
+    end
+    return "?"
+end
+
+--- Unit cost for a buy job: open store match, else last recorded vendor price.
+function Buy.GetJobUnitCost(job)
+    if type(job) ~= "table" then
+        return 0, false
+    end
+    local VA = StockPiler.VendorAdapter
+    local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+    if storeOpen == true and Buy.FindStoreMatch then
+        local item, unitCost = Buy.FindStoreMatch(job)
+        unitCost = tonumber(unitCost) or 0
+        if type(item) == "table" and unitCost > 0 then
+            return unitCost, true
+        end
+        local matchUid = type(item) == "table"
+            and (tonumber(item.uniqueID) or tonumber(item.id) or 0) or 0
+        if matchUid > 0 and StockPiler.Knowledge and StockPiler.Knowledge.GetVendorCost then
+            local known = tonumber(StockPiler.Knowledge.GetVendorCost(matchUid)) or 0
+            if known > 0 then
+                return known, true
+            end
+        end
+    end
+    local Know = StockPiler.Knowledge
+    if Know and Know.GetVendorCost then
+        local uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+        local known = tonumber(Know.GetVendorCost(uid)) or 0
+        if known > 0 then
+            return known, true
+        end
+    end
+    return 0, false
+end
+
+--- Sum known unit costs * deficit. Returns totalBrass, pricedCount, jobCount.
+function Buy.EstimateJobsCostBrass(jobs)
+    local total = 0
+    local priced = 0
+    local n = 0
+    if type(jobs) ~= "table" then
+        return 0, 0, 0
+    end
+    for i = 1, #jobs do
+        local job = jobs[i]
+        local deficit = tonumber(job and job.deficit) or 0
+        if deficit > 0 then
+            n = n + 1
+            local unit = Buy.GetJobUnitCost(job)
+            if unit > 0 then
+                total = total + unit * deficit
+                priced = priced + 1
+            end
+        end
+    end
+    return total, priced, n
+end
+
+local QUEUE_ANNOUNCE_DEBOUNCE_SEC = 0.85
+
+local function PlanGenForBuyJobs()
+    local Planner = StockPiler.Planner
+    local gen = 0
+    if Planner and type(Planner.GetPlanGen) == "function" then
+        gen = tonumber(Planner.GetPlanGen()) or 0
+    elseif Planner then
+        gen = tonumber(Planner._planGen) or 0
+    end
+    local PS = StockPiler.PlanSnapshot
+    if PS and type(PS.Get) == "function" then
+        local plan = PS.Get()
+        local snap = type(plan) == "table" and tonumber(plan.planGen) or 0
+        if snap > gen then
+            gen = snap
+        end
+    end
+    return gen
+end
+
+local function JobsCacheKey()
+    local Inv = StockPiler.Inventory
+    local snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
+    local Caps = StockPiler.TradeSkillCaps
+    local skillHash = Caps and Caps.LevelsHash and Caps.LevelsHash() or ""
+    local watchGen = StockPiler.Watch and StockPiler.Watch.GetGen and StockPiler.Watch.GetGen() or 0
+    local skillUpHash = "0"
+    local SkillUp = StockPiler.SkillUp
+    if SkillUp then
+        local parts = {}
+        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+            parts[#parts + 1] = "c:" .. tostring(SkillUp.TargetMaxSkill and SkillUp.TargetMaxSkill() or 0)
+        end
+        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+            parts[#parts + 1] = "a:" .. tostring(SkillUp.ApoTargetTier and SkillUp.ApoTargetTier() or 0)
+                .. "/" .. tostring(SkillUp.ApoContainerBuyTarget and SkillUp.ApoContainerBuyTarget() or 0)
+                .. "/" .. tostring(SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0)
+        end
+        if #parts > 0 then
+            skillUpHash = table.concat(parts, "|")
+        end
+    end
+    local UpgradeSeed = StockPiler.UpgradeSeed
+    local upgradeHash = "0"
+    if UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true then
+        upgradeHash = "1"
+    end
+    local Watch = StockPiler.Watch
+    local opt = "1"
+    if Watch and Watch.IsOptimisticOutcomeEstimate
+        and Watch.IsOptimisticOutcomeEstimate() ~= true
+    then
+        opt = "0"
+    end
+    return tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(skillHash)
+        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash .. ":" .. upgradeHash
+        .. ":" .. opt .. ":" .. tostring(PlanGenForBuyJobs())
+end
+
+local function QueueFingerprint(jobs)
+    local parts = {}
+    if type(jobs) ~= "table" then
+        return ""
+    end
+    for i = 1, #jobs do
+        local job = jobs[i]
+        local deficit = tonumber(job and job.deficit) or 0
+        if deficit > 0 then
+            local id = tostring(job.acquireKey or job.specKey or job.uid or job.uniqueID or i)
+            parts[#parts + 1] = id .. "=" .. tostring(deficit)
+        end
+    end
+    table.sort(parts)
+    return table.concat(parts, "|")
+end
+
+local function PrintQueueMessage(jobs)
+    local parts = {}
+    local limit = 6
+    local shown = 0
+    for i = 1, #(jobs or {}) do
+        local job = jobs[i]
+        local deficit = tonumber(job and job.deficit) or 0
+        if deficit > 0 then
+            shown = shown + 1
+            if #parts < limit then
+                parts[#parts + 1] = JobChatName(job) .. " x" .. tostring(deficit)
+            end
+        end
+    end
+    local T = (StockPiler.Util and StockPiler.Util.T) or StockPiler.T
+    local CC = StockPiler.CraftChatAdapter
+    local function Chat(msg)
+        if CC and CC.Print then
+            CC.Print(msg)
+        elseif StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(msg)
+        end
+    end
+    if shown <= 0 then
+        if Buy._queueHadItems == true then
+            local msg = T and T("buy.queue.cleared") or L"<icon02486> AutoBuy queue cleared."
+            Chat(msg)
+            Buy._queueHadItems = false
+        end
+        return
+    end
+    Buy._queueHadItems = true
+    local list = table.concat(parts, ", ")
+    if shown > limit then
+        list = list .. ", +" .. tostring(shown - limit) .. " more"
+    end
+    local estBrass, pricedN, jobN = Buy.EstimateJobsCostBrass(jobs)
+    local priced = pricedN > 0 and estBrass > 0
+    local brassPerGold = Buy.BRASS_PER_GOLD or 10000
+    local cap = Buy.GetBudgetGold and Buy.GetBudgetGold() or 0
+    local spentBrass = Buy.GetSpentBrass and Buy.GetSpentBrass() or 0
+    local remainBrass = math.max(0, (cap * brassPerGold) - spentBrass)
+    local costKey = (pricedN >= jobN and jobN > 0)
+        and "buy.queue.announce_cost"
+        or "buy.queue.announce_cost_partial"
+    local msg
+    if priced then
+        msg = T and T(costKey, {
+            list = list,
+            cost = FormatSpentLabel(estBrass),
+            spent = FormatSpentLabel(spentBrass),
+            gold = Buy.FormatGoldAmount(cap),
+            remain = FormatSpentLabel(remainBrass),
+        })
+    else
+        msg = T and T("buy.queue.announce", { list = list })
+    end
+    if msg == nil then
+        if priced then
+            msg = L"<icon02486> AutoBuy queue: " .. towstring(list)
+                .. L". Cost " .. FormatSpentLabel(estBrass)
+                .. L" (Budget " .. FormatSpentLabel(spentBrass) .. L" / "
+                .. Buy.FormatGoldAmount(cap) .. L", "
+                .. FormatSpentLabel(remainBrass) .. L" left)."
+        else
+            msg = L"<icon02486> AutoBuy queue: " .. towstring(list) .. L"."
+        end
+    end
+    Chat(msg)
+    LogBuy("queue-announce n=" .. tostring(shown)
+        .. " priced=" .. tostring(pricedN) .. "/" .. tostring(jobN)
+        .. " estBrass=" .. tostring(estBrass)
+        .. " list=" .. list)
+end
+
+--- Debounced: one chat line whenever the shortage fingerprint changes.
+local function ScheduleQueueAnnounce(jobs)
+    if Buy.IsEnabled() ~= true then
+        return
+    end
+    local key = QueueFingerprint(jobs)
+    if key == (Buy._queueAnnounceKey or "") then
+        Buy._queuePendingKey = nil
+        Buy._queueAnnounceDue = nil
+        return
+    end
+    if key == Buy._queuePendingKey and Buy._queueAnnounceDue ~= nil then
+        -- Same pending change: keep the original due time.
+        return
+    end
+    Buy._queuePendingKey = key
+    Buy._queuePendingJobs = jobs
+    Buy._queueAnnounceDue = NowSec() + QUEUE_ANNOUNCE_DEBOUNCE_SEC
+end
+
+--- One collect for a plan update. A matching jobs cache is not collected again.
+local function ArmPlanQueueAnnounce()
+    if Buy.IsEnabled() ~= true then
+        Buy._planQueueAnnouncePending = nil
+        return false
+    end
+    local key = JobsCacheKey()
+    if type(Buy._jobsCache) == "table" and Buy._jobsCacheKey == key then
+        local fp = QueueFingerprint(Buy._jobsCache)
+        if fp == (Buy._queueAnnounceKey or "") and Buy._queueAnnounceDue == nil then
+            return false
+        end
+        ScheduleQueueAnnounce(Buy._jobsCache)
+    else
+        Buy._suppressQueueSchedule = true
+        local ok, jobs = pcall(Buy.CollectBuyJobs)
+        Buy._suppressQueueSchedule = false
+        if ok ~= true then
+            return false
+        end
+        ScheduleQueueAnnounce(type(jobs) == "table" and jobs or {})
+    end
+    if Buy._queueAnnounceDue == nil then
+        return false
+    end
+    -- Plan updates chat on this evaluation instead of waiting out the buy debounce.
+    Buy._queueAnnounceDue = 0
+    return true
+end
+
+function Buy.FlushQueueAnnounce()
+    if Buy._planQueueAnnouncePending == true then
+        Buy._planQueueAnnouncePending = nil
+        local FW = StockPiler.FrameWork
+        if FW and type(FW.Cancel) == "function" then
+            FW.Cancel("Buy.PlanQueueAnnounce")
+        end
+        ArmPlanQueueAnnounce()
+    end
+    local due = tonumber(Buy._queueAnnounceDue)
+    if due == nil then
+        return false
+    end
+    local now = NowSec()
+    if now > 0 and due > 0 and now < due then
+        return false
+    end
+    local key = Buy._queuePendingKey
+    Buy._queueAnnounceDue = nil
+    Buy._queuePendingKey = nil
+    local jobs = Buy._queuePendingJobs
+    Buy._queuePendingJobs = nil
+    if key == nil then
+        return false
+    end
+    if key == (Buy._queueAnnounceKey or "") then
+        return false
+    end
+    -- The plan-update pass already filled this cache. Do not collect again.
+    local cacheFresh = type(jobs) == "table"
+        and type(Buy._jobsCache) == "table"
+        and Buy._jobsCacheKey ~= nil
+        and Buy._jobsCacheKey == JobsCacheKey()
+        and jobs == Buy._jobsCache
+    if cacheFresh ~= true and Buy.CollectBuyJobs then
+        Buy._suppressQueueSchedule = true
+        local ok, fresh = pcall(Buy.CollectBuyJobs)
+        Buy._suppressQueueSchedule = false
+        if ok and type(fresh) == "table" then
+            jobs = fresh
+            key = QueueFingerprint(fresh)
+            if key == (Buy._queueAnnounceKey or "") then
+                return false
+            end
+        end
+    end
+    Buy._queueAnnounceKey = key
+    PrintQueueMessage(type(jobs) == "table" and jobs or {})
+    return true
+end
+
+--- Re-evaluate after Optimistic / watch settings (vendor need not be open).
+function Buy.NotifyQueueMaybeChanged()
+    Buy.InvalidateJobsCache()
+    if Buy.IsEnabled() ~= true then
+        Buy._queuePendingKey = nil
+        Buy._queueAnnounceDue = nil
+        Buy._queuePendingJobs = nil
+        return
+    end
+    Buy._suppressQueueSchedule = true
+    local ok, jobs = pcall(Buy.CollectBuyJobs)
+    Buy._suppressQueueSchedule = false
+    if not ok then
+        jobs = {}
+    end
+    jobs = type(jobs) == "table" and jobs or {}
+    local key = QueueFingerprint(jobs)
+    if key == (Buy._queueAnnounceKey or "") then
+        return
+    end
+    -- Settings toggles should chat immediately (no debounce wait).
+    Buy._queueAnnounceDue = nil
+    Buy._queuePendingKey = nil
+    Buy._queuePendingJobs = nil
+    Buy._queueAnnounceKey = key
+    PrintQueueMessage(jobs)
 end
 
 local function FlushFillChat()
@@ -696,6 +1098,18 @@ local function AccountConfirmedBuy(pending, liveMoney)
     local Watch = StockPiler.Watch
     if Watch and Watch.AddAutoBuySpentBrass then
         Watch.AddAutoBuySpentBrass(costTotal)
+    end
+    -- Remember paid unit price for tip/queue when the vendor is closed later.
+    if unitCost > 0 and StockPiler.Knowledge and StockPiler.Knowledge.RememberVendorCost then
+        local payUid = tonumber(pending.uid) or 0
+        if payUid > 0 then
+            StockPiler.Knowledge.RememberVendorCost(payUid, unitCost)
+        end
+        local jobUid = type(pending.job) == "table"
+            and (tonumber(pending.job.uid) or tonumber(pending.job.uniqueID) or 0) or 0
+        if jobUid > 0 and jobUid ~= payUid then
+            StockPiler.Knowledge.RememberVendorCost(jobUid, unitCost)
+        end
     end
     local Bus = StockPiler.EventBus
     if Bus and Bus.FireWatchUiDirty then
@@ -1118,25 +1532,23 @@ local function ChatVisitStop(reason)
         local msg = nil
         if Buy._visitStopReason == "reserve" then
             local gold = Buy.GetReserveGold and Buy.GetReserveGold() or 0
-            msg = T and T("buy.blocked.reserve", { gold = tostring(gold) })
+            msg = T and T("buy.blocked.reserve", { gold = Buy.FormatGoldAmount(gold) })
                 or (L"<icon02486> AutoBuy paused - gold is at or below your Reserve ("
-                    .. towstring(tostring(gold)) .. L"g).")
+                    .. Buy.FormatGoldAmount(gold) .. L").")
         elseif Buy._visitStopReason == "budget" then
-            local brassPerGold = Buy.BRASS_PER_GOLD or 10000
             local totalSpent = math.max(
                 spent,
                 (tonumber(Buy.GetSpentBrass and Buy.GetSpentBrass()) or 0)
                     + (tonumber(OpenLateTotalBrass and OpenLateTotalBrass()) or 0)
             )
-            local spentGold = math.floor(totalSpent / brassPerGold)
             local cap = Buy.GetBudgetGold and Buy.GetBudgetGold() or 0
             msg = T and T("buy.blocked.budget", {
-                spent = tostring(spentGold),
-                gold = tostring(cap),
+                spent = FormatSpentLabel(totalSpent),
+                gold = Buy.FormatGoldAmount(cap),
             })
                 or (L"<icon02486> AutoBuy paused - Budget reached ("
-                    .. towstring(tostring(spentGold)) .. L"g / "
-                    .. towstring(tostring(cap)) .. L"g).")
+                    .. FormatSpentLabel(totalSpent) .. L" / "
+                    .. Buy.FormatGoldAmount(cap) .. L").")
         else
             msg = T and T("buy.blocked.craft_bag")
                 or L"<icon02486> AutoBuy paused - craft bag full; bought what fit, rest waits for space."
@@ -1146,10 +1558,17 @@ local function ChatVisitStop(reason)
         elseif StockPiler.Debug and StockPiler.Debug.Print then
             StockPiler.Debug.Print(msg)
         end
+    elseif CC and CC.PrintParts and bought > 0 then
+        CC.PrintParts(
+            L"AutoBuy: visit stop (" .. towstring(tostring(Buy._visitStopReason))
+                .. L") bought=" .. towstring(tostring(bought))
+                .. L" spent=",
+            FormatSpentLabel(spent)
+        )
     elseif CC and CC.Print and bought > 0 then
-        CC.Print("AutoBuy: visit stop (" .. Buy._visitStopReason
-            .. ") bought=" .. tostring(bought)
-            .. " spent=" .. FormatSpentLabel(spent))
+        CC.Print(L"AutoBuy: visit stop (" .. towstring(tostring(Buy._visitStopReason))
+            .. L") bought=" .. towstring(tostring(bought))
+            .. L" spent=" .. FormatSpentLabel(spent))
     end
     LogBuy("visit-stop " .. Buy._visitStopReason
         .. " bought=" .. tostring(bought) .. " spent=" .. tostring(spent))
@@ -1158,9 +1577,6 @@ end
 local function WakeBrewAfterBuyFill(reason)
     reason = tostring(reason or "buy-fill")
     local Planner = StockPiler.Planner
-    if Planner and Planner.InvalidateHaveWarm then
-        Planner.InvalidateHaveWarm()
-    end
     local PS = StockPiler.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     local planRows = type(plan) == "table" and plan.rows or nil
@@ -1170,10 +1586,11 @@ local function WakeBrewAfterBuyFill(reason)
         Planner.SyncLiveStatusClosedWindow()
     end
     if Planner and Planner.LiveRecount then
+        -- Have warms on the inventory FrameWork slice. Do not bag-walk here.
         Planner.LiveRecount({
             clearClosedSnap = true,
             invalidateStamps = true,
-            allowWarmHave = true,
+            allowWarmHave = false,
             syncSnapshot = true,
         })
     end
@@ -1509,35 +1926,11 @@ end
 ----------------------------------------------------------------
 
 function Buy.CollectBuyJobs()
-    local Inv = StockPiler.Inventory
-    local snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
-    local Caps = StockPiler.TradeSkillCaps
-    local skillHash = Caps and Caps.LevelsHash and Caps.LevelsHash() or ""
-    local watchGen = StockPiler.Watch and StockPiler.Watch.GetGen and StockPiler.Watch.GetGen() or 0
-    local skillUpHash = "0"
-    local SkillUp = StockPiler.SkillUp
-    if SkillUp then
-        local parts = {}
-        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
-            parts[#parts + 1] = "c:" .. tostring(SkillUp.TargetMaxSkill and SkillUp.TargetMaxSkill() or 0)
-        end
-        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
-            parts[#parts + 1] = "a:" .. tostring(SkillUp.ApoTargetTier and SkillUp.ApoTargetTier() or 0)
-                .. "/" .. tostring(SkillUp.ApoContainerBuyTarget and SkillUp.ApoContainerBuyTarget() or 0)
-                .. "/" .. tostring(SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0)
-        end
-        if #parts > 0 then
-            skillUpHash = table.concat(parts, "|")
-        end
-    end
-    local UpgradeSeed = StockPiler.UpgradeSeed
-    local upgradeHash = "0"
-    if UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true then
-        upgradeHash = "1"
-    end
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(skillHash)
-        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash .. ":" .. upgradeHash
+    local cacheKey = JobsCacheKey()
     if type(Buy._jobsCache) == "table" and Buy._jobsCacheKey == cacheKey then
+        if Buy._suppressQueueSchedule ~= true then
+            ScheduleQueueAnnounce(Buy._jobsCache)
+        end
         return Buy._jobsCache
     end
 
@@ -1582,6 +1975,9 @@ function Buy.CollectBuyJobs()
 
     Buy._jobsCache = jobs
     Buy._jobsCacheKey = cacheKey
+    if Buy._suppressQueueSchedule ~= true then
+        ScheduleQueueAnnounce(jobs)
+    end
     return jobs
 end
 
@@ -1806,6 +2202,12 @@ function Buy.IssueOne(opId)
 
     local jobs = Buy.CollectBuyJobs()
     if type(jobs) ~= "table" or #jobs == 0 then
+        -- CollectBuyJobs already scheduled a debounced announce; force it now so
+        -- "queue cleared" is not stranded after idle-no-jobs stops the visit.
+        if Buy._queueAnnounceDue ~= nil then
+            Buy._queueAnnounceDue = 0
+            Buy.FlushQueueAnnounce()
+        end
         -- After a successful fill, stop the visit so Orch does not re-IssueOne
         -- every tick (was spamming idle-no-jobs while the store stayed open).
         if (tonumber(Buy._visitBought) or 0) > 0 and Buy._visitStopReason == nil then
@@ -1829,6 +2231,8 @@ function Buy.IssueOne(opId)
         end
         return done(false)
     end
+    ScheduleQueueAnnounce(jobs)
+    Buy.FlushQueueAnnounce()
 
     -- Gate reserve on live gold; allowance on persisted lifetime spent.
     local money = PlayerMoneyBrass()
@@ -2114,6 +2518,16 @@ function Buy.PollStorePresence()
         VA.FlushPendingStoreRefresh()
     end
     BeginVisitIfNeeded()
+    local interactionOpen = VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true
+    if Buy._lastInteractionOpen == true and interactionOpen ~= true then
+        if StockPiler.Refine and StockPiler.Refine.MarkRefineDue then
+            StockPiler.Refine.MarkRefineDue("interaction-closed")
+        end
+        if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoGrow then
+            StockPiler.Scheduler.WakeAutoGrow()
+        end
+    end
+    Buy._lastInteractionOpen = interactionOpen == true
 end
 
 function Buy.OnStoreUpdated(opts)
@@ -2137,7 +2551,6 @@ local function TryResumeIdleStop(via)
     if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
         return false
     end
-    Buy.InvalidateJobsCache()
     local jobs = Buy.CollectBuyJobs()
     if type(jobs) ~= "table" or #jobs == 0 then
         return false
@@ -2160,6 +2573,30 @@ local function TryResumeIdleStop(via)
 end
 
 function Buy.OnPlanUpdated()
+    if Buy.IsEnabled() == true then
+        local VA = StockPiler.VendorAdapter
+        local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+        local FW = StockPiler.FrameWork
+        local live = FW and type(FW.Enqueue) == "function"
+            and (type(_G.RegisterEventHandler) == "function" or FW._running == true)
+        if storeOpen ~= true and live then
+            Buy._planQueueAnnouncePending = true
+            FW.Enqueue("Buy.PlanQueueAnnounce", function()
+                if Buy._planQueueAnnouncePending ~= true then
+                    return
+                end
+                Buy._planQueueAnnouncePending = nil
+                if ArmPlanQueueAnnounce() then
+                    Buy.FlushQueueAnnounce()
+                end
+            end)
+        else
+            Buy._planQueueAnnouncePending = nil
+            if ArmPlanQueueAnnounce() then
+                Buy.FlushQueueAnnounce()
+            end
+        end
+    end
     local VA = StockPiler.VendorAdapter
     if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
         return
@@ -2167,7 +2604,6 @@ function Buy.OnPlanUpdated()
     if not Buy.IsEnabled() then
         return
     end
-    Buy.InvalidateJobsCache()
     if TryResumeIdleStop("plan-updated") then
         return
     end
@@ -2292,7 +2728,8 @@ function Buy.DumpBuyPlan(opts)
             local row = index.rows[i]
             local item = row and row.item
             if type(item) == "table" then
-                local parsed = MS and MS.FromItemData and MS.FromItemData(item, nil)
+                local parseItem = MS and (MS.FromItemDataCached or MS.FromItemData)
+                local parsed = parseItem and parseItem(item, nil)
                 local req = tonumber(item.craftingSkillRequirement) or 0
                 local pSkill = tonumber(parsed and parsed.skillLevel) or 0
                 local pSlot = tonumber(parsed and parsed.slotType) or 0

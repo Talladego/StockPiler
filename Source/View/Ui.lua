@@ -307,13 +307,32 @@ local function ShouldDeferWatchFlush()
     return false
 end
 
+--- FrameWork quiet: harvest storm / plant quiet / same-frame SkipUi.
+--- ignoreDefer must not paint WatchRows here (v1.1.3 harvest Flatten).
+local function IsFrameWorkQuietHold()
+    local Sch = StockPiler.Scheduler
+    if not Sch then
+        return false
+    end
+    if Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
+        return true
+    end
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
+        return true
+    end
+    return false
+end
+
 --- Light in-place stock/status paint while Watch is open (no ListBox rebind).
 --- Defined after ShouldDeferWatchFlush (Lua local visibility).
---- opts.ignoreDefer: plant quiet / harvest storm still need status recount.
+--- opts.ignoreDefer skips soft holds only. Quiet hold always returns false.
 --- opts.forceRecount / allowBrewHold: post-brew event path (session may stay loaded).
 local function TryWatchLiveCatchup(opts)
     opts = type(opts) == "table" and opts or {}
     if not IsWatchTabVisible() then
+        return false
+    end
+    if IsFrameWorkQuietHold() then
         return false
     end
     if opts.ignoreDefer ~= true and ShouldDeferWatchFlush() then
@@ -336,12 +355,19 @@ local function TryWatchLiveCatchup(opts)
         return false
     end
     if opts.forceRecount == true then
-        Planner.LiveRecount({
-            invalidateStamps = true,
-            allowWarmHave = true,
-            syncSnapshot = true,
-            forceRecountCraftable = true,
-        })
+        local Inv = StockPiler.Inventory
+        local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+        local frame = tonumber(StockPiler.FrameCounter) or 0
+        local already = Planner.ForcedRecountMatches
+            and Planner.ForcedRecountMatches(snap, frame) == true
+        if already ~= true then
+            Planner.LiveRecount({
+                invalidateStamps = true,
+                allowWarmHave = true,
+                syncSnapshot = true,
+                forceRecountCraftable = true,
+            })
+        end
     else
         Planner.LiveRecount({
             allowWarmHave = false,
@@ -359,6 +385,22 @@ end
 local function BrewSessionBlocksRecount()
     local Orch = StockPiler.Orchestrator
     return Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
+end
+
+--- Bag snaps keep arriving every ~2s through harvest, refine, and replant.
+--- The forced craftable recount (WarmHave + Status.Craftable) waits until that stops.
+local function IssueBurstHoldsRecount()
+    local Sch = StockPiler.Scheduler
+    if not Sch then
+        return false
+    end
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
+        return true
+    end
+    if Sch.IsAutoGrowIssueBurstActive and Sch.IsAutoGrowIssueBurstActive() == true then
+        return true
+    end
+    return false
 end
 
 --- One forced craftable recount per inventory snapGen (coalesced to end of frame).
@@ -389,14 +431,30 @@ local function RequestForcedWatchRecount(_reason)
         Ui._forceRecountDeferredWhileHidden = false
         Ui._forceRecountDoneSnapGen = nil
     end
+    if IssueBurstHoldsRecount() then
+        -- Bag snaps during harvest/refine/replant are ~2s apart (bag coalesce).
+        -- Each one used to run sync WarmHave + craftable xN in the quiet gap.
+        Ui._forceRecountPendingSnapGen = snapGen
+        Ui._forceRecountHeldForBurst = true
+        return
+    end
     if snapGen > 0 and Ui._forceRecountDoneSnapGen == snapGen then
         return
     end
     Ui._forceRecountPendingSnapGen = snapGen
+    -- Warm Have before the recount job so forceRecount does not WarmHave.miss.
+    local Sch = StockPiler.Scheduler
+    if Sch and Sch.RequestCachePrewarm then
+        Sch.RequestCachePrewarm("force-watch-recount")
+    end
     local FW = StockPiler.FrameWork
     local genKey = snapGen > 0 and snapGen or ((tonumber(Ui._forceRecountOnceGen) or 0) + 1)
     Ui._forceRecountOnceGen = genKey
     local function run()
+        if IssueBurstHoldsRecount() then
+            Ui._forceRecountHeldForBurst = true
+            return
+        end
         local doneSnap = tonumber(Ui._forceRecountPendingSnapGen) or 0
         if doneSnap > 0 and Ui._forceRecountDoneSnapGen == doneSnap then
             return
@@ -410,11 +468,58 @@ local function RequestForcedWatchRecount(_reason)
             Ui._forceRecountDoneSnapGen = doneSnap
         end
     end
-    if FW and FW.StartOnce then
+    if FW and FW.Start then
+        FW.Start({
+            id = "ui-force-watch-recount",
+            gen = genKey,
+            stepsPerFrame = 1,
+            resume = function(state)
+                if IssueBurstHoldsRecount() then
+                    Ui._forceRecountHeldForBurst = true
+                    return "done"
+                end
+                local P = StockPiler.Planner
+                if state.phase == nil then
+                    state.phase = "warm"
+                    if P and P.BeginWarmHaveSlice then
+                        local result = P.BeginWarmHaveSlice()
+                        if result ~= "done" then
+                            return "continue"
+                        end
+                    end
+                end
+                if state.phase == "warm" then
+                    state.phase = "rows"
+                    if P and P.FinishWarmHaveSlice then
+                        local result = P.FinishWarmHaveSlice()
+                        if result == "defer" then
+                            state.phase = "warm"
+                            return "continue"
+                        end
+                    end
+                    return "continue"
+                end
+                run()
+                return "done"
+            end,
+        })
+    elseif FW and FW.StartOnce then
         FW.StartOnce("ui-force-watch-recount", genKey, run)
     else
         run()
     end
+end
+
+--- One craftable recount after the harvest/refine/replant burst goes idle.
+function Ui.FlushBurstHeldWatchRecount()
+    if Ui._forceRecountHeldForBurst ~= true then
+        return
+    end
+    if IssueBurstHoldsRecount() then
+        return
+    end
+    Ui._forceRecountHeldForBurst = false
+    RequestForcedWatchRecount("burst-idle")
 end
 
 --- Watch became paintable (tab select / window open). Flush bag snaps that
@@ -531,8 +636,11 @@ function Ui.ClearWatchTipCaches()
     end
 end
 
-function Ui.MarkWatchUiDirty()
+function Ui.MarkWatchUiDirty(reason)
     Ui._watchUiDirty = true
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("watchDirty", tostring(reason or "ui"))
+    end
 end
 
 function Ui.RequestFooterRefresh()
@@ -704,10 +812,8 @@ function Ui.FlushWatchUiIfDirty()
             return true
         end
         TryCatalogLiveCatchup()
-        -- Plant quiet / harvest storm skip full RefreshWatch; still patch stock/status.
-        if hardHold and Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true then
-            TryWatchLiveCatchup({ ignoreDefer = true })
-        end
+        -- Do not LiveRecount/UpdateRows during harvest/plant quiet. ignoreDefer
+        -- here stacked WatchRows on every bag dirty (libperf WatchRows xN).
         return
     end
 
@@ -802,12 +908,20 @@ function Ui.FlushWatchUiIfDirty()
             end
             -- Post-brew / bag snap while session stays loaded: recount craftable too
             -- (manual Brew used to leave Craftable stuck until hold expired).
-            StockPiler.Planner.LiveRecount({
-                invalidateStamps = true,
-                allowWarmHave = true,
-                syncSnapshot = true,
-                forceRecountCraftable = true,
-            })
+            -- Skip when SyncWatchLiveCountsAfterBrew already forced this snapGen+frame.
+            local Inv = StockPiler.Inventory
+            local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+            local frame = tonumber(StockPiler.FrameCounter) or 0
+            local already = StockPiler.Planner.ForcedRecountMatches
+                and StockPiler.Planner.ForcedRecountMatches(snap, frame) == true
+            if already ~= true then
+                StockPiler.Planner.LiveRecount({
+                    invalidateStamps = true,
+                    allowWarmHave = true,
+                    syncSnapshot = true,
+                    forceRecountCraftable = true,
+                })
+            end
             if StockPilerTabWatch.UpdateRows then
                 StockPilerTabWatch.UpdateRows({ keepVisible = true })
             end
@@ -883,7 +997,7 @@ function Ui.FlushWatchUiIfDirty()
     Ui._watchUiLastPlanGen = planGen
     Ui._watchUiLastBrewKey = brewKey
     if StockPilerWindow and StockPilerWindow.RefreshActiveTab then
-        StockPilerWindow.RefreshActiveTab()
+        StockPilerWindow.RefreshActiveTab("ui-flush")
     end
     if OpenPaintActive() then
         local watchVisible = IsWatchTabVisible()
@@ -897,7 +1011,25 @@ function Ui.FlushWatchUiIfDirty()
         then
             populated = true
         end
-        if (not watchVisible) or populated then
+        local chromePending = StockPilerWindow._openPaintChromePending == true
+        local needsReal = false
+        if StockPilerTabWatch and type(StockPilerTabWatch.listData) == "table" then
+            local list = StockPilerTabWatch.listData
+            needsReal = #list < 1
+            if needsReal ~= true then
+                needsReal = true
+                for i = 1, #list do
+                    local row = list[i]
+                    if type(row) == "table" and row._optimisticWatch ~= true
+                        and tostring(row.statusKey or "") ~= ""
+                    then
+                        needsReal = false
+                        break
+                    end
+                end
+            end
+        end
+        if (not watchVisible) or (populated and chromePending ~= true and needsReal ~= true) then
             StockPilerWindow._openPaintPending = false
         else
             if listCount > 0 and StockPilerTabWatch and DoesWindowExist("SPTabWatchList") then

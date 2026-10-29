@@ -35,6 +35,21 @@ local function IsPotionType(itemData)
     return tonumber(itemData.type) == 31
 end
 
+-- Potion-ness does not change between the before and after bag snapshots.
+local potionKindByUid = {}
+
+local function IsFinishedPotionItem(itemData)
+    local uid = tonumber(itemData and itemData.uniqueID) or 0
+    if uid > 0 and potionKindByUid[uid] ~= nil then
+        return potionKindByUid[uid] == true
+    end
+    local ok = IsPotionType(itemData) == true
+    if uid > 0 then
+        potionKindByUid[uid] = ok
+    end
+    return ok
+end
+
 local function StackSize(item)
     local n = tonumber(item.stackCount) or tonumber(item.Count) or 0
     if n < 1 then
@@ -145,16 +160,35 @@ end
 
 local function SnapshotPotionCounts()
     local counts = {}
+    local function addItem(item)
+        if IsFinishedPotionItem(item) ~= true then
+            return
+        end
+        local uid = tonumber(item.uniqueID) or 0
+        if uid > 0 then
+            counts[uid] = (counts[uid] or 0) + StackSize(item)
+        end
+    end
     local Inv = StockPiler.Inventory
-    if Inv and Inv.ForEachItem then
-        Inv.ForEachItem(function(item)
-            if IsPotionType(item) then
-                local uid = tonumber(item.uniqueID) or 0
-                if uid > 0 then
-                    counts[uid] = (counts[uid] or 0) + StackSize(item)
-                end
+    local ready = not (Inv and Inv.IsReady) or Inv.IsReady() == true
+    if ready and Inv and Inv.ForEachItem then
+        Inv.ForEachItem(addItem)
+        return counts
+    end
+    local BA = StockPiler.BagAdapter
+    if BA and BA.FetchLight and BA.IterateSlots then
+        local bags = BA.FetchLight()
+        if type(bags) == "table" then
+            for i = 1, #bags do
+                BA.IterateSlots(bags[i], function(_, _, item)
+                    addItem(item)
+                end)
             end
-        end)
+            return counts
+        end
+    end
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(addItem)
     end
     return counts
 end
@@ -400,7 +434,26 @@ function BL.ArmPendingFromLastBoard()
     return true
 end
 
+function BL.HasFreshPendingCraftForFrame(tradeSkill)
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    if frame <= 0 or BL._pendingCraftFrame ~= frame then
+        return false
+    end
+    if type(BL._pendingCraft) ~= "table" then
+        return false
+    end
+    if tradeSkill ~= nil and BL._pendingCraftTrade ~= nil
+        and tonumber(tradeSkill) ~= tonumber(BL._pendingCraftTrade)
+    then
+        return false
+    end
+    return true
+end
+
 function BL.BeginPendingCraft()
+    if BL.HasFreshPendingCraftForFrame() then
+        return true
+    end
     local sessionMats, sessionKey, sessionSkillUp = SessionRecipeLatch()
     local materials = sessionMats
     local recipeKey = sessionKey or ""
@@ -452,6 +505,12 @@ function BL.BeginPendingCraft()
         fromSessionRecipe = fromSession,
         fromPerform = true,
     }
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    if frame > 0 then
+        BL._pendingCraftFrame = frame
+        local AA = StockPiler.ApothecaryAdapter
+        BL._pendingCraftTrade = AA and AA.TradeSkill and AA.TradeSkill() or nil
+    end
     return true
 end
 

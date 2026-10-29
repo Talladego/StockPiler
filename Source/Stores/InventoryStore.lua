@@ -218,6 +218,9 @@ function Inv.MarkDirty(opts)
     if opts.full == true then
         Inv._dirtyFull = true
     end
+    if opts.forceEngine == true then
+        Inv._dirtyEngine = true
+    end
     if opts.needQueue == true then
         Inv._needQueue = true
     end
@@ -274,12 +277,15 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
     end
     newUid = tonumber(newUid) or 0
     newQty = tonumber(newQty) or 0
+    local changed = false
     if old.uid == newUid then
         local delta = newQty - (tonumber(old.qty) or 0)
         if delta ~= 0 then
+            changed = true
             Inv.AdjustUid(newUid, delta, "L0-slot")
         end
     else
+        changed = true
         if (tonumber(old.uid) or 0) > 0 then
             Inv.AdjustUid(old.uid, -(tonumber(old.qty) or 0), "L0-slot-clear")
             ClearSampleIfUnused(old.uid)
@@ -298,6 +304,7 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
     end
     -- Leave Inv._dirty. Clearing it here dropped a rebuild that a different
     -- slot or caller had already requested (PLN-8).
+    Inv._lastSlotChanged = changed == true
     return true
 end
 
@@ -370,18 +377,26 @@ function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
         return false
     end
     local pendingBefore = Inv._snapPending == true
+    local any = false
     for i = 1, n do
+        Inv._lastSlotChanged = false
         if Inv.OnSlotUpdated(bagType, slots[i], bagTable) ~= true then
             return false
         end
+        if Inv._lastSlotChanged == true then
+            any = true
+        end
     end
-    -- Engine said slots changed but L0 saw no net delta (stale empty read on
-    -- restore). Flatten from engine so Watch craftable can follow.
-    if Inv._ready == true and pendingBefore ~= true and Inv._snapPending ~= true then
-        Inv.ForceFullRefresh({
+    -- No net delta and no snap already queued: the slot read may be stale.
+    -- Defer the engine reread to the bag flush instead of scanning on this event.
+    -- A real delta sets _snapPending inside AdjustUid, so it does not reach here.
+    if any ~= true and pendingBefore ~= true and Inv._snapPending ~= true then
+        Inv._dirtyEngine = true
+        Inv.MarkDirty({
+            bagType = bagType,
             forceEngine = true,
             needQueue = true,
-            reason = reason .. "-stale",
+            reason = tostring(reason or "slot") .. "-stale",
         })
     end
     return true
@@ -843,7 +858,17 @@ function Inv.ResolvePotionItemData(potionKey, uid, existing)
     return best or existing
 end
 
+--- Same screen-edge placement bags use (CreateItemTooltip -> ANCHOR_WINDOW_VARIABLE).
+function Inv.AnchorLikeBagItemTooltip()
+    if not (Tooltips and type(Tooltips.AnchorTooltip) == "function") then
+        return
+    end
+    -- ignoreStaticPlacementOption=true matches CreateItemTooltip / backpack slots.
+    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_VARIABLE, true)
+end
+
 --- Full stock item tooltip. opts.allowWithoutUse: materials/plants (no Use bonus).
+--- Anchors like EA_Window_Backpack.MouseOverEquipmentSlot (CreateItemTooltip).
 function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
     if type(itemData) ~= "table" or type(Tooltips) ~= "table"
         or type(Tooltips.CreateItemTooltip) ~= "function"
@@ -859,6 +884,12 @@ function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
         return false
     end
     local win = anchorWindow or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
+    -- Same args as backpackutils: RIGHT + ENABLE_COMPARISON; CreateItemTooltip then
+    -- rewrites the anchor to ANCHOR_WINDOW_VARIABLE (quadrant-aware).
+    local disableComparison = Tooltips.ENABLE_COMPARISON
+    if disableComparison == nil then
+        disableComparison = false
+    end
     local ok
     if StockPiler.Debug and StockPiler.Debug.TryCallQuiet then
         ok = StockPiler.Debug.TryCallQuiet(
@@ -867,10 +898,22 @@ function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
             data,
             win,
             Tooltips.ANCHOR_WINDOW_RIGHT,
+            disableComparison,
+            nil,
+            nil,
             false
         )
     else
-        ok = pcall(Tooltips.CreateItemTooltip, data, win, Tooltips.ANCHOR_WINDOW_RIGHT, false)
+        ok = pcall(
+            Tooltips.CreateItemTooltip,
+            data,
+            win,
+            Tooltips.ANCHOR_WINDOW_RIGHT,
+            disableComparison,
+            nil,
+            nil,
+            false
+        )
     end
     return ok == true
 end

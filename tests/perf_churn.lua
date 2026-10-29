@@ -586,6 +586,478 @@ P.CacheKeyFromGens()
 check(liveReads > tickReads, "a new game tick reads trade skills again")
 planTick = 500
 
+----------------------------------------------------------------
+-- Brew frametime: defer cold WarmHave, skip repeat relink, cache slots.
+----------------------------------------------------------------
+
+StockPiler.Util.TryCall = StockPiler.Util.TryCall or function(_, fn, ...)
+    local ok, a, b = pcall(fn, ...)
+    if ok then
+        return a, b
+    end
+    return false
+end
+
+GameData.Player = GameData.Player or {}
+GameData.Player.itemsDirty = false
+GameData.Player.craftingItemsDirty = false
+load_module("Source/Adapters/BagAdapter.lua")
+local BA = StockPiler.BagAdapter
+GameData.Player.itemsDirty = false
+GameData.Player.craftingItemsDirty = false
+BA.FetchForce()
+eq(GameData.Player.itemsDirty, false, "FetchForce does not leave itemsDirty set")
+eq(GameData.Player.craftingItemsDirty, false, "FetchForce does not leave craftingItemsDirty set")
+
+load_module("Source/Adapters/ApothecaryAdapter.lua")
+local AA = StockPiler.ApothecaryAdapter
+local slotReads = 0
+local backpackReads = 0
+StockPiler.FrameCounter = 4
+GetCraftingBackPackSlots = function()
+    slotReads = slotReads + 1
+    return { [0] = { slot = 1, backpack = 2 } }
+end
+EA_Window_Backpack = {
+    TYPE_INVENTORY = 2,
+    TYPE_CRAFTING = 4,
+    GetItemsFromBackpack = function()
+        backpackReads = backpackReads + 1
+        return { [1] = { uniqueID = 42, stackCount = 3 } }
+    end,
+}
+AA.TradeSkill = function()
+    return 4
+end
+AA.CraftingBackpackType = function()
+    return 4
+end
+eq(AA.GetSlottedItem(0) ~= nil, true, "a slotted item resolves from the backpack")
+eq(AA.GetSlottedItem(0) ~= nil, true, "the same frame resolves the slotted item again")
+eq(slotReads, 1, "GetCraftingBackPackSlots is cached for the frame")
+eq(backpackReads, 1, "GetItemsFromBackpack is cached for the frame")
+AA.InvalidateCraftSlotCache()
+eq(AA.GetSlottedItem(0) ~= nil, true, "an invalidated cache reads the slot again")
+eq(slotReads, 2, "invalidating the slot cache reads slots again")
+
+local walks = 0
+StockPiler.Inventory.ForEachItem = function(fn)
+    walks = walks + 1
+    fn({ uniqueID = 77, stackCount = 2, type = 31 })
+end
+StockPiler.Inventory.IsReady = function()
+    return true
+end
+StockPiler.Brew = {
+    GetSession = function()
+        return {
+            recipe = {
+                slots = {
+                    { role = "container", uniqueID = 1, perCraft = 1 },
+                    { role = "main", uniqueID = 2, perCraft = 1 },
+                },
+            },
+            recipeSpecKey = "brew-test",
+        }
+    end,
+}
+load_module("Source/Knowledge/BrewLearn.lua")
+local BL = StockPiler.BrewLearn
+StockPiler.FrameCounter = 6
+eq(BL.BeginPendingCraft(), true, "the first perform captures the pending craft")
+eq(walks, 1, "the first capture snapshots potion counts")
+eq(BL.HasFreshPendingCraftForFrame(4), true, "the pending craft is fresh this frame")
+eq(BL.BeginPendingCraft(), true, "a second capture on the same frame is skipped")
+eq(walks, 1, "the same-frame capture does not walk bags again")
+
+load_module("Source/Knowledge/MaterialSpec.lua")
+load_module("Source/Knowledge/RecipeSpec.lua")
+local RS = StockPiler.RecipeSpec
+StockPiler.Account = { recipes = {}, potions = {}, items = {} }
+local relinks = 0
+local origRelink = RS.RelinkPotionRecipeKeysFromOutcomes
+RS.RelinkPotionRecipeKeysFromOutcomes = function()
+    relinks = relinks + 1
+    return origRelink()
+end
+local uidRelinks = 0
+local origUidRelink = RS.RelinkPotionUid
+RS.RelinkPotionUid = function(uid)
+    uidRelinks = uidRelinks + 1
+    return origUidRelink(uid)
+end
+local function brewOnce()
+    return RS.StoreLearnedRecipeSpec({
+        {
+            uniqueID = 11,
+            role = "container",
+            itemData = { uniqueID = 11, name = "Vial" },
+        },
+        {
+            uniqueID = 12,
+            role = "main",
+            itemData = { uniqueID = 12, name = "Leaf", stability = 1 },
+        },
+    }, {
+        { uniqueID = 77, name = "Tonic", lastDelta = 1 },
+    })
+end
+local genBefore = RS.GetRecipeStatsGen()
+eq(brewOnce(), true, "the first brew of a recipe is stored")
+check(RS.GetRecipeStatsGen() > genBefore, "a new recipe bumps recipe stats")
+check(relinks >= 1 or uidRelinks >= 1, "a new recipe relinks potion keys")
+local genMid = RS.GetRecipeStatsGen()
+local relinksMid = relinks
+eq(brewOnce(), true, "a repeat brew of the same recipe is stored")
+eq(relinks, relinksMid, "a repeat single-outcome brew does not relink keys")
+-- Yield may still be settling across the first samples, so only require that
+-- a later identical 1x brew stops moving the stats generation.
+for _ = 1, 6 do
+    brewOnce()
+end
+local genSettled = RS.GetRecipeStatsGen()
+local relinksSettled = relinks
+eq(brewOnce(), true, "another identical brew is stored")
+eq(RS.GetRecipeStatsGen(), genSettled, "a settled 1x brew does not bump recipe stats")
+eq(relinks, relinksSettled, "a settled 1x brew does not relink keys")
+
+local learnedRecipe = nil
+for _, row in pairs(StockPiler.Account.recipes) do
+    learnedRecipe = row
+end
+local displayBefore = RS.GetRecipeDisplayGen()
+local attemptsBefore = RS.OutcomeSuccessStats(learnedRecipe, 77).brewAttempts
+eq(brewOnce(), true, "one more settled brew is stored")
+eq(RS.GetRecipeStatsGen(), genSettled, "the extra settled brew still does not bump recipe stats")
+check(RS.GetRecipeDisplayGen() > displayBefore, "the Potions tab display generation moves")
+local attemptsAfter = RS.OutcomeSuccessStats(learnedRecipe, 77).brewAttempts
+check(attemptsAfter > attemptsBefore, "the live recipe attempt count moves")
+load_module("Source/View/RecipeTooltip.lua")
+local prevTipT = StockPiler.Util.T
+StockPiler.Util.T = function(key, tokens)
+    local s = tostring(key)
+    if key == "recipe.success" then
+        s = "Success: {pct}% ({ok}/{att})"
+    end
+    if type(tokens) == "table" then
+        for k, v in pairs(tokens) do
+            s = string.gsub(s, "{" .. tostring(k) .. "}", tostring(v))
+        end
+    end
+    return s
+end
+local tipRows = StockPiler.RecipeTooltip.BuildRows({
+    name = "Tonic",
+    potionUid = 77,
+    recipe = learnedRecipe,
+    recipeYield = 1,
+    brewAttempts = 1,
+    brewSuccesses = 1,
+    successRate = 1,
+})
+StockPiler.Util.T = prevTipT
+local tipLine = ""
+for i = 1, #tipRows do
+    local text = tostring(tipRows[i].text or "")
+    if string.find(text, "Success:", 1, true) ~= nil then
+        tipLine = text
+    end
+end
+check(attemptsAfter > 1, "the live attempt count is past the stale snapshot")
+local showsLive = string.find(tipLine, tostring(attemptsAfter), 1, true) ~= nil
+check(showsLive == true, "the recipe tooltip shows the live attempt count")
+
+load_module("Source/Brew.lua")
+local Brew = StockPiler.Brew
+local allows = {}
+local prewarms = 0
+local dirtyRecount = nil
+StockPiler.Planner.LiveRecount = function(opts)
+    allows[#allows + 1] = opts and opts.allowWarmHave
+    return 1
+end
+StockPiler.Planner.IsHaveCacheWarmForSnap = function()
+    return false
+end
+local origPrewarm = StockPiler.Scheduler.RequestCachePrewarm
+StockPiler.Scheduler.RequestCachePrewarm = function(reason)
+    prewarms = prewarms + 1
+    return origPrewarm(reason)
+end
+local origDirty = StockPiler.EventBus.FireWatchUiDirty
+StockPiler.EventBus.FireWatchUiDirty = function(payload)
+    if payload and payload.reason == "after-brew-counts" then
+        dirtyRecount = payload.recount
+    end
+    return origDirty(payload)
+end
+StockPiler.Inventory.IsSnapshotPending = function()
+    return false
+end
+StockPiler.Inventory.CountByUid = function()
+    return 5
+end
+StockPiler.Inventory._snapPending = false
+StockPiler.FrameCounter = 8
+StockPiler.Scheduler.NoteHeavyWork()
+Brew._session = {
+    phase = "loaded",
+    uniqueID = 77,
+    potionKey = "uid:77",
+    potionMin = 10,
+    potionHave = 4,
+    potionDeficit = 6,
+    craftable = 2,
+}
+Brew._brewHaveBefore = 5
+Brew._postBrewClearArmed = false
+Brew._loadSource = "auto"
+Brew.RefreshSessionAfterBrew()
+eq(allows[#allows], false, "a cold bag-flush frame does not WarmHave")
+check(prewarms >= 1, "a cold bag-flush frame enqueues WarmHave")
+eq(dirtyRecount, nil, "after-brew watch dirty does not request another recount")
+allows = {}
+prewarms = 0
+StockPiler.FrameCounter = 9
+Brew._session.phase = "loaded"
+Brew._brewHaveBefore = 5
+Brew._postBrewClearArmed = false
+Brew.RefreshSessionAfterBrew()
+eq(allows[#allows], true, "off the bag-flush frame a cold cache still WarmHaves")
+
+local craftArgs = {}
+PerformCrafting = function(a, b, c)
+    craftArgs[#craftArgs + 1] = { a, b, c }
+    return "crafted", b
+end
+load_module("Source/Knowledge/LearnBridge.lua")
+local LB = StockPiler.LearnBridge
+LB._performHooked = false
+eq(LB.EnsurePerformCraftingHook(), true, "PerformCrafting is hooked")
+AA.TradeSkill = function()
+    error("trade skill down")
+end
+local craftResult, craftEcho = PerformCrafting(4, 9, "tail")
+eq(craftResult, "crafted", "a throwing trade-skill prologue still crafts")
+eq(craftEcho, 9, "the craft return value is forwarded")
+eq(craftArgs[1][1], 4, "the trade skill argument is forwarded")
+eq(craftArgs[1][2], 9, "the count argument is forwarded")
+eq(craftArgs[1][3], "tail", "the extra argument is forwarded")
+AA.TradeSkill = function()
+    return 4
+end
+BL.HasFreshPendingCraftForFrame = function()
+    error("fresh check down")
+end
+craftResult, craftEcho = PerformCrafting(4, 2, "more")
+eq(craftResult, "crafted", "a throwing fresh-check prologue still crafts")
+eq(craftEcho, 2, "the second craft return value is forwarded")
+eq(#craftArgs, 2, "both crafts reached the original function")
+eq(craftArgs[2][3], "more", "the second extra argument is forwarded")
+
+-- Craft-bag free slots stay cached for a snap and drop after a forced fetch.
+StockPiler.Inventory.GetSnapGen = function()
+    return 3
+end
+GameData.Player.craftingItemsDirty = false
+local freeReads = 0
+local realCount = BA.CountBagOccupancy
+BA.CountBagOccupancy = function(bagType)
+    freeReads = freeReads + 1
+    return 1, 4
+end
+BA.InvalidateCraftFreeCache()
+eq(BA.CraftBagFreeSlots(), 3, "craft bag free slots are capacity minus filled")
+eq(BA.CraftBagFreeSlots(), 3, "the same snap reuses the free-slot cache")
+eq(freeReads, 1, "a cached free-slot check does not recount the craft bag")
+BA.FetchForce()
+eq(BA.CraftBagFreeSlots(), 3, "a forced fetch recounts free slots")
+check(freeReads > 1, "FetchForce invalidates the free-slot cache")
+BA.CountBagOccupancy = realCount
+
+-- Lazy watch tips fill on FrameWork and match an eager Build.
+do
+    local RS = StockPiler.RecipeSpec
+    local prevRecipe = RS.RecipeSpecForPotion
+    local prevAuto = RS.ShouldAutoGrowPotion
+    local prevHydrate = RS.HydrateRecipeSlots
+    local prevSM = StockPiler.SeedMap
+    local prevCount = StockPiler.Inventory.CountByUid
+    local recipe = {
+        slots = {
+            {
+                role = "main",
+                spec = { role = "main", key = "leaf", uid = 11, uniqueID = 11 },
+            },
+        },
+    }
+    RS.HydrateRecipeSlots = function() end
+    RS.RecipeSpecForPotion = function(key)
+        local text = tostring(key or "")
+        if text == "uid:501" or text == "uid:502" or text == "uid:503" or text == "uid:504" then
+            return recipe
+        end
+        return prevRecipe(key)
+    end
+    RS.ShouldAutoGrowPotion = function()
+        return true
+    end
+    StockPiler.SeedMap = {
+        IsGrowableSpec = function()
+            return true
+        end,
+        ResolveSeedForSpec = function()
+            return { uniqueID = 900, uid = 900, plantUid = 901 }
+        end,
+        FindPlantUidForSpec = function()
+            return 901
+        end,
+    }
+    StockPiler.Inventory.CountByUid = function(uid)
+        uid = tonumber(uid) or 0
+        if uid >= 501 and uid <= 504 then
+            return 10
+        end
+        return 0
+    end
+    local function arm(key)
+        Watch.SetEnabled(key, true)
+        Watch.SetAutoGrow(key, true)
+        Watch.SetTarget(key, 2)
+    end
+    arm("uid:501")
+    arm("uid:502")
+    arm("uid:503")
+    arm("uid:504")
+    local function sig(plan)
+        local parts = {}
+        local rows = plan and plan.rows or {}
+        for i = 1, #rows do
+            local row = rows[i]
+            local key = tostring(row.potionKey or "")
+            if key == "uid:501" or key == "uid:502" or key == "uid:503" or key == "uid:504" then
+                local tips = type(row.statusTipSlots) == "table" and #row.statusTipSlots or -1
+                local seeds = {}
+                if type(row.seedBufferSeedUids) == "table" then
+                    for u = 1, #row.seedBufferSeedUids do
+                        seeds[#seeds + 1] = tostring(row.seedBufferSeedUids[u])
+                    end
+                end
+                local tipSeeds = {}
+                local tip = row.seedBufferTip
+                if type(tip) == "table" and type(tip.seedUids) == "table" then
+                    for u = 1, #tip.seedUids do
+                        tipSeeds[#tipSeeds + 1] = tostring(tip.seedUids[u])
+                    end
+                end
+                parts[#parts + 1] = table.concat({
+                    key,
+                    tostring(tips),
+                    table.concat(seeds, ","),
+                    table.concat(tipSeeds, ","),
+                    tostring(row.seedBufferShort),
+                    tostring(row.statusKey),
+                }, "|")
+            end
+        end
+        table.sort(parts)
+        return table.concat(parts, ";")
+    end
+    P._lazyWatchTips = nil
+    local eager = P.Build({ force = true })
+    check(type(eager) == "table", "eager BuildFull publishes a plan")
+    local eagerSig = sig(eager)
+    check(string.find(eagerSig, "900", 1, true) ~= nil, "eager tips keep the seed uid")
+    P._lazyWatchTips = true
+    local lazy = P.Build({ force = true })
+    P._lazyWatchTips = nil
+    check(type(lazy) == "table", "lazy BuildFull publishes a plan")
+    local lazyRows = lazy and lazy.rows or {}
+    local sawLazy = false
+    local snap = StockPiler.Inventory.GetSnapGen()
+    for i = 1, #lazyRows do
+        local row = lazyRows[i]
+        local key = tostring(row.potionKey or "")
+        if key == "uid:501" or key == "uid:502" or key == "uid:503" or key == "uid:504" then
+            sawLazy = true
+            eq(type(row.statusTipSlots), "nil", "lazy build leaves status tips empty")
+            row.seedBufferSeedUids = { 1 }
+            row._seedBufferUidSnapGen = snap
+        end
+    end
+    check(sawLazy == true, "lazy build includes the watch rows")
+    local hoverRow = nil
+    for i = 1, #lazyRows do
+        if tostring(lazyRows[i].potionKey or "") == "uid:504" then
+            hoverRow = lazyRows[i]
+            break
+        end
+    end
+    eq(P.EnsureWatchRowTip(hoverRow) ~= nil, true, "hover fills a tip before the slice")
+    check(type(hoverRow.statusTipSlots) == "table", "hover writes statusTipSlots")
+    eq(P.EnqueueLazyWatchTips(), true, "PlanRebuild enqueues the tip slice")
+    StockPiler.FrameCounter = 80
+    local FW = StockPiler.FrameWork
+    local spins = 0
+    while FW.IsActive("watch-row-tips") and spins < 12 do
+        spins = spins + 1
+        StockPiler.FrameCounter = 80 + spins
+        FW.Pump()
+    end
+    eq(FW.IsActive("watch-row-tips"), false, "the tip slice finishes")
+    eq(sig(lazy), eagerSig, "drained lazy tips match the eager build")
+    check(string.find(sig(lazy), "900", 1, true) ~= nil, "tip seed uids replace the stale snap stamp")
+    RS.RecipeSpecForPotion = prevRecipe
+    RS.ShouldAutoGrowPotion = prevAuto
+    RS.HydrateRecipeSlots = prevHydrate
+    StockPiler.SeedMap = prevSM
+    StockPiler.Inventory.CountByUid = prevCount
+end
+
+-- A zero-delta slot update defers the engine reread to the bag flush.
+do
+    load_module("Source/Stores/InventoryStore.lua")
+    local Inv = StockPiler.Inventory
+    Inv._ready = true
+    Inv._snapPending = false
+    Inv._dirty = false
+    Inv._dirtyFull = false
+    Inv._dirtyEngine = false
+    Inv._needQueue = false
+    Inv._slotIndex = { main = { [1] = { uid = 5, qty = 1 } }, craft = {} }
+    Inv._itemBySlot = { main = {}, craft = {} }
+    Inv._countByUid = { [5] = 1 }
+    local refreshCalls = 0
+    local realRefresh = Inv.ForceFullRefresh
+    Inv.ForceFullRefresh = function(...)
+        refreshCalls = refreshCalls + 1
+        return realRefresh(...)
+    end
+    local forceReads = 0
+    local lightReads = 0
+    BA.FetchBag = function()
+        return { data = { [1] = { uniqueID = 5, stackCount = 1 } } }
+    end
+    BA.FetchForce = function()
+        forceReads = forceReads + 1
+        return {}
+    end
+    BA.FetchLight = function()
+        lightReads = lightReads + 1
+        return {}
+    end
+    eq(Inv.ApplySlotUpdates("main", { 1 }, "slot"), true, "a zero-delta slot update is accepted")
+    eq(refreshCalls, 0, "the event does not ForceFullRefresh")
+    eq(forceReads, 0, "the event does not reread the engine")
+    eq(Inv._dirtyEngine, true, "the stale read marks an engine reread")
+    eq(Inv._needQueue, true, "the stale read requests the queue")
+    local queued = Inv.Flush({ forceEngine = false })
+    eq(queued, true, "the bag flush keeps needQueue")
+    eq(forceReads, 1, "the bag flush rereads the engine")
+    eq(lightReads, 0, "the bag flush does not use the light snapshot")
+    eq(Inv._dirtyEngine, false, "the flush clears the engine flag")
+end
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

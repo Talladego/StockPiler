@@ -1161,15 +1161,18 @@ function Watch.AllEnabledPotionWatchesStocked()
     return true
 end
 
---- Soft plant_stock gate: true when an enabled potion watch still needs Cultivation
---- (restocking / seed buffer / seed upgrade). Buy materials and Ready to brew do not count.
---- Prefer PlanSnapshot status SoT (or an in-build rows table); with no plan, fall back
---- to the hard stocked gate.
+--- Soft plant_stock gate: true when an enabled potion watch still needs Cultivation.
+--- With a plan: only Cult statuses (restocking / need_seeds / upgrading_seed /
+--- ready_to_craft_shared). Buy materials and Ready to brew do not count.
+--- With no plan: fall back to bag-vs-target (AllEnabledPotionWatchesStocked).
 function Watch.EnabledPotionWatchesNeedCultGrow(rows)
     local CULT = {
         restocking = true,
         need_seeds = true,
         upgrading_seed = true,
+        -- Craftable covers the bottle gap, but AutoBrew will not claim contested
+        -- mats; Cult still needs to grow (or buy) until the contest clears.
+        ready_to_craft_shared = true,
     }
     if type(rows) ~= "table" or #rows == 0 then
         local PS = StockPiler.PlanSnapshot

@@ -15,10 +15,12 @@ Refine.MAX_USES_PER_ISSUE = 1
 
 Refine._refineDirty = false
 Refine._refineDirtyReason = nil
+Refine._refineDueGen = 0
 Refine._refineWaitTicks = 0
 Refine._intentCacheKey = nil
 Refine._intentCache = nil
 Refine._emptyIntentSnapGen = nil
+Refine._emptyIntentDueGen = nil
 Refine._bufferFlags = nil
 Refine._bufferFlagsKey = nil
 Refine._bufferFlagsStructKey = nil
@@ -32,6 +34,7 @@ Refine._reconcileSnapGen = -1
 Refine._onUpdateFrame = -1
 Refine._liveSeedBaseline = Refine._liveSeedBaseline or {}
 Refine._blockedVendorNotified = false
+Refine._blockedInteractionNotified = false
 
 ----------------------------------------------------------------
 -- Helpers
@@ -690,6 +693,14 @@ function Refine.InvalidateIntentCache()
     Refine._intentCacheKey = nil
     Refine._intentCache = nil
     Refine._emptyIntentSnapGen = nil
+    Refine._emptyIntentDueGen = nil
+end
+
+--- Snap gen can stay put while stacks slide inside the craft bag. The slot
+--- index built for that gen then points at the wrong item forever.
+function Refine.InvalidateBagIndex()
+    Refine._bagIndex = nil
+    Refine._bagIndexGen = -1
 end
 
 function Refine.InvalidateBufferFlags()
@@ -756,6 +767,9 @@ end
 
 function Refine.MarkRefineDue(reason)
     Refine._refineDirty = true
+    -- One generation per call. CollectIntents busts an empty latch once for
+    -- this value, then stays warm while _refineDirty is still set.
+    Refine._refineDueGen = (tonumber(Refine._refineDueGen) or 0) + 1
     reason = tostring(reason or "")
     if reason == "harvest" then
         Refine._refineDirtyReason = "harvest"
@@ -951,9 +965,28 @@ function Refine.HasActiveResinNeed()
     if not (RS and RS.BuildBalancedSpecDemand and SM and SM.IsHarvestByproduct) then
         return false
     end
-    local demand = RS.BuildBalancedSpecDemand()
+    local Inv = StockPiler.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local Watch = StockPiler.Watch
+    local watchGen = Watch and Watch.GetGen and tonumber(Watch.GetGen()) or 0
+    local know = StockPiler.Knowledge and StockPiler.Knowledge.GetGen and tonumber(StockPiler.Knowledge.GetGen()) or 0
+    local Garden = StockPiler.Garden
+    local gardenGen = Garden and Garden.GetPlanGen and tonumber(Garden.GetPlanGen()) or 0
+    local cacheKey = tostring(snap) .. ":" .. tostring(watchGen) .. ":" .. tostring(know) .. ":" .. tostring(gardenGen)
+    if Refine._resinNeedKey == cacheKey and Refine._resinNeedVal ~= nil then
+        return Refine._resinNeedVal == true
+    end
+    local demand = RS.BuildBalancedSpecDemand({ cacheOnly = true })
     if type(demand) ~= "table" then
-        return false
+        demand = RS.BuildBalancedSpecDemand()
+    end
+    local function finish(val)
+        Refine._resinNeedKey = cacheKey
+        Refine._resinNeedVal = val == true
+        return val == true
+    end
+    if type(demand) ~= "table" then
+        return finish(false)
     end
     for _, row in pairs(demand) do
         if type(row) == "table" and type(row.spec) == "table"
@@ -961,15 +994,15 @@ function Refine.HasActiveResinNeed()
             and (tonumber(row.deficit) or 0) > 0
         then
             if demand._resinFeedstock == true then
-                return true
+                return finish(true)
             end
             local pick = Refine.PickPlantForResinConvert(row.spec, tonumber(row.deficit) or 0)
             if type(pick) == "table" then
-                return true
+                return finish(true)
             end
         end
     end
-    return false
+    return finish(false)
 end
 
 --- Plant-first: block refine if empty plot + plantable unless buffer-pending or fillBlocked.
@@ -977,6 +1010,7 @@ end
 function Refine.ShouldAllowRefineNow(opts)
     opts = type(opts) == "table" and opts or {}
     local ignoreVendor = opts.ignoreVendor == true
+    local ignoreInteraction = opts.ignoreInteraction == true
     if Refine.IsEnabled() ~= true then
         return false, "disabled"
     end
@@ -987,6 +1021,15 @@ function Refine.ShouldAllowRefineNow(opts)
     local VA = StockPiler.VendorAdapter
     if ignoreVendor ~= true and VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
         return false, "vendor-open"
+    end
+    -- Quest / trainer / bank dialogs also listen for INTERACT_DONE. ignoreVendor
+    -- only skips the merchant; any other NPC window still blocks SendUseItem.
+    -- ignoreInteraction is for the stalled tip (is refine work waiting aside from
+    -- that dialog?), same pattern as ignoreVendor.
+    if ignoreInteraction ~= true
+        and VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true
+    then
+        return false, "interaction-open"
     end
     local Orch = StockPiler.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() then
@@ -1083,31 +1126,63 @@ end
 
 function Refine.ClearBlockedNotify()
     Refine._blockedVendorNotified = false
+    Refine._blockedInteractionNotified = false
 end
 
---- One chat line when refine work is waiting and the merchant window is the block.
---- Returns true only on the first notice. ClearBlockedNotify arms it again.
+--- One chat line when refine work is waiting on an open merchant or NPC dialog.
+--- Returns true only on the first notice per block. ClearBlockedNotify arms again.
 function Refine.MaybeNotifyBlocked()
     local VA = StockPiler.VendorAdapter
-    if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
+    local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+    local interactionOpen = VA and VA.IsNonStoreInteractionOpen
+        and VA.IsNonStoreInteractionOpen() == true
+    if storeOpen ~= true then
         Refine._blockedVendorNotified = false
+    end
+    if interactionOpen ~= true then
+        Refine._blockedInteractionNotified = false
+    end
+    if storeOpen ~= true and interactionOpen ~= true then
         return false
     end
-    if Refine._blockedVendorNotified == true then
-        return false
+
+    -- Merchant alone: vendor tip (AutoBuy needs the store open).
+    if storeOpen == true and interactionOpen ~= true then
+        if Refine._blockedVendorNotified == true then
+            return false
+        end
+        if #(Refine.CollectIntents({ ignoreVendor = true }) or {}) == 0 then
+            return false
+        end
+        local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
+            or L"<icon02486> Refine stalled - close the merchant window to continue."
+        if StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(msg)
+        end
+        Refine._blockedVendorNotified = true
+        return true
     end
-    local ignore = { ignoreVendor = true }
-    -- CollectIntents already applies ShouldAllowRefineNow(ignore).
-    if #(Refine.CollectIntents(ignore) or {}) == 0 then
-        return false
+
+    -- Quest / trainer / bank / flight master / etc. (with or without the store).
+    if interactionOpen == true then
+        if Refine._blockedInteractionNotified == true then
+            return false
+        end
+        if #(Refine.CollectIntents({
+            ignoreVendor = true,
+            ignoreInteraction = true,
+        }) or {}) == 0 then
+            return false
+        end
+        local msg = (StockPiler.T and StockPiler.T("refine.blocked.interaction_open"))
+            or L"<icon02486> Refine stalled - close the NPC window to continue."
+        if StockPiler.Debug and StockPiler.Debug.Print then
+            StockPiler.Debug.Print(msg)
+        end
+        Refine._blockedInteractionNotified = true
+        return true
     end
-    local msg = (StockPiler.T and StockPiler.T("refine.blocked.vendor_open"))
-        or L"<icon02486> Refine stalled - close the merchant window to continue."
-    if StockPiler.Debug and StockPiler.Debug.Print then
-        StockPiler.Debug.Print(msg)
-    end
-    Refine._blockedVendorNotified = true
-    return true
+    return false
 end
 
 ----------------------------------------------------------------
@@ -1131,12 +1206,20 @@ function Refine.CollectIntents(opts)
             end
             local snapMoved = tonumber(Refine._emptyIntentSnapGen) ~= snapGen
             local harvestDirty = Refine._refineDirtyReason == "harvest"
-            if snapMoved or harvestDirty then
+            -- skill-up / upgrade MarkRefineDue does not move bags. Bust the
+            -- empty latch once for that mark. _refineDirty stays true until
+            -- TryTick, so a later collect with no new mark must stay warm.
+            local dueGen = tonumber(Refine._refineDueGen) or 0
+            local dueMoved = tonumber(Refine._emptyIntentDueGen) ~= dueGen
+            if snapMoved or harvestDirty or dueMoved then
                 Refine.InvalidateIntentCache()
             else
+                -- Warm hit must not defer IssueOne on this frame.
+                Refine._coldRebuildFrame = 0
                 return Refine._intentCache
             end
         else
+            Refine._coldRebuildFrame = 0
             return Refine._intentCache
         end
     end
@@ -1145,6 +1228,9 @@ function Refine.CollectIntents(opts)
     if Perf and Perf.Begin then
         Perf.Begin("CollectIntents")
     end
+    -- Set only when this call rebuilds. A warm return above clears it.
+    Refine._coldRebuildFrame = tonumber(StockPiler.FrameCounter) or 0
+    Refine._collectedFrame = Refine._coldRebuildFrame
     local intents = {}
     local RS = StockPiler.RecipeSpec
     local SM = StockPiler.SeedMap
@@ -1153,6 +1239,9 @@ function Refine.CollectIntents(opts)
     local seenBuffer = {}
 
     -- 1) Seed-buffer (bootstrap when brew deficit 0 but buffer short)
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.seedBuffer")
+    end
     if bufferOn and RS and RS.CollectAutoGrowSeedLines then
         local lines = RS.CollectAutoGrowSeedLines() or {}
         for i = 1, #lines do
@@ -1188,6 +1277,9 @@ function Refine.CollectIntents(opts)
     end
 
     -- 1b) Upgrade Seed: refine family upgrade plants / buffer for climb line.
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.upgradeSeed")
+    end
     local UpgradeSeed = StockPiler.UpgradeSeed
     if UpgradeSeed and UpgradeSeed.AppendRefineIntents then
         UpgradeSeed.AppendRefineIntents(intents, function(line, reason, uses, budget)
@@ -1196,6 +1288,9 @@ function Refine.CollectIntents(opts)
     end
 
     -- 1c) SkillUp Cult: refine plants back to seeds to fill empty plots.
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.skillUp")
+    end
     local SkillUp = StockPiler.SkillUp
     if SkillUp and SkillUp.AppendRefineIntents then
         SkillUp.AppendRefineIntents(intents, function(line, reason, uses, budget)
@@ -1211,6 +1306,9 @@ function Refine.CollectIntents(opts)
 
     -- 2) Plant-need / 3) Resin-need share one demand snapshot (warm-cache hit is free).
     -- Orch decision hold / plant quiet: cacheOnly - never WarmHave.miss on this frame.
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.demand")
+    end
     local demand = nil
     if RS and RS.BuildBalancedSpecDemand then
         local Sch = StockPiler.Scheduler
@@ -1229,6 +1327,9 @@ function Refine.CollectIntents(opts)
     end
 
     -- 2) Plant-need
+    if Perf and Perf.Mark then
+        Perf.Mark("CollectIntents.plantNeed")
+    end
     if type(demand) == "table" then
         for _, row in pairs(demand) do
             if type(row) == "table" and type(row.spec) == "table"
@@ -1329,13 +1430,48 @@ function Refine.CollectIntents(opts)
             snapGen = tonumber(StockPiler.Inventory.GetSnapGen()) or 0
         end
         Refine._emptyIntentSnapGen = snapGen
+        Refine._emptyIntentDueGen = tonumber(Refine._refineDueGen) or 0
     else
         Refine._emptyIntentSnapGen = nil
+        Refine._emptyIntentDueGen = nil
     end
     if Perf and Perf.End then
         Perf.End("CollectIntents")
     end
     return intents
+end
+
+function Refine.CollectedThisFrame()
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    return frame > 0 and (tonumber(Refine._coldRebuildFrame) or 0) == frame
+end
+
+function Refine.IssuedThisFrame()
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    return frame > 0 and Refine._engineIssueFrame == frame
+end
+
+--- Cold CollectIntents and SendUseItem were one ~100ms frame. Defer the
+--- engine call to a later frame. A cold collect on a later frame still issues.
+function Refine.ShouldDeferIssue()
+    if Refine.CollectedThisFrame() ~= true then
+        return false
+    end
+    local frame = tonumber(StockPiler.FrameCounter) or 0
+    local deferred = tonumber(Refine._deferIssueFrame) or 0
+    if deferred > 0 and deferred ~= frame then
+        return false
+    end
+    Refine._deferIssueFrame = frame
+    return true
+end
+
+function Refine.TakeDeferredIssue()
+    if Refine._deferredThisCall == true then
+        Refine._deferredThisCall = false
+        return true
+    end
+    return false
 end
 
 function Refine.CanIssue(intent)
@@ -1389,6 +1525,26 @@ local function BagKeyForType(bagType)
     return "craft"
 end
 
+--- Live craft/backpack table, not the snap-gen slot index. Stacks move inside
+--- a bag without a new inventory generation.
+local function FindUidInBagTable(bagTable, plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 or type(bagTable) ~= "table" then
+        return nil, nil
+    end
+    for slot, item in pairs(bagTable) do
+        local nslot = tonumber(slot)
+        if nslot and nslot > 0 and type(item) == "table" then
+            local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+            local qty = tonumber(item.stackCount) or tonumber(item.StackCount) or 0
+            if uid == plantUid and qty > 0 then
+                return nslot, item
+            end
+        end
+    end
+    return nil, nil
+end
+
 --- Intent cache omits snapGen, so the slot from CollectIntents can point at
 --- a different item after a bag move (EXE-8). Re-resolve and abort when the
 --- live slot is not this plant. A missing bag table falls back to the index.
@@ -1404,9 +1560,34 @@ local function ResolveIntentSlot(intent)
     else
         slot, item, bagType = FindPlantSlot(plantUid, spec)
     end
+    -- Index slot can name a neighbor after an in-bag move that did not bump
+    -- snap gen. Search the live tables before giving up.
+    local function fromLiveBags()
+        local BA = StockPiler.BagAdapter
+        if not (BA and BA.GetBagTable) or plantUid <= 0 then
+            Refine.InvalidateBagIndex()
+            return nil
+        end
+        local hinted = BagKeyForType(bagType)
+        local order = { "craft", "main" }
+        if hinted == "main" then
+            order = { "main", "craft" }
+        end
+        for i = 1, #order do
+            local key = order[i]
+            local bag = BA.GetBagTable(key)
+            local liveSlot, liveItem = FindUidInBagTable(bag, plantUid)
+            if liveSlot ~= nil and type(liveItem) == "table" then
+                Refine.InvalidateBagIndex()
+                return liveSlot, liveItem, BagTypeForKey(key)
+            end
+        end
+        Refine.InvalidateBagIndex()
+        return nil
+    end
     slot = tonumber(slot) or 0
     if slot <= 0 or type(item) ~= "table" then
-        return nil
+        return fromLiveBags()
     end
     local expected = ItemUidOf(item)
     if plantUid > 0 and expected > 0 and expected ~= plantUid then
@@ -1414,7 +1595,7 @@ local function ResolveIntentSlot(intent)
             intent.plantUid = expected
             plantUid = expected
         else
-            return nil
+            return fromLiveBags()
         end
     end
     local BA = StockPiler.BagAdapter
@@ -1426,11 +1607,8 @@ local function ResolveIntentSlot(intent)
             local liveUid, liveQty, liveItem = BA.ReadSlotFromTable(bag, slot)
             liveUid = tonumber(liveUid) or 0
             liveQty = tonumber(liveQty) or 0
-            if expected > 0 and liveUid ~= expected then
-                return nil
-            end
-            if liveUid <= 0 or liveQty <= 0 then
-                return nil
+            if (expected > 0 and liveUid ~= expected) or liveUid <= 0 or liveQty <= 0 then
+                return fromLiveBags()
             end
             if type(liveItem) == "table" then
                 item = liveItem
@@ -1464,6 +1642,12 @@ function Refine.IssueOne(intent, opId)
             Perf.End("Refine.IssueOne")
         end
         return ok == true
+    end
+
+    -- A dialog can open after CollectIntents. Refuse before any stamp,
+    -- live-seed record, quiet arm, or SendUseItem (that event closes it).
+    if VA and VA.IsNonStoreInteractionOpen and VA.IsNonStoreInteractionOpen() == true then
+        return done(false)
     end
 
     local slot, item, bagType = ResolveIntentSlot(intent)
@@ -1513,16 +1697,21 @@ function Refine.IssueOne(intent, opId)
         return done(false)
     end
 
+    -- Same-frame guard before any live-seed record or quiet arm.
+    -- A refused issue must not look like a seed was sent.
+    if Refine.IssuedThisFrame() == true then
+        return done(false)
+    end
+
     local SM = StockPiler.SeedMap
+    -- Snapshot bag counts before SendUseItem. Moving this after the call
+    -- would see the consumed stack and miss the seed gain.
     if SM and SM.BeginPendingRefine then
         SM.BeginPendingRefine(item)
     end
-    Refine.TrackLiveSeed(seedUid)
 
-    if StockPiler.Scheduler and StockPiler.Scheduler.SuppressInventorySideEffects then
-        StockPiler.Scheduler.SuppressInventorySideEffects(2)
-    end
-
+    local issueFrame = tonumber(StockPiler.FrameCounter) or 0
+    Refine._engineIssueFrame = issueFrame
     local location = EA_Window_Backpack.GetCursorForBackpack(bagType)
     local sent = 0
     for _ = 1, uses do
@@ -1545,10 +1734,12 @@ function Refine.IssueOne(intent, opId)
         return done(false)
     end
 
+    Refine.TrackLiveSeed(seedUid)
     Refine._pendingByPlant[plantUid] = pending + sent
     if plantUid > 0 and seedUid > 0 then
         Refine._pendingSeedByPlant[plantUid] = seedUid
     end
+    Refine._deferIssueFrame = 0
     Refine._issuedSeedThisTick = seedUid
     Refine._reconcileSnapGen = -1
     LogRefine(string.format(
@@ -1558,7 +1749,7 @@ function Refine.IssueOne(intent, opId)
     if StockPiler.Grow and StockPiler.Grow.InvalidatePlantQueue then
         StockPiler.Grow.InvalidatePlantQueue({ jobOnly = true })
     end
-    -- Hold plan/UI through refine inventory storms (same Flatten as plant).
+    -- Quiet only after SendUseItem actually went out.
     local Sch = StockPiler.Scheduler
     if Sch and Sch.ArmPlantQuiet then
         Sch.ArmPlantQuiet()
@@ -1596,6 +1787,7 @@ function Refine.TryTick(opId)
     ClearOrphanPending()
     local intents = Refine.CollectIntents()
     if type(intents) ~= "table" or #intents == 0 then
+        Refine._deferredThisCall = false
         -- No actionable refine: back off so grow-wait ticks do not rebuild intents
         -- every AutoGrow second (LibPerf ~300-450ms CollectIntents spikes).
         Refine._refineWaitTicks = math.max(tonumber(Refine._refineWaitTicks) or 0, 5)
@@ -1603,6 +1795,14 @@ function Refine.TryTick(opId)
             Refine._refineDirty = false
             Refine._refineDirtyReason = nil
         end
+        return false
+    end
+    if Refine.ShouldDeferIssue() == true then
+        Refine._deferredThisCall = true
+        return false
+    end
+    Refine._deferredThisCall = false
+    if Refine.IssuedThisFrame() == true then
         return false
     end
     for i = 1, #intents do

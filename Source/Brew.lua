@@ -278,7 +278,7 @@ local function RowIsReadyToCraft(row)
 end
 
 local function RowCanPrematureLoad(row)
-    -- Manual load: green Craftable only (buffer-safe; shared mats OK).
+    -- Manual load follows the green Craftable column (Ready, target covered).
     if type(row) ~= "table" then
         return false
     end
@@ -650,8 +650,9 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
             return false
         end
         local probe = item
-        if MS and MS.FromItemData then
-            local spec = MS.FromItemData(item, nil)
+        local parseItem = MS and (MS.FromItemDataCached or MS.FromItemData)
+        if parseItem then
+            local spec = parseItem(item, nil)
             if type(spec) == "table" then
                 if spec.name == nil then
                     spec.name = item.name
@@ -774,33 +775,43 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         local frame = tonumber(StockPiler.FrameCounter) or 0
         local snapKey = phase .. ":" .. tostring(frame)
         local bags
-        if type(Brew._bagSnap) == "table" and Brew._bagSnapKey == snapKey then
+        local usedCache = type(Brew._bagSnap) == "table" and Brew._bagSnapKey == snapKey
+        if usedCache then
             bags = Brew._bagSnap
-        else
-            bags = BA.FetchForce and BA.FetchForce() or BA.FetchLight()
-            if type(bags) == "table" then
-                Brew._bagSnap = bags
-                Brew._bagSnapKey = snapKey
-            end
+        elseif BA.FetchLight then
+            -- Light read first so a load step does not mark both bags dirty.
+            bags = BA.FetchLight()
         end
         local craftBagType = "craft"
-        -- Pass 1: craft bag
-        for i = 1, #bags do
-            local bag = bags[i]
-            if bag and tostring(bag.bagType or "") == craftBagType then
-                BA.IterateSlots(bag, function(_bt, slotNum, item)
-                    consider(slotNum, item, craftType, true)
-                end)
+        local function scanBags(list)
+            if type(list) ~= "table" then
+                return
+            end
+            for i = 1, #list do
+                local bag = list[i]
+                if bag and tostring(bag.bagType or "") == craftBagType then
+                    BA.IterateSlots(bag, function(_bt, slotNum, item)
+                        consider(slotNum, item, craftType, true)
+                    end)
+                end
+            end
+            for i = 1, #list do
+                local bag = list[i]
+                if bag and tostring(bag.bagType or "") ~= craftBagType then
+                    BA.IterateSlots(bag, function(_bt, slotNum, item)
+                        consider(slotNum, item, invType, false)
+                    end)
+                end
             end
         end
-        -- Pass 2: inventory
-        for i = 1, #bags do
-            local bag = bags[i]
-            if bag and tostring(bag.bagType or "") ~= craftBagType then
-                BA.IterateSlots(bag, function(_bt, slotNum, item)
-                    consider(slotNum, item, invType, false)
-                end)
-            end
+        scanBags(bags)
+        if usedCache ~= true and bestSlot <= 0 and BA.FetchForce then
+            bags = BA.FetchForce()
+            scanBags(bags)
+        end
+        if usedCache ~= true and type(bags) == "table" then
+            Brew._bagSnap = bags
+            Brew._bagSnapKey = snapKey
         end
     end
 
@@ -2104,7 +2115,7 @@ local function AdvanceLoadJob()
         local bagSlot, item, bagType, matchedUid = FindCraftingBagItemBySpec(want, exemplarUid, job.reserved)
         if bagSlot > 0 and a.AddItemToCrafting then
             local craftSlot = StepCraftSlot(slot)
-            local added = a.AddItemToCrafting(craftSlot, bagSlot, bagType)
+            local added = a.AddItemToCrafting(craftSlot, bagSlot, bagType, item)
             if added ~= true then
                 LogBrew(string.format(
                     "load add-fail role=%s exemplar=%s bag=%s craftSlot=%s - abort",
@@ -2379,9 +2390,9 @@ function Brew.TryPerform(opId)
             local session = GetSession()
             SkillUp.NoteApoAttempt({ skillUp = session and session.skillUp == true })
         end
-        if StockPiler.Scheduler and StockPiler.Scheduler.EnqueueBagFlush then
-            StockPiler.Scheduler.EnqueueBagFlush(true)
-        end
+        -- Do not EnqueueBagFlush here. The craft already emits inventory slot
+        -- events; a coalesced flush landed ~2s later on the next brew and ran
+        -- a second WarmHave + craftable recount on the perform frame.
         -- Grey immediately; ForceBrewUiRefresh re-lits when busy clears.
         ForceBrewUiRefresh()
     end
@@ -2810,16 +2821,29 @@ end
 
 --- Bust craftable stamps + recount Stock/Status/Craftable on plan + Watch listData.
 --- Manual brew keeps phase=loaded (normally blocks WarmHave recount).
+--- A BagFlush frame just walked both bags. Do not stack a cold WarmHave on it.
 local function SyncWatchLiveCountsAfterBrew()
     local Planner = StockPiler.Planner
     if not Planner then
         return
     end
+    local Sch = StockPiler.Scheduler
+    local deferBag = Sch and Sch.ShouldDeferWarmHaveBag and Sch.ShouldDeferWarmHaveBag() == true
+    local haveWarm = Planner.IsHaveCacheWarmForSnap and Planner.IsHaveCacheWarmForSnap() == true
+    local allowWarmHave = true
+    local forceRecountCraftable = true
+    if deferBag and haveWarm ~= true then
+        allowWarmHave = false
+        forceRecountCraftable = false
+        if Sch.RequestCachePrewarm then
+            Sch.RequestCachePrewarm("after-brew-counts")
+        end
+    end
     if Planner.LiveRecount then
         Planner.LiveRecount({
             syncSnapshot = true,
-            allowWarmHave = true,
-            forceRecountCraftable = true,
+            allowWarmHave = allowWarmHave,
+            forceRecountCraftable = forceRecountCraftable,
         })
     end
     -- Optimistic craftable on the session row when bags have not snapped yet.
@@ -2832,9 +2856,10 @@ local function SyncWatchLiveCountsAfterBrew()
             row.craftableText = towstring(tostring(c))
         end
     end
+    -- LiveRecount already patched counts. A recount flag here queues a second pass.
     local Bus = StockPiler.EventBus
     if Bus and Bus.FireWatchUiDirty then
-        Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "after-brew-counts" })
+        Bus.FireWatchUiDirty({ immediate = true, reason = "after-brew-counts" })
     end
 end
 
@@ -2869,7 +2894,6 @@ function Brew.RefreshSessionAfterBrew()
             StockPiler.Scheduler.EnqueueBagFlush(true)
         end
         SyncWatchLiveCountsAfterBrew()
-        ForceBrewUiRefresh()
         return
     end
 
@@ -2962,7 +2986,6 @@ function Brew.RefreshSessionAfterBrew()
     then
         StockPiler.Scheduler.EnqueueBagFlush(true)
     end
-    ForceBrewUiRefresh()
 end
 
 --- Bag snap after brew: unload if target met, no longer Ready, or watch uid did not advance.

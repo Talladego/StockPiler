@@ -150,6 +150,25 @@ local function EndTick()
     end
 end
 
+local function HoldFastTick(Sch)
+    if Sch and Sch.SetAutoGrowIdle then
+        Sch.SetAutoGrowIdle(false)
+    end
+end
+
+--- Pick/collect already ran this frame, or this frame already called PlantSeed.
+--- Do not stack a second engine issue onto that frame.
+local function SkipPlantIssue(Grow, Sch)
+    if Grow and Grow.IssuedThisFrame and Grow.IssuedThisFrame() == true then
+        return true
+    end
+    if Grow and Grow.ShouldDeferPlantIssue and Grow.ShouldDeferPlantIssue() == true then
+        HoldFastTick(Sch)
+        return true
+    end
+    return false
+end
+
 function Orch.GetPhase()
     return tostring(Orch.Phase or "idle")
 end
@@ -366,6 +385,10 @@ function Orch._TickBody()
         end
         local opId = Orch.NewOpId()
         if canPlant and hasSeeds then
+            if SkipPlantIssue(Grow, Sch) then
+                EndTick()
+                return
+            end
             local planted = false
             if Grow and Grow.IssuePlantOne then
                 planted = Grow.IssuePlantOne(opId) == true
@@ -391,6 +414,11 @@ function Orch._TickBody()
                 if Sch and Sch.WakeAutoGrow then
                     Sch.WakeAutoGrow()
                 end
+                EndTick()
+                return
+            end
+            if Refine.TakeDeferredIssue and Refine.TakeDeferredIssue() == true then
+                HoldFastTick(Sch)
                 EndTick()
                 return
             end
@@ -524,6 +552,10 @@ function Orch._TickBody()
                 Sch.SetAutoGrowIdle(false)
             end
         else
+            if SkipPlantIssue(Grow, Sch) then
+                EndTick()
+                return
+            end
             local planted = Grow and Grow.IssuePlantOne and Grow.IssuePlantOne(opId) == true
             if planted then
                 SetPhase("planting", "auto")
@@ -583,8 +615,8 @@ function Orch._TickBody()
     -- 3) Refine
     local Refine = StockPiler.Refine
     local allowRefine = Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
-    -- Unconditional: MaybeNotifyBlocked also clears its latch once refine is
-    -- allowed again or the block is no longer the open merchant.
+    -- Unconditional: MaybeNotifyBlocked also clears its latches once refine is
+    -- allowed again or the merchant / NPC dialog is no longer the block.
     if Refine and Refine.MaybeNotifyBlocked then
         Refine.MaybeNotifyBlocked()
     end
@@ -601,6 +633,11 @@ function Orch._TickBody()
             if Sch and Sch.WakeAutoGrow then
                 Sch.WakeAutoGrow()
             end
+            EndTick()
+            return
+        end
+        if Refine.TakeDeferredIssue and Refine.TakeDeferredIssue() == true then
+            HoldFastTick(Sch)
             EndTick()
             return
         end
@@ -628,6 +665,10 @@ function Orch._TickBody()
             end
         end
         if canPlant and hasSeeds and not holdHarvestBatch then
+            if SkipPlantIssue(Grow, Sch) then
+                EndTick()
+                return
+            end
             local planted = Grow and Grow.IssuePlantOne and Grow.IssuePlantOne(opId) == true
             if planted then
                 Orch._refineFirstMisses = 0

@@ -10,6 +10,10 @@ local WatchStillNeedsGrow
 local Planner = StockPiler.Planner
 
 Planner._planGen = 0
+
+function Planner.GetPlanGen()
+    return tonumber(Planner._planGen) or 0
+end
 Planner._closedLiveSnapGen = nil
 Planner._liveGen = 0
 Planner._craftsMemo = nil
@@ -866,11 +870,27 @@ end
 -- Growable / slot classification (stub-safe)
 ----------------------------------------------------------------
 
+--- Twin lookup for Watch / plan paint. Never starts a live bag scan.
+local function FindGrowableTwinCached(spec)
+    local SM = StockPiler.SeedMap
+    if not (SM and SM.FindGrowableTwinUid) then
+        return 0
+    end
+    return tonumber(SM.FindGrowableTwinUid(spec, { cacheOnly = true })) or 0
+end
+
+--- True when the slot can progress via AutoGrow: exemplar is cultivable, or a
+--- known cult twin exists (e.g. Majestic Goldweed for Brutal Zoic Gore). Used by
+--- ContestedBuyOnlyKind / RecipeSlotPlanEntry so Buy materials never blocks a
+--- watch that can plant instead. Brew still prefers non-growable bag picks.
 local function SpecIsGrowable(spec, role)
     if role == "container" then
         return false
     end
     local SM = StockPiler.SeedMap
+    if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
+        return false
+    end
     if SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
         return true
     end
@@ -878,8 +898,10 @@ local function SpecIsGrowable(spec, role)
     if MS and MS.IsGrowable and MS.IsGrowable(spec) == true then
         return true
     end
-    if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
-        return false
+    -- Fingerprint may bind a butcher/vendor exemplar; a ProductMatches cult twin
+    -- still means we can grow rather than Buy-block the watch.
+    if FindGrowableTwinCached(spec) > 0 then
+        return true
     end
     return false
 end
@@ -890,6 +912,21 @@ local function SpecIsHarvestByproduct(spec)
         return SM.IsHarvestByproduct(spec) == true
     end
     return false
+end
+
+--- AutoGrow can still move this slot: a cult plant, or a butcher/vendor
+--- exemplar that has a cultivable twin. Containers and harvest byproducts cannot.
+local function SpecCanAutoGrowProgress(spec, role)
+    if tostring(role or "") == "container" then
+        return false
+    end
+    if SpecIsHarvestByproduct(spec) == true then
+        return false
+    end
+    if SpecIsGrowable(spec, role) == true then
+        return true
+    end
+    return FindGrowableTwinCached(spec) > 0
 end
 
 --- Prefer main -> goldweed/stab -> extender -> multiplier when growing convert feedstock for resin.
@@ -984,23 +1021,62 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
     if type(demand) == "table" and key ~= nil then
         demandRow = demand[key]
     end
-    if SpecIsHarvestByproduct(spec) then
-        entry.kind = "convert"
-    elseif SpecIsGrowable(spec, role) then
+    local function FillPlantEntry(plantUidHint)
         entry.kind = "plant"
         local SM = StockPiler.SeedMap
+        local growTwin = FindGrowableTwinCached(spec)
+        -- Prefer cult twin plant uid over butcher bound exemplar for seed/refine.
+        local plantProbe = spec
+        if growTwin > 0 and (tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0) ~= growTwin then
+            plantProbe = {
+                uid = growTwin,
+                uniqueID = growTwin,
+                boundUid = growTwin,
+                role = spec.role,
+                name = spec.name,
+                level = spec.level,
+                rarity = spec.rarity,
+                incomplete = spec.incomplete,
+            }
+            local MS = MaterialSpec()
+            if MS and MS.FromItemData and StockPiler.Items and StockPiler.Items.AsItemData then
+                local sample = StockPiler.Items.AsItemData(growTwin)
+                if type(sample) == "table" then
+                    local twinSpec = MS.FromItemData(sample, role)
+                    if type(twinSpec) == "table" then
+                        plantProbe = twinSpec
+                    end
+                end
+            end
+        end
         local seed = nil
         if SM and SM.ResolveSeedForSpec then
-            seed = SM.ResolveSeedForSpec(spec)
+            seed = SM.ResolveSeedForSpec(plantProbe)
+            if type(seed) ~= "table" and plantProbe ~= spec then
+                seed = SM.ResolveSeedForSpec(spec)
+            end
         end
         if type(seed) == "table" then
             entry.seed = seed
             entry.seedUid = tonumber(seed.uniqueID or seed.uid) or 0
-            entry.plantUid = tonumber(seed.plantUid) or SpecBoundUid(spec)
+            entry.plantUid = tonumber(seed.plantUid) or 0
         else
-            entry.plantUid = SpecBoundUid(spec)
-            if entry.plantUid <= 0 and SM and SM.FindPlantUidForSpec then
-                entry.plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+            entry.plantUid = 0
+        end
+        -- Hint is the cult twin from the non-growable branch. growTwin covers
+        -- the same case when the slot was already classified plant. Butcher
+        -- bound uid is only a last resort.
+        plantUidHint = tonumber(plantUidHint) or 0
+        if (tonumber(entry.plantUid) or 0) <= 0 then
+            if plantUidHint > 0 then
+                entry.plantUid = plantUidHint
+            elseif growTwin > 0 then
+                entry.plantUid = growTwin
+            else
+                entry.plantUid = SpecBoundUid(spec)
+                if entry.plantUid <= 0 and SM and SM.FindPlantUidForSpec then
+                    entry.plantUid = tonumber(SM.FindPlantUidForSpec(plantProbe)) or 0
+                end
             end
         end
         local Inv = StockPiler.Inventory
@@ -1023,10 +1099,21 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
             local budget = Refine.GetSeedBudgetForSpec(spec, entry.seedUid)
             entry.seedCredit = tonumber(budget and budget.credit) or 0
         end
+    end
+    if SpecIsHarvestByproduct(spec) then
+        entry.kind = "convert"
+    elseif SpecIsGrowable(spec, role) then
+        FillPlantEntry(0)
     elseif role == "container" then
         entry.kind = "buy"
     else
-        entry.kind = "buy"
+        -- Butcher/vendor exemplar with a cultivable twin: plant that twin.
+        local twinUid = FindGrowableTwinCached(spec)
+        if twinUid > 0 then
+            FillPlantEntry(twinUid)
+        else
+            entry.kind = "buy"
+        end
     end
     -- Tip notes: (Shared) contested vs (Pooled) multi-watch demand.
     if type(demandRow) == "table" and type(demandRow.watchNames) == "table" and #demandRow.watchNames > 1 then
@@ -1377,7 +1464,7 @@ local function BuildBalancedSpecDemand(opts)
                     }
                     if byproduct then
                         byproductKeys[#byproductKeys + 1] = specKey
-                    elseif SpecIsGrowable(spec, role) then
+                    elseif SpecCanAutoGrowProgress(spec, role) then
                         local rank = ByproductConvertRoleRank(role)
                         if rank < prefRank then
                             prefRank = rank
@@ -1426,9 +1513,12 @@ local function BuildBalancedSpecDemand(opts)
                 local seedUid = 0
                 -- Containers are buy-only; never assign plantUid (84904 vials looked "refinable").
                 local role = tostring(row.role or row.spec.role or "")
-                if role ~= "container" and SpecIsGrowable(row.spec, role) then
-                    if SM.FindPlantUidForSpec then
+                local progress = role ~= "container" and SpecCanAutoGrowProgress(row.spec, role)
+                if progress then
+                    if SpecIsGrowable(row.spec, role) and SM.FindPlantUidForSpec then
                         plantUid = tonumber(SM.FindPlantUidForSpec(row.spec)) or 0
+                    else
+                        plantUid = FindGrowableTwinCached(row.spec)
                     end
                     if SM.ResolveSeedForSpec then
                         local seed = SM.ResolveSeedForSpec(row.spec)
@@ -1721,7 +1811,7 @@ end
 --- rows, when passed, is this build's rows. Nil keeps the published snapshot.
 WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
     target = tonumber(target) or 0
-    if target <= 0 or type(potion) ~= "table" then
+    if target <= 0 then
         return false
     end
     watchKey = tostring(watchKey or "")
@@ -1730,6 +1820,7 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
         local plan = PS and PS.Get and PS.Get()
         rows = plan and plan.rows
     end
+    -- Plan SoT first: works without a live potion table (published rows omit it).
     if type(rows) == "table" and watchKey ~= "" then
         for i = 1, #rows do
             local row = rows[i]
@@ -1746,7 +1837,9 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
                     if gap > 0 then
                         return true
                     end
-                    if row.craftableShared == true then
+                    if row.craftableShared == true
+                        or tostring(row.statusKey or "") == "ready_to_craft_shared"
+                    then
                         return true
                     end
                     if tostring(row.statusKey or "") == "need_seeds" then
@@ -1756,6 +1849,9 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
                 end
             end
         end
+    end
+    if type(potion) ~= "table" then
+        return false
     end
     local outUid = tonumber(potion.outputUid) or 0
     local have = PotionHave(nil, potion, outUid)
@@ -2089,6 +2185,112 @@ local function BuyNoteFlagsFromEntry(entry)
     return false, false, true
 end
 
+local function TipCountsForSpec(row, spec)
+    local tips = row and row.statusTipSlots
+    if type(tips) ~= "table" or type(spec) ~= "table" then
+        return nil, nil, nil
+    end
+    local key = SpecKey(spec)
+    for i = 1, #tips do
+        local e = tips[i]
+        if type(e) == "table" then
+            local same = e.spec == spec
+            if not same and key ~= nil then
+                local ek = e.specKey
+                if ek == nil and type(e.spec) == "table" then
+                    ek = SpecKey(e.spec)
+                end
+                same = ek == key
+            end
+            if same then
+                return tonumber(e.have), tonumber(e.need), tonumber(e.deficit)
+            end
+        end
+    end
+    return nil, nil, nil
+end
+
+--- True when this row still has a cult plant or cultivable twin below its need.
+--- Have comes from the warm cache, then statusTipSlots. Never a cold bag scan:
+--- PolishSharedContest runs on the live tick and a miss is WarmHave.miss.
+local function RowHasGrowableShortfall(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    local craftsNeeded = tonumber(row.craftsNeeded) or 0
+    if craftsNeeded <= 0 then
+        local deficit = tonumber(row.potionDeficit) or 0
+        if deficit > 0 and type(row.recipe) == "table" then
+            craftsNeeded = CraftsNeededForDeficit(
+                deficit, row.recipe, tonumber(row.uniqueID) or 0
+            )
+        end
+    end
+    if craftsNeeded <= 0 then
+        craftsNeeded = math.max(0, (tonumber(row.targetCount) or tonumber(row.target) or 0)
+            - (tonumber(row.potionHave) or 0))
+    end
+    local slots = row.slotSpecs or row.slots
+    if type(slots) ~= "table" then
+        slots = row.recipe and row.recipe.slots
+    end
+    local function slotShort(spec, role, slot, slotList)
+        if SpecCanAutoGrowProgress(spec, role) ~= true then
+            return false
+        end
+        local per = 1
+        if type(slot) == "table" then
+            per = EffectivePerCraft(slot, slotList or slots)
+        end
+        local need = (tonumber(craftsNeeded) or 0) * per
+        local have = CountItemsMatchingSpec(spec, { cacheOnly = true })
+        if have ~= nil then
+            return need > 0 and have < need
+        end
+        local tipHave, tipNeed, tipDeficit = TipCountsForSpec(row, spec)
+        if tipDeficit ~= nil then
+            return tipDeficit > 0
+        end
+        if tipHave ~= nil and tipNeed ~= nil then
+            return tipHave < tipNeed
+        end
+        return false
+    end
+    if type(slots) == "table" then
+        for i = 1, #slots do
+            local slot = slots[i]
+            local spec = ResolveSlotSpec(slot)
+            if type(spec) ~= "table" and type(slot) == "table" and type(slot.spec) ~= "table" then
+                spec = slot
+            end
+            if type(spec) == "table" then
+                local role = (type(slot) == "table" and slot.role) or spec.role
+                if slotShort(spec, role, slot, slots) then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    local tips = row.statusTipSlots
+    if type(tips) ~= "table" then
+        return false
+    end
+    for i = 1, #tips do
+        local e = tips[i]
+        if type(e) == "table" and SpecCanAutoGrowProgress(e.spec, e.role) then
+            local deficit = tonumber(e.deficit)
+            if deficit ~= nil and deficit > 0 then
+                return true
+            end
+            if (tonumber(e.have) or 0) < (tonumber(e.need) or 0) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- Contested specs that are all non-growable -> "flasks" | "materials" | "both" | nil.
 local function ContestedBuyOnlyKind(row)
     if type(row) ~= "table" or row.craftableShared ~= true then
@@ -2113,7 +2315,7 @@ local function ContestedBuyOnlyKind(row)
         if type(sk) == "string" and contested[sk] == true then
             anyContested = true
             local role = slot.role or (type(spec) == "table" and spec.role) or nil
-            if SpecIsHarvestByproduct(spec) ~= true and SpecIsGrowable(spec, role) == true then
+            if SpecIsHarvestByproduct(spec) ~= true and SpecCanAutoGrowProgress(spec, role) == true then
                 anyGrowable = true
             elseif tostring(role or "") == "container" then
                 anyContainer = true
@@ -2123,6 +2325,10 @@ local function ContestedBuyOnlyKind(row)
         end
     end
     if not anyContested or anyGrowable then
+        return nil
+    end
+    -- Shared flasks can be short across watches while this row can still grow.
+    if RowHasGrowableShortfall(row) then
         return nil
     end
     if anyContainer and anyMaterials then
@@ -2154,6 +2360,9 @@ local function PaintSharedMaterialsStatus(row)
     row.statusLines = { T("watch.note.shared") }
 end
 
+-- Defined with the status helpers below. ApplySharedStatusFlip runs later.
+local SetMaterialsShortStatus
+
 local function RowCoveredForReady(row)
     local have = tonumber(row.potionHave) or 0
     local craftable = tonumber(row.craftable) or 0
@@ -2184,6 +2393,9 @@ local function ApplySharedStatusFlip(rows)
                 local buyKind = ContestedBuyOnlyKind(row)
                 if buyKind ~= nil then
                     PaintBuyOnlySharedStatus(row, buyKind)
+                elseif RowHasGrowableShortfall(row) then
+                    -- Armed AutoGrow can still plant. Restocking, not Shared-only.
+                    SetMaterialsShortStatus(row, true, nil)
                 else
                     PaintSharedMaterialsStatus(row)
                 end
@@ -2258,27 +2470,40 @@ local function ScheduleDemandPrewarm(reason)
     if AutoGrowWantsDemand() ~= true then
         return
     end
-    Planner._demandPrewarmDue = true
     reason = reason or "focus-demand"
+    local FW = StockPiler.FrameWork
+    -- Already queued: do not re-enqueue (same snapGen would restart after finish).
+    if FW and FW.IsActive and FW.IsActive("prewarm-demand") == true then
+        Planner._demandPrewarmDue = true
+        return
+    end
+    local dueKey = FullCacheKey("demand-prewarm")
+    if Planner._demandPrewarmDue == true and Planner._demandPrewarmDueKey == dueKey then
+        return
+    end
     local Sch = StockPiler.Scheduler
+    if Sch and Sch._pendingPrewarmAfterQuiet == true then
+        Planner._demandPrewarmDue = true
+        Planner._demandPrewarmDueKey = dueKey
+        return
+    end
+    Planner._demandPrewarmDue = true
+    Planner._demandPrewarmDueKey = dueKey
     if Sch and Sch.RequestDemandPrewarm then
         Sch.RequestDemandPrewarm(reason)
     elseif Sch and Sch.RequestCachePrewarm then
         Sch.RequestCachePrewarm(reason)
-    end
-    local FW = StockPiler.FrameWork
-    if FW and FW.IsActive and FW.IsActive("prewarm-demand") == true then
-        return
-    end
-    if Sch and Sch._pendingPrewarmAfterQuiet == true then
-        return
     end
     if not (FW and FW.EnqueueDemand) and Sch then
         Sch._planDue = true
     end
 end
 
-local function InvalidateFocusCaches()
+local function InvalidateFocusCaches(reason)
+    reason = tostring(reason or "focus")
+    if StockPiler.Perf and StockPiler.Perf.Tally then
+        StockPiler.Perf.Tally("focusInv", reason)
+    end
     ClearSettingsHashMemo()
     Planner._autoGrowFocusCache = nil
     Planner._autoGrowFocusKey = nil
@@ -2293,18 +2518,18 @@ local function InvalidateFocusCaches()
     Planner._craftBagFreeCached = nil
     -- Stocked potion rows clear demand without a plan rebuild. Prewarm it back
     -- so potion lift is not stuck on a nil cache (plant_stock does not wait).
-    ScheduleDemandPrewarm("focus-demand")
+    ScheduleDemandPrewarm(reason)
 end
 
-function Planner.InvalidateFocusCaches()
-    InvalidateFocusCaches()
+function Planner.InvalidateFocusCaches(reason)
+    InvalidateFocusCaches(reason)
 end
 
 ----------------------------------------------------------------
 -- Status helpers
 ----------------------------------------------------------------
 
-local function SetMaterialsShortStatus(row, growable, buyLabel)
+function SetMaterialsShortStatus(row, growable, buyLabel)
     if growable == true and CanAutoGrowSkill() then
         local key = nil
         local watch = nil
@@ -2982,7 +3207,8 @@ local function PropagateSharedSeedBufferStatus(rows)
     return changed
 end
 
---- Craftable column safety: green only when bags can craft and seed cushion is met.
+--- Green craftable means Ready to Brew: the count covers the target, the seed
+--- buffer is met, and the mats are not shared. Anything else with a count is yellow.
 local function StampCraftableSafety(row)
     if type(row) ~= "table" then
         return
@@ -2991,8 +3217,15 @@ local function StampCraftableSafety(row)
     local short = SeedBufferShort(row.recipe or row.specRecipe, pk, row) == true
     row.seedBufferShort = short
     local craftable = tonumber(row.craftable) or 0
-    -- Safe (green): craftable > 0 and buffer not short. Shared mats do not block green.
-    row.craftableSafe = craftable > 0 and not short
+    local have = tonumber(row.potionHave) or 0
+    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+    local covers = target > 0 and (have + craftable) >= target
+    local key = tostring(row.statusKey or "")
+    local shared = row.craftableShared == true or key == "ready_to_craft_shared"
+    local ready = key == "ready_to_craft" and covers and not shared and not short
+    -- Target already met. Still green when a brew would be safe.
+    local stocked = key == "potion_stocked" and not shared and not short
+    row.craftableSafe = craftable > 0 and (ready or stocked)
 end
 
 local function ApplyNeedApothecaryStatus(row)
@@ -3130,7 +3363,7 @@ function Planner.RefreshSkillGateStatuses()
         end
     end
     if changed then
-        InvalidateFocusCaches()
+        InvalidateFocusCaches("skill-gate")
         local Brew = StockPiler.Brew
         if Brew and Brew.InvalidateCanBrewCache then
             Brew.InvalidateCanBrewCache()
@@ -3150,21 +3383,23 @@ end
 --- Potion products land in the main bag - do not reserve craft space for output.
 --- Cache by snap + live free count so freeing slots is not stuck on an old snap.
 local function IsCraftBagFullCached()
-    local BA = StockPiler.BagAdapter
-    local free = BA and BA.CraftBagFreeSlots and tonumber(BA.CraftBagFreeSlots()) or nil
     local Inv = StockPiler.Inventory
-    local snap = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
-    if Planner._craftBagFullSnap == snap
-        and Planner._craftBagFreeCached == free
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local BA = StockPiler.BagAdapter
+    local fetchGen = BA and BA.GetCraftFetchGen and tonumber(BA.GetCraftFetchGen()) or 0
+    if snap > 0 and Planner._craftBagFullSnap == snap
+        and Planner._craftBagFetchGen == fetchGen
         and Planner._craftBagFull ~= nil
     then
         return Planner._craftBagFull == true
     end
+    local free = BA and BA.CraftBagFreeSlots and tonumber(BA.CraftBagFreeSlots()) or nil
     local full = BA and BA.IsCraftBagFull and BA.IsCraftBagFull() == true
     if full ~= true and free ~= nil and free < 1 then
         full = true
     end
     Planner._craftBagFullSnap = snap
+    Planner._craftBagFetchGen = fetchGen
     Planner._craftBagFreeCached = free
     Planner._craftBagFull = full
     return full
@@ -3397,7 +3632,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
                     local role = slot.role
                     local need = craftsNeeded * EffectivePerCraft(slot, slots)
                     local slotHave = LiveSlotHave(spec, role, slot)
-                    if SpecIsGrowable(spec, role) then
+                    if SpecCanAutoGrowProgress(spec, role) then
                         anyGrowable = true
                         if slotHave ~= nil and slotHave < need then
                             growableShort = true
@@ -3430,6 +3665,8 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
             return
         end
         -- Tips look covered but craftable is still 0: craft bag full beats Restocking.
+        -- (Expected craftable 0 with mats in bag = watched outcome never drops on
+        -- this fingerprint; AutoBrew also requires craftable > 0.)
         if IsCraftBagFullCached() then
             ApplyCraftBagFullStatus(row)
             return
@@ -3924,6 +4161,8 @@ local function FillWatchRowTips(row, demand)
         return
     end
     if type(row.statusTipSlots) == "table" and #row.statusTipSlots > 0 then
+        -- A prior stamp on this snap ignored tips. Force the merge.
+        row._seedBufferUidSnapGen = nil
         StampRowSeedBufferUids(row)
         return
     end
@@ -3944,6 +4183,17 @@ local function FillWatchRowTips(row, demand)
         end
     end
     row.statusTipSlots = entries
+    row.seedBufferTip = {
+        seedUids = {},
+    }
+    for i = 1, #entries do
+        local tip = entries[i]
+        local seedUid = tonumber(tip and tip.seedUid) or 0
+        if seedUid > 0 then
+            row.seedBufferTip.seedUids[#row.seedBufferTip.seedUids + 1] = seedUid
+        end
+    end
+    row._seedBufferUidSnapGen = nil
     StampRowSeedBufferUids(row)
 end
 
@@ -4336,11 +4586,13 @@ local function BuildWatchRows(ctx, watches)
     end
     PerfEnd("Build.Status")
     PerfBegin("Build.Tips")
-    for i = 1, #rows do
-        if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true
-            and rows[i].skillUp ~= true and rows[i].addonOwned ~= true
-        then
-            FillWatchRowTips(rows[i], demand)
+    if Planner._lazyWatchTips ~= true then
+        for i = 1, #rows do
+            if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true
+                and rows[i].skillUp ~= true and rows[i].addonOwned ~= true
+            then
+                FillWatchRowTips(rows[i], demand)
+            end
         end
     end
     -- Tips can add seed UIDs; re-propagate so shared shorts demote all sharers.
@@ -4352,7 +4604,16 @@ local function BuildWatchRows(ctx, watches)
         previous = type(prevPlan) == "table" and prevPlan.seedBufferTipData or nil,
     })
     Planner._demandNeedScratch = {}
-    demand = BuildBalancedSpecDemand()
+    if type(needsPass1) ~= "table" or next(needsPass1) == nil then
+        -- Nothing in the first pass can change. Keep that demand.
+        if Planner._demandDeferStore == true then
+            Planner._demandDeferStore = nil
+        end
+        Planner._demandCache = demand
+        Planner._demandCacheKey = FullCacheKey("demand:" .. tostring(Planner._buildPlanGen or Planner._planGen or 0))
+    else
+        demand = BuildBalancedSpecDemand()
+    end
     Planner._lastDemand = demand
     -- Status was decided from the bag-only pass. Re-decide only the watches
     -- whose grow answer changed once the rows exist.
@@ -4371,7 +4632,9 @@ local function BuildWatchRows(ctx, watches)
                 local recipe = row.recipe
                 DecideStatus(row, target, recipe, demand)
                 FillWatchRowCraftable(row, ctx)
-                FillWatchRowTips(row, demand)
+                if Planner._lazyWatchTips ~= true then
+                    FillWatchRowTips(row, demand)
+                end
                 statusChanged = true
             end
         end
@@ -4787,16 +5050,38 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                     break
                 end
             end
-            if anySigned ~= true then
-                local unresolved
-                deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
-                if unresolved ~= true then
+            local unresolved
+            deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
+            local hasUid = type(deltaUids) == "table" and next(deltaUids) ~= nil
+            -- A signed bag delta still only recounts rows that touch those uids
+            -- when every uid resolved to a spec key. Unresolved stays a full pass.
+            if anySigned == true then
+                if unresolved ~= true and hasUid then
                     selectiveCraftable = true
                 end
+            elseif unresolved ~= true then
+                selectiveCraftable = true
             end
         end
     end
     local contestDirty = false
+    -- Snapshot before paint so focus-cache invalidate uses net status, not
+    -- intermediate ApplyLiveWatchStatus flips that PolishSharedContest undoes.
+    local focusSnap = {}
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            focusSnap[i] = {
+                key = tostring(row.statusKey or ""),
+                shared = row.craftableShared == true,
+            }
+        end
+    end
+    local function FocusKeyQualifies(key)
+        return key == "restocking" or key == "need_seeds"
+            or key == "upgrading_seed" or key == "ready_to_craft_shared"
+            or key == "buy_ingredients"
+    end
     for i = 1, #rows do
         local row = rows[i]
         if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
@@ -4926,18 +5211,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                         Grow.MarkPlantJobDirty()
                     end
                 end
-                if newKey ~= prevKey
-                    and (newKey == "restocking" or newKey == "need_seeds"
-                        or newKey == "upgrading_seed"
-                        or newKey == "ready_to_craft_shared"
-                        or newKey == "buy_ingredients"
-                        or prevKey == "ready_to_craft_shared"
-                        or prevKey == "buy_ingredients"
-                        or prevKey == "restocking" or prevKey == "need_seeds"
-                        or prevKey == "upgrading_seed")
-                then
-                    InvalidateFocusCaches()
-                end
+                -- Focus-cache invalidate deferred to net compare after PolishSharedContest.
             end
         end
     end
@@ -4992,9 +5266,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         craftReadyBrew = StockPiler.Brew
         craftReadyBefore = craftReadyBrew and craftReadyBrew.HasReadyToCraft
             and craftReadyBrew.HasReadyToCraft() == true
-        if PolishSharedContest(rows) then
-            InvalidateFocusCaches()
-        end
+        PolishSharedContest(rows)
         if craftReadyBrew and craftReadyBrew.InvalidateCanBrewCache then
             craftReadyBrew.InvalidateCanBrewCache()
         end
@@ -5006,6 +5278,25 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 end
             end
         end
+    end
+    -- One focus-cache bust per pass, only when a qualifying status really changed.
+    local focusDirty = false
+    for i = 1, #rows do
+        local row = rows[i]
+        local before = focusSnap[i]
+        if type(row) == "table" and type(before) == "table" then
+            local afterKey = tostring(row.statusKey or "")
+            local afterShared = row.craftableShared == true
+            if afterKey ~= before.key or afterShared ~= before.shared then
+                if FocusKeyQualifies(afterKey) or FocusKeyQualifies(before.key) then
+                    focusDirty = true
+                    break
+                end
+            end
+        end
+    end
+    if focusDirty then
+        InvalidateFocusCaches("live-status")
     end
     for i = 1, #rows do
         StampCraftableSafety(rows[i])
@@ -5369,6 +5660,138 @@ function Planner.CacheKeyFromGens()
     return FormatCacheKey(ReadGens())
 end
 
+local function RefreshSharedSeedBuffer(rows)
+    if PropagateSharedSeedBufferStatus(rows) == true then
+        return true
+    end
+    return false
+end
+
+local function ApplyRowTipSideEffects(row)
+    if type(row) ~= "table" then
+        return
+    end
+    SyncTipSlotNeeds(row, row.craftsNeeded)
+    local Grow = StockPiler.Grow
+    local tips = row.statusTipSlots
+    if Grow and Grow.GrowingNotesForSpec and type(tips) == "table" then
+        for t = 1, #tips do
+            local entry = tips[t]
+            if type(entry) == "table" and type(entry.spec) == "table" then
+                local notes = Grow.GrowingNotesForSpec(entry.spec, { cacheOnly = true })
+                if notes ~= nil then
+                    entry.growingNotes = notes
+                end
+            end
+        end
+    end
+end
+
+function Planner.EnsureWatchRowTip(row)
+    if type(row) ~= "table" then
+        return nil
+    end
+    if type(row.statusTipSlots) ~= "table" or #row.statusTipSlots == 0 then
+        row._seedBufferUidSnapGen = nil
+        FillWatchRowTips(row, Planner._lastDemand)
+        ApplyRowTipSideEffects(row)
+        local PS = StockPiler.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        if type(plan) == "table" and type(plan.rows) == "table" then
+            for i = 1, #plan.rows do
+                if plan.rows[i] == row then
+                    RefreshSharedSeedBuffer(plan.rows)
+                    if type(plan.seedBufferTipData) ~= "table" then
+                        plan.seedBufferTipData = BuildSeedBufferTipData({
+                            previous = plan.seedBufferTipData,
+                        })
+                    end
+                    break
+                end
+            end
+        end
+    end
+    return row.statusTipSlots
+end
+
+function Planner.EnqueueLazyWatchTips()
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) ~= "table" or #rows == 0 then
+        return false
+    end
+    local function fillOne(row)
+        if type(row) ~= "table" then
+            return
+        end
+        if type(row.statusTipSlots) == "table" and #row.statusTipSlots > 0 then
+            row._seedBufferUidSnapGen = nil
+            StampRowSeedBufferUids(row)
+            return
+        end
+        row._seedBufferUidSnapGen = nil
+        FillWatchRowTips(row, Planner._lastDemand)
+        ApplyRowTipSideEffects(row)
+    end
+    local FW = StockPiler.FrameWork
+    if not FW or not FW.Start then
+        for i = 1, #rows do
+            fillOne(rows[i])
+        end
+        RefreshSharedSeedBuffer(rows)
+        plan.seedBufferTipData = BuildSeedBufferTipData({
+            previous = plan.seedBufferTipData,
+        })
+        return true
+    end
+    FW.Start({
+        id = "watch-row-tips",
+        gen = tostring(plan.planGen or 0) .. ":" .. tostring(#rows),
+        stepsPerFrame = 1,
+        resume = function(state)
+            local index = tonumber(state.index) or 1
+            local last = math.min(#rows, index + 2)
+            for i = index, last do
+                fillOne(rows[i])
+            end
+            state.index = last + 1
+            if state.index <= #rows then
+                return "continue"
+            end
+            RefreshSharedSeedBuffer(rows)
+            if type(plan) == "table" then
+                plan.seedBufferTipData = BuildSeedBufferTipData({
+                    previous = plan.seedBufferTipData,
+                })
+            end
+            return "done"
+        end,
+    })
+    return true
+end
+
+function Planner.BuildWatchRowTips(row, demand)
+    if type(row) ~= "table" then
+        return nil
+    end
+    FillWatchRowTips(row, demand or Planner._lastDemand)
+    return row.statusTipSlots
+end
+
+function Planner.GetSeedBufferTip()
+    local PS = StockPiler.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        return plan.seedBufferTipData
+    end
+    return nil
+end
+
+function Planner.BeginDemandSlice()
+    return "continue"
+end
+
 function Planner.IsHaveCacheWarmForSnap()
     return IsHaveCacheWarmForSnap()
 end
@@ -5403,6 +5826,7 @@ end
 --- runs the real build and stores _demandCache.
 function Planner.WarmDemand()
     Planner._demandPrewarmDue = nil
+    Planner._demandPrewarmDueKey = nil
     return BuildBalancedSpecDemand()
 end
 
@@ -5529,7 +5953,8 @@ function Planner.CollectVendorBuyJobs(opts)
             return
         end
         local kind = "buy"
-        if SpecIsGrowable(spec, role) then
+        -- Skip cult plants and butcher/vendor twins while AutoGrow can plant them.
+        if SpecCanAutoGrowProgress(spec, role) then
             kind = "plant"
             if allowPlantBuys ~= true then
                 return
@@ -5715,6 +6140,14 @@ function Planner.LiveRecount(opts)
     if opts.invalidateStamps == true and Planner.InvalidateCraftableStamps then
         Planner.InvalidateCraftableStamps(listData)
     end
+    -- Stamp forced recount so BrewCatchup / RequestForcedWatchRecount can skip
+    -- a second Status.Craftable pass on the same snapGen+frame.
+    if opts.forceRecountCraftable == true then
+        local Inv = StockPiler.Inventory
+        local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+        local frame = tonumber(StockPiler.FrameCounter) or 0
+        Planner._forcedRecountStamp = tostring(snap) .. ":" .. tostring(frame)
+    end
     local patchOpts = {
         allowWarmHave = opts.allowWarmHave,
         syncSnapshot = opts.syncSnapshot,
@@ -5759,6 +6192,17 @@ function Planner.LiveRecount(opts)
     return Planner._liveGen
 end
 
+--- True when LiveRecount already forced craftable this snapGen+frame.
+function Planner.ForcedRecountMatches(snapGen, frame)
+    local stamp = Planner._forcedRecountStamp
+    if stamp == nil then
+        return false
+    end
+    snapGen = tonumber(snapGen) or 0
+    frame = tonumber(frame) or 0
+    return stamp == (tostring(snapGen) .. ":" .. tostring(frame))
+end
+
 --- Flip Enable AutoGrow <-> Restocking on current plan + optional extra rows (listData).
 --- Call from Watch UI after master/per-watch AutoGrow toggles - do not wait for rebuild.
 function Planner.ReconcileAutoGrowStatusesNow(extraRows)
@@ -5789,7 +6233,7 @@ function Planner.ReconcileAutoGrowStatusesNow(extraRows)
         end
     end
     if changed then
-        InvalidateFocusCaches()
+        InvalidateFocusCaches("autogrow-reconcile")
     end
     return changed
 end
@@ -5810,7 +6254,7 @@ function Planner.AfterPrioritySoftChange(extraRows)
         polish(plan.rows)
     end
     polish(extraRows)
-    InvalidateFocusCaches()
+    InvalidateFocusCaches("priority-soft")
 end
 
 function Planner.HasReadyToCraft()
