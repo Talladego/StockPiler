@@ -1355,6 +1355,37 @@ function Button.OnMouseOverEnd()
     ApplyIconMotion()
 end
 
+-- Layout Editor Yes/No run these callbacks before the prompt closes, and the
+-- stock editor does not pcall them. An error used to leave Yes and No dead
+-- (Cancel has no callback, so it still closed). Log once and return so the
+-- stock save can finish. The Button methods themselves stay unwrapped.
+local _layoutCallbackLogged = false
+
+local function ReportLayoutCallback(context, err)
+    if _layoutCallbackLogged == true then
+        return
+    end
+    _layoutCallbackLogged = true
+    local msg = "LayoutEditor " .. tostring(context) .. ": " .. tostring(err)
+    local D = StockPiler.Debug
+    if D and D.LogAlways then
+        D.LogAlways(msg)
+        return
+    end
+    if type(d) == "function" then
+        d("StockPiler| " .. msg)
+    end
+end
+
+local function GuardLayoutCallback(context, fn)
+    return function(...)
+        local ok, err = pcall(fn, ...)
+        if ok ~= true then
+            ReportLayoutCallback(context, err)
+        end
+    end
+end
+
 function Button.Initialize()
     if _initialized then
         SubscribeCraftPerformed()
@@ -1394,17 +1425,24 @@ function Button.Initialize()
             nil, -- allowableAnchorList
             false, -- neverLockAspect
             { x = BASE_FRAME * MIN_SCALE, y = BASE_FRAME * MIN_SCALE },
-            Button.OnLayoutResizeEnd,
-            Button.ClampToScreen
+            GuardLayoutCallback("CraftButton.OnLayoutResizeEnd", function()
+                Button.OnLayoutResizeEnd()
+            end),
+            GuardLayoutCallback("CraftButton.ClampToScreen", function()
+                Button.ClampToScreen()
+            end)
         )
     end
     if LayoutEditor and LayoutEditor.RegisterEditCallback and Button._layoutEditHooked ~= true then
-        LayoutEditor.RegisterEditCallback(function(code)
-            local ending = LayoutEditor.EDITING_END
-            if ending ~= nil and code == ending then
-                Button.OnLayoutEditingEnd()
+        LayoutEditor.RegisterEditCallback(GuardLayoutCallback(
+            "CraftButton.OnLayoutEditingEnd",
+            function(code)
+                local ending = LayoutEditor.EDITING_END
+                if ending ~= nil and code == ending then
+                    Button.OnLayoutEditingEnd()
+                end
             end
-        end)
+        ))
         Button._layoutEditHooked = true
     end
     -- Drop a legacy lock flag without locking. New installs and upgrades

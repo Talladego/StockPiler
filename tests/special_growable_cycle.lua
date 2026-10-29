@@ -278,6 +278,32 @@ eq(growable, true, "seed evidence still wins after the cycle break")
 eq(walked, 0, "the cycle break does not walk the bag")
 eq(SM.IsGrowableSpec(powder), true, "the cycle break is not cached as non-growable")
 
+-- An error inside the check must escape, and must not leave the guard set.
+snap = snap + 1
+local harvests = SM.GetHarvestSeedUidsForPlant
+local blew = 0
+SM.GetHarvestSeedUidsForPlant = function(uid)
+    if uid == GOLD then
+        blew = blew + 1
+        error("growability blew up")
+    end
+    return harvests(uid)
+end
+local errOk, errResult = pcall(SM.IsGrowableSpec, plant)
+SM.GetHarvestSeedUidsForPlant = harvests
+eq(blew, 1, "the growability check entered the throwing lookup")
+eq(errOk, false, "an error inside the growability check still escapes")
+check(
+    string.find(tostring(errResult), "growability blew up", 1, true) ~= nil,
+    "the original error is raised again"
+)
+ok, growable, walked = grewBags(function()
+    return SM.IsGrowableSpec(plant)
+end)
+eq(ok, true, "the guard is clear after an error")
+eq(growable, true, "the plant is growable again after the error")
+eq(walked, 0, "the retry after an error does not walk the bag")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

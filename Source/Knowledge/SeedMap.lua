@@ -1549,6 +1549,7 @@ local _growableCache = {}
 local _growableCacheGen = nil
 -- Same spec re-entering growability (seed lookup asking "is this growable?")
 -- must stop. A stuck flag answers non-growable instead of overflowing.
+-- Cleared even when the check errors; the error is then raised again.
 local _growableInProgress = {}
 local SpecialMainHasSeedEvidence
 
@@ -1639,6 +1640,29 @@ local function IsGrowableSpecUncached(spec)
     return false
 end
 
+--- One guard for every cache miss. Not rebuilt on each IsGrowableSpec call.
+--- The in-progress flag is cleared before an error is raised again, so one
+--- failed check cannot leave that spec stuck as non-growable.
+local function FinishGrowableUncached(spec, cacheKey)
+    if _growableInProgress[spec] or (cacheKey and _growableInProgress[cacheKey]) then
+        -- Do not cache the cycle break. The outer call still computes.
+        return false, true
+    end
+    _growableInProgress[spec] = true
+    if cacheKey then
+        _growableInProgress[cacheKey] = true
+    end
+    local ok, growable = pcall(IsGrowableSpecUncached, spec)
+    _growableInProgress[spec] = nil
+    if cacheKey then
+        _growableInProgress[cacheKey] = nil
+    end
+    if ok ~= true then
+        error(growable, 0)
+    end
+    return growable == true, false
+end
+
 --- Memo per uid and role for the bag snapshot and knowledge generation.
 --- The answer depends on role (and the stabilizer/goldweed name check), so one
 --- uid can be growable as a main and not as a stabilizer in the same snapshot.
@@ -1661,22 +1685,6 @@ function SM.IsGrowableSpec(spec)
     if uid > 0 and StockPiler.Items and StockPiler.Items.GetByUid then
         knownItem = type(StockPiler.Items.GetByUid(uid)) == "table"
     end
-    local function finishUncached(cacheKey)
-        if _growableInProgress[spec] or (cacheKey and _growableInProgress[cacheKey]) then
-            -- Do not cache the cycle break. The outer call still computes.
-            return false, true
-        end
-        _growableInProgress[spec] = true
-        if cacheKey then
-            _growableInProgress[cacheKey] = true
-        end
-        local growable = IsGrowableSpecUncached(spec) == true
-        _growableInProgress[spec] = nil
-        if cacheKey then
-            _growableInProgress[cacheKey] = nil
-        end
-        return growable, false
-    end
     local cacheKey
     if uid > 0 then
         -- Name is part of the key. A preview probe with no name must not answer
@@ -1685,7 +1693,7 @@ function SM.IsGrowableSpec(spec)
     else
         local productKey = SpecProductCacheKey(spec)
         if productKey == "" then
-            local growable = finishUncached(nil)
+            local growable = FinishGrowableUncached(spec, nil)
             return growable
         end
         cacheKey = "s:" .. productKey .. ":" .. role .. ":" .. nameKey
@@ -1693,7 +1701,7 @@ function SM.IsGrowableSpec(spec)
     if _growableCache[cacheKey] ~= nil then
         return _growableCache[cacheKey] == true
     end
-    local growable, cycled = finishUncached(cacheKey)
+    local growable, cycled = FinishGrowableUncached(spec, cacheKey)
     -- Nameless + unknown uid: SpecLooksButchering cannot see the butcher name,
     -- so the cult-role guess must not stick for this snapshot.
     if cycled ~= true and not (uid > 0 and nameKey == "" and knownItem ~= true) then

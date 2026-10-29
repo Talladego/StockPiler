@@ -19,8 +19,9 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 - Tooltips no longer keep a leftover "Right-click opens the StockPiler window" line. Checkbox tips open upward, recipe and Watch status tips open downward, and item tips sit like bag tips.
 - A material you can grow is not treated as something you must buy when the recipe names a butcher ingredient. Brew still uses that butcher ingredient first when it is in your bags.
 - A recipe tip shows a repeated ingredient once, with a count, instead of repeating the whole section.
-- Some special ingredients no longer freeze the game.
+- Some special ingredients no longer cause an error when StockPiler checks whether they can be grown.
 - Resizing the Craft button in the Layout Editor keeps the button square and remembers the size.
+- Saving in the Layout Editor works again with StockPiler enabled.
 - Bug fixes.
 - Performance improvements.
 
