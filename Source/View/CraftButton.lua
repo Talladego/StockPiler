@@ -1033,7 +1033,8 @@ end
 local function ReadEditorCraftScale()
     local dw = BASE_FRAME
     if type(WindowGetDimensions) == "function" then
-        dw = tonumber(WindowGetDimensions(WIN)) or BASE_FRAME
+        -- Parentheses keep the width only. Height must not become tonumber's base.
+        dw = tonumber((WindowGetDimensions(WIN))) or BASE_FRAME
     end
     local ui = UiScale()
     return ClampScale((dw * WindowScaleOf(WIN)) / BASE_FRAME / ui)
