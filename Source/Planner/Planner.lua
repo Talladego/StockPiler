@@ -538,6 +538,25 @@ local function SliceYield()
     return false
 end
 
+--- True only on the thread that is inside this rebuild. A suspended slice
+--- leaves rows and scratch set; main-thread demand must not read them.
+local function InProgressBuild()
+    if Planner._buildSliceSuspended == true then
+        return false
+    end
+    return type(Planner._buildRows) == "table"
+end
+
+local function GameNow()
+    if type(GetGameTime) == "function" then
+        return tonumber(GetGameTime()) or 0
+    end
+    return 0
+end
+
+-- Assigned after BuildFull. Success clears the restart budget.
+local ClearSliceBudget
+
 local function StabilizerSlotTypes()
     local cit = GameData and GameData.CraftingItemType
     local stab = cit and tonumber(cit.STABILIZER) or 1
@@ -566,14 +585,20 @@ local function SpecIsStabilizerFamily(spec)
     return SlotIsStabilizerFamily(spec.slotType)
 end
 
---- ProductKey is "ts:N|st:N|lv:N|...". Nil slot means "do not narrow".
+--- ProductKey is "ts:N|st:N|lv:N|...". Nil, or slot <= 0, means "do not
+--- narrow". Thin bag items (vials with no TYPE bonus) key as st:0 until
+--- ProductMatches enriches them, and that match can hit any real slot.
 --- Trade skill is not a safe cut: ProductMatches rewrites both sides to
 --- Apothecary, so a cultivation spec still matches an apo product key.
 local function ProductKeySlot(productKey)
     if type(productKey) ~= "string" or productKey == "" then
         return nil
     end
-    return tonumber(productKey:match("st:(%-?%d+)"))
+    local slot = tonumber(productKey:match("st:(%-?%d+)"))
+    if slot == nil or slot <= 0 then
+        return nil
+    end
+    return slot
 end
 
 local function BuildSpecFilter(pending)
@@ -591,8 +616,8 @@ local function BuildSpecFilter(pending)
             incomplete[#incomplete + 1] = entry
         else
             local slot = tonumber(spec.slotType)
-            if slot == nil then
-                -- No slot to prove a miss. Keep the old all-spec walk.
+            if slot == nil or slot <= 0 then
+                -- Missing or zero slot cannot prove a miss. Keep the old walk.
                 open[#open + 1] = entry
             else
                 local list = bySlot[slot]
@@ -635,7 +660,8 @@ local function CandidatesForItem(filter, productKey)
         return filter and filter.pending or {}
     end
     local slot = ProductKeySlot(productKey)
-    if slot == nil then
+    if slot == nil or slot <= 0 then
+        -- Thin or slot-less product. ProductMatches may enrich it onto any spec.
         return filter.pending
     end
     local out = {}
@@ -925,6 +951,123 @@ local function BeginWarmHaveSlice()
     return "continue"
 end
 
+--- Freeze stackCount so a later in-place bag edit cannot change a stack
+--- this pump already accepted. Nested bonus tables stay shared.
+local function SnapshotBagItem(item)
+    local copy = {}
+    if type(item) == "table" then
+        for k, v in pairs(item) do
+            if type(v) ~= "function" then
+                copy[k] = v
+            end
+        end
+    end
+    local qty = tonumber(copy.stackCount) or tonumber(copy.stackcount) or 1
+    if qty < 1 then
+        qty = 1
+    end
+    copy.stackCount = qty
+    copy.stackcount = qty
+    return copy, qty
+end
+
+local function BagSlotCap()
+    local n = WarmHaveBudget() * 4
+    if n < 1 then
+        n = 1
+    end
+    return n
+end
+
+--- Visit up to maxSlots slots from a cursor. fn returning false stops the walk.
+--- ForEachItemChunk keeps the cost bounded. A cooperative ForEachItem that
+--- stops on false does the same. The cursor is slot counts, not a live pairs().
+local function VisitBagSlots(state, maxSlots, fn)
+    if type(state) ~= "table" or state.done == true then
+        return 0
+    end
+    maxSlots = tonumber(maxSlots) or 1
+    if maxSlots < 1 then
+        maxSlots = 1
+    end
+    local Inv = StockPiler.Inventory
+    if not Inv or type(fn) ~= "function" then
+        state.done = true
+        return 0
+    end
+    if type(Inv.ForEachItemChunk) == "function" then
+        return Inv.ForEachItemChunk(state, maxSlots, fn)
+    end
+    if type(Inv.ForEachItem) ~= "function" then
+        state.done = true
+        return 0
+    end
+    local skip = tonumber(state.seen) or 0
+    local index = 0
+    local visited = 0
+    local stop = false
+    Inv.ForEachItem(function(item, bag, slot)
+        if stop or visited >= maxSlots then
+            return false
+        end
+        index = index + 1
+        if index <= skip then
+            return nil
+        end
+        visited = visited + 1
+        local keep = fn(item, bag, slot)
+        if keep == false or visited >= maxSlots then
+            stop = true
+            return false
+        end
+        return nil
+    end)
+    state.seen = skip + visited
+    if visited == 0 or (visited < maxSlots and stop ~= true) then
+        state.done = true
+    else
+        state.done = false
+    end
+    return visited
+end
+
+local function FrozenCountsStillMatch(frozen)
+    if type(frozen) ~= "table" then
+        return true
+    end
+    for i = 1, #frozen do
+        local row = frozen[i]
+        local item = type(row) == "table" and row.item or nil
+        if type(item) == "table" then
+            local live = tonumber(item.stackCount) or tonumber(item.stackcount) or 1
+            if live < 1 then
+                live = 1
+            end
+            if live ~= row.count then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+--- One assignment. Readers see the previous table or the finished totals.
+local function PublishHaveTotals(snapGen, pending, totals)
+    local dest = {}
+    if Planner._specHaveSnapGen == snapGen and type(Planner._specHaveCache) == "table" then
+        for k, v in pairs(Planner._specHaveCache) do
+            dest[k] = v
+        end
+    end
+    for i = 1, #pending do
+        local entry = pending[i]
+        dest[entry.key] = tonumber(totals[entry.key]) or 0
+    end
+    Planner._specHaveCache = dest
+    Planner._specHaveSnapGen = snapGen
+    MarkHaveCacheWarmed(snapGen)
+end
+
 local function FinishWarmHaveSlice()
     local slice = Planner._warmHaveSlice
     if type(slice) ~= "table" or type(slice.pending) ~= "table" then
@@ -936,7 +1079,7 @@ local function FinishWarmHaveSlice()
     if Sch and Sch.ShouldDeferWarmHaveBag and Sch.ShouldDeferWarmHaveBag() == true then
         return "defer"
     end
-    local cache, snapGen = EnsureHaveCacheForSnap()
+    local snapGen = CurrentSnapGen()
     local token = WarmHaveToken()
     if snapGen ~= (tonumber(slice.snapGen) or -1) or slice.token ~= token then
         -- Bag, watches, or knowledge moved. Drop partial totals and restart later.
@@ -946,10 +1089,17 @@ local function FinishWarmHaveSlice()
         end
         return "done"
     end
-    if slice.items == nil then
-        slice.items = CollectUsableBagItems()
-        slice.itemIndex = 1
+    -- A stack we already accepted changed in place. Publishing would mix
+    -- the old count with stacks read after the edit. Drop the partial.
+    if FrozenCountsStillMatch(slice.frozen) ~= true then
+        Planner._warmHaveSlice = nil
+        Planner._specHaveWarmedSnap = nil
+        return "done"
+    end
+    if slice.totals == nil then
         slice.totals = {}
+        slice.frozen = {}
+        slice.scan = { done = false }
         for i = 1, #slice.pending do
             slice.totals[slice.pending[i].key] = 0
         end
@@ -960,32 +1110,52 @@ local function FinishWarmHaveSlice()
             return "done"
         end
     end
-    local items = slice.items
-    local index = tonumber(slice.itemIndex) or 1
-    local last = index + WarmHaveBudget() - 1
-    if last > #items then
-        last = #items
-    end
-    local keyIndex = slice.keyIndex or {}
-    local totals = slice.totals
-    for i = index, last do
-        CreditItemTotals(items[i], totals, keyIndex, slice.filter)
-    end
-    slice.itemIndex = last + 1
-    if slice.itemIndex <= #items then
-        return "continue"
+    if slice.scan == nil or slice.scan.done ~= true then
+        slice.scan = slice.scan or { done = false }
+        local budget = WarmHaveBudget()
+        local credited = 0
+        local Inv = StockPiler.Inventory
+        local MS = MaterialSpec()
+        local keyIndex = slice.keyIndex or {}
+        local totals = slice.totals
+        VisitBagSlots(slice.scan, BagSlotCap(), function(item)
+            if not BagItemUsable(item, Inv, MS) then
+                return true
+            end
+            local copy, qty = SnapshotBagItem(item)
+            slice.frozen[#slice.frozen + 1] = { item = item, count = qty }
+            CreditItemTotals(copy, totals, keyIndex, slice.filter)
+            credited = credited + 1
+            if credited >= budget then
+                return false
+            end
+            return true
+        end)
+        if slice.scan.invalid == true
+            or CurrentSnapGen() ~= (tonumber(slice.snapGen) or -1)
+            or WarmHaveToken() ~= token
+            or FrozenCountsStillMatch(slice.frozen) ~= true
+        then
+            Planner._warmHaveSlice = nil
+            Planner._specHaveWarmedSnap = nil
+            return "done"
+        end
+        if slice.scan.done ~= true then
+            return "continue"
+        end
     end
     if CurrentSnapGen() ~= (tonumber(slice.snapGen) or -1) or WarmHaveToken() ~= token then
         Planner._warmHaveSlice = nil
         return "done"
     end
-    for i = 1, #slice.pending do
-        local entry = slice.pending[i]
-        cache[entry.key] = tonumber(totals[entry.key]) or 0
+    if FrozenCountsStillMatch(slice.frozen) ~= true then
+        Planner._warmHaveSlice = nil
+        Planner._specHaveWarmedSnap = nil
+        return "done"
     end
+    PublishHaveTotals(snapGen, slice.pending, slice.totals)
     slice.committed = true
     Planner._warmHaveSlice = nil
-    MarkHaveCacheWarmed(snapGen)
     return "done"
 end
 
@@ -1582,7 +1752,8 @@ end
 local function BuildBalancedSpecDemand(opts)
     opts = type(opts) == "table" and opts or {}
     local Watch = StockPiler.Watch
-    local building = type(Planner._buildRows) == "table"
+    -- Suspended rebuild state stays private. WarmDemand runs between pumps.
+    local building = InProgressBuild()
     local planGen
     if building then
         -- This build's gen, not the plan still published from the previous build.
@@ -1592,6 +1763,7 @@ local function BuildBalancedSpecDemand(opts)
         local plan = PS and PS.Get and PS.Get() or nil
         planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
     end
+    local deferStore = building and Planner._demandDeferStore == true
     local cacheKey = FullCacheKey("demand:" .. tostring(planGen))
     if type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
         return Planner._demandCache
@@ -1614,7 +1786,7 @@ local function BuildBalancedSpecDemand(opts)
     local RS = RecipeSpec()
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
     if type(watches) ~= "table" or not RS then
-        if Planner._demandDeferStore ~= true then
+        if deferStore ~= true then
             Planner._demandCache = demand
             Planner._demandCacheKey = cacheKey
         end
@@ -1638,7 +1810,7 @@ local function BuildBalancedSpecDemand(opts)
                 local stillNeeds = WatchStillNeedsGrow(
                     potion, recipe, target, watchKey, building and Planner._buildRows or nil
                 ) == true
-                if type(Planner._demandNeedScratch) == "table" then
+                if building and type(Planner._demandNeedScratch) == "table" then
                     Planner._demandNeedScratch[tostring(watchKey)] = stillNeeds
                 end
                 if uid > 0 and deficit > 0 and target > 0 then
@@ -1834,7 +2006,7 @@ local function BuildBalancedSpecDemand(opts)
     end
     demand._resinFeedstock = hasResinFeedstock
 
-    if Planner._demandDeferStore ~= true then
+    if deferStore ~= true then
         Planner._demandCache = demand
         Planner._demandCacheKey = cacheKey
     end
@@ -1852,7 +2024,7 @@ local function CollectFocus(mode, rowsOpt)
     if type(rowsOpt) == "table" then
         planRows = rowsOpt
         planGen = tonumber(Planner._buildPlanGen) or tonumber(Planner._planGen) or 0
-    elseif Planner._buildSliceSuspended ~= true and type(Planner._buildRows) == "table" then
+    elseif InProgressBuild() then
         planRows = Planner._buildRows
         planGen = tonumber(Planner._buildPlanGen) or tonumber(Planner._planGen) or 0
     else
@@ -4734,6 +4906,7 @@ local function BuildWatchRows(ctx, watches)
     local demand = BuildBalancedSpecDemand()
     Planner._demandDeferStore = nil
     if Planner._buildSliceAbort ~= nil or type(demand) ~= "table" then
+        PerfEnd("Build.Demand")
         return nil
     end
     local needsPass1 = Planner._demandNeedScratch
@@ -4771,11 +4944,13 @@ local function BuildWatchRows(ctx, watches)
         rows[#rows + 1] = row
         if Planner._buildYield == true and (i % BuildRowBudget()) == 0 and i < #targets then
             if SliceYield() then
+                PerfEnd("Build.Status")
                 return nil
             end
         end
     end
     if SliceYield() then
+        PerfEnd("Build.Status")
         return nil
     end
     Planner._lastDemand = demand
@@ -5928,6 +6103,9 @@ local function BuildFull(opts)
     Planner._buildYield = nil
     Planner._lazyWatchTips = nil
     Planner._buildSliceSuspended = nil
+    if ClearSliceBudget then
+        ClearSliceBudget()
+    end
     PerfEnd("Planner.Build")
     return plan
 end
@@ -6654,6 +6832,138 @@ function Planner.AbortBuildSlice()
     ClearBuildScratch()
 end
 
+local function BrewBlocksSliceFinish()
+    local Orch = StockPiler.Orchestrator
+    return Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
+end
+
+local function EndOpenBuildPerf()
+    PerfEnd("Build.WarmHave")
+    PerfEnd("Build.Demand")
+    PerfEnd("Build.Status")
+    PerfEnd("Build.Tips")
+    PerfEnd("Planner.Build")
+end
+
+ClearSliceBudget = function()
+    Planner._buildSliceRestarts = 0
+    Planner._buildSliceArmedAt = 0
+    Planner._buildSliceErrorLogged = nil
+    Planner._buildSliceRetryAt = nil
+end
+
+local function ArmBuildSliceClock()
+    if (tonumber(Planner._buildSliceArmedAt) or 0) <= 0 then
+        Planner._buildSliceArmedAt = GameNow()
+    end
+end
+
+--- Restarts, or the wall clock since this rebuild was armed. After the cap
+--- the next attempt finishes in one call instead of starting over.
+function Planner.BuildSliceOverCap()
+    local cap = tonumber(Planner.BUILD_SLICE_RESTART_CAP) or 3
+    if cap < 1 then
+        cap = 1
+    end
+    if (tonumber(Planner._buildSliceRestarts) or 0) >= cap then
+        return true
+    end
+    local budget = tonumber(Planner.BUILD_SLICE_BUDGET_SEC) or 8
+    local armed = tonumber(Planner._buildSliceArmedAt) or 0
+    local now = GameNow()
+    if budget > 0 and armed > 0 and now > 0 and (now - armed) >= budget then
+        return true
+    end
+    return false
+end
+
+function Planner.NoteBuildSliceRestart()
+    ArmBuildSliceClock()
+    Planner._buildSliceRestarts = (tonumber(Planner._buildSliceRestarts) or 0) + 1
+    return Planner.BuildSliceOverCap() == true
+end
+
+function Planner.BuildSliceRetryAt()
+    return tonumber(Planner._buildSliceRetryAt) or 0
+end
+
+local function LogBuildSliceError(err)
+    if Planner._buildSliceErrorLogged == true then
+        return
+    end
+    Planner._buildSliceErrorLogged = true
+    local Debug = StockPiler.Debug
+    if Debug and Debug.ReportProtectedCallFailure then
+        Debug.ReportProtectedCallFailure("Planner.BuildWatchRows", err, true)
+    elseif Debug and Debug.LogAlways then
+        Debug.LogAlways("plan-build-slice-error " .. tostring(err))
+    end
+end
+
+local function MarkBuildSliceRetry()
+    local now = GameNow()
+    local wait = tonumber(Planner.BUILD_SLICE_ERROR_BACKOFF_SEC) or 2
+    if wait < 0 then
+        wait = 0
+    end
+    if now > 0 then
+        Planner._buildSliceRetryAt = now + wait
+    else
+        Planner._buildSliceRetryAt = nil
+    end
+end
+
+--- Drop the partial cursor and build the current plan in one call.
+function Planner.FinishBuildSliceSync()
+    Planner._buildSliceCo = nil
+    Planner._buildSliceToken = nil
+    Planner._buildSliceAbort = nil
+    Planner._buildYield = nil
+    Planner._buildSliceSuspended = nil
+    ClearBuildScratch()
+    local fast = TryFastPlan({})
+    if type(fast) == "table" then
+        ClearSliceBudget()
+        return fast
+    end
+    Planner._lazyWatchTips = true
+    local plan = BuildFull({})
+    Planner._lazyWatchTips = nil
+    return plan
+end
+
+local function AbandonStaleBuildSlice()
+    local over = Planner.NoteBuildSliceRestart()
+    Planner._buildSliceCo = nil
+    Planner._buildSliceToken = nil
+    Planner._buildSliceAbort = nil
+    ClearBuildScratch()
+    -- A brew frame stays light. The cap stays latched so the next eligible
+    -- rebuild finishes in one call instead of starting another walk.
+    if over == true and BrewBlocksSliceFinish() ~= true then
+        local plan = Planner.FinishBuildSliceSync()
+        if type(plan) == "table" then
+            return "done"
+        end
+        EndOpenBuildPerf()
+        LogBuildSliceError("plan-build-sync-failed")
+        MarkBuildSliceRetry()
+        return "retry"
+    end
+    return "restart"
+end
+
+local function FailBuildSlice(err)
+    Planner._buildSliceCo = nil
+    Planner._buildSliceToken = nil
+    Planner._buildSliceAbort = nil
+    ClearBuildScratch()
+    EndOpenBuildPerf()
+    LogBuildSliceError(err)
+    MarkBuildSliceRetry()
+    return "retry"
+end
+
 --- Scheduler entry. Fast paths publish and return "done". A full rebuild
 --- returns "continue" until PumpBuildSlice finishes the same plan a sync Build would.
 function Planner.BeginBuildSlice()
@@ -6662,6 +6972,7 @@ function Planner.BeginBuildSlice()
     end
     local fast = TryFastPlan({})
     if type(fast) == "table" then
+        ClearSliceBudget()
         return "done"
     end
     if not CanSliceBuild() then
@@ -6673,6 +6984,7 @@ function Planner.BeginBuildSlice()
         end
         return "done"
     end
+    ArmBuildSliceClock()
     Planner._lazyWatchTips = true
     Planner._buildYield = true
     Planner._buildSliceAbort = nil
@@ -6684,7 +6996,8 @@ function Planner.BeginBuildSlice()
     return "continue"
 end
 
---- One chunk of a sliced BuildFull. "restart" means drop the partial plan.
+--- One chunk of a sliced BuildFull.
+--- "restart" drops the partial plan. "retry" keeps the rebuild pending.
 function Planner.PumpBuildSlice()
     local co = Planner._buildSliceCo
     if co == nil then
@@ -6695,32 +7008,19 @@ function Planner.PumpBuildSlice()
         return "done"
     end
     if BuildSliceStale() then
-        Planner._buildSliceCo = nil
-        Planner._buildSliceToken = nil
-        Planner._buildSliceAbort = nil
-        ClearBuildScratch()
-        return "restart"
+        return AbandonStaleBuildSlice()
     end
     local ok, err = coroutine.resume(co)
     if not ok then
-        Planner._buildSliceCo = nil
-        Planner._buildSliceToken = nil
-        Planner._buildSliceAbort = nil
-        ClearBuildScratch()
-        if StockPiler.Debug and StockPiler.Debug.ReportProtectedCallFailure then
-            StockPiler.Debug.ReportProtectedCallFailure("Planner.BuildWatchRows", err, true)
-        end
-        return "done"
+        return FailBuildSlice(err)
     end
-    local restart = Planner._buildSliceAbort ~= nil
-    if restart or coroutine.status(co) == "dead" then
+    if Planner._buildSliceAbort ~= nil then
+        return AbandonStaleBuildSlice()
+    end
+    if coroutine.status(co) == "dead" then
         Planner._buildSliceCo = nil
         Planner._buildSliceToken = nil
         Planner._buildSliceAbort = nil
-        if restart then
-            ClearBuildScratch()
-            return "restart"
-        end
         return "done"
     end
     return "continue"

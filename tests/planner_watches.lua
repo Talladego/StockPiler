@@ -101,7 +101,9 @@ StockPiler.Inventory = {
     GetSnapGen = function() return H.snap end,
     ForEachItem = function(fn)
         for _, it in ipairs(H.items) do
-            fn(it)
+            if fn(it) == false then
+                return
+            end
         end
     end,
     CanUseCraftingItem = function() return true end,
@@ -205,9 +207,16 @@ local function reset()
     P._buildSliceAbort = nil
     P._buildYield = nil
     P._buildSliceSuspended = nil
+    P._buildSliceRestarts = nil
+    P._buildSliceArmedAt = nil
+    P._buildSliceErrorLogged = nil
+    P._buildSliceRetryAt = nil
     P._lazyWatchTips = nil
     P.WARM_HAVE_ITEMS_PER_PUMP = nil
     P.BUILD_ROWS_PER_PUMP = nil
+    P.BUILD_SLICE_RESTART_CAP = nil
+    P.BUILD_SLICE_BUDGET_SEC = nil
+    P.BUILD_SLICE_ERROR_BACKOFF_SEC = nil
     H.snap = H.snap + 1
 end
 
@@ -759,6 +768,7 @@ local function testWarmHaveSlotFilter()
     local main = { key = "filtMain", role = "main", slotType = 2, skillLevel = 20 }
     local vial = { key = "filtVial", role = "container", slotType = 5, skillLevel = 20 }
     local stab = { key = "filtStab", role = "stabilizer", slotType = 1, skillLevel = 20 }
+    local openSpec = { key = "filtOpen", role = "ingredient", slotType = 0, skillLevel = 20 }
     local calls = {}
     local prev = StockPiler.MaterialSpec.ProductMatches
     StockPiler.MaterialSpec.ProductMatches = function(item, spec)
@@ -789,6 +799,7 @@ local function testWarmHaveSlotFilter()
             slots = {
                 { spec = main, perCraft = 1, role = "main" },
                 { spec = vial, perCraft = 1, role = "container" },
+                { spec = openSpec, perCraft = 1, role = "ingredient" },
                 { spec = stab, perCraft = 1, role = "stabilizer" },
             },
         },
@@ -800,6 +811,7 @@ local function testWarmHaveSlotFilter()
     eq(P.CountItemsMatchingSpec(vial), 0, "a main stack is not credited to a vial")
     eq(P.CountItemsMatchingSpec(stab), 9, "goldweed still credits a stabilizer spec")
     eq(calls.filtVial or 0, 0, "vial spec is not tested against other slots")
+    check((calls.filtOpen or 0) >= 1, "a slot 0 spec is not dropped from the walk")
     check((calls.filtMain or 0) >= 1, "main spec is tested against its slot")
     check((calls.filtStab or 0) >= 1, "stabilizer spec is tested against goldweed")
 end
@@ -896,6 +908,292 @@ local function testFrameWorkBagPumps()
     check(pumps >= 4, "collect plus one stack per pump takes several frames")
     eq(FW.IsActive("prewarm-warm-have"), false, "warm have job finishes")
     eq(P.CountItemsMatchingSpec(spec), 6, "framework slice counts every stack")
+    StockPiler.Orchestrator = {
+        IsBrewSessionActive = function()
+            return true
+        end,
+    }
+    reset()
+    P.WARM_HAVE_ITEMS_PER_PUMP = 1
+    FW._jobs = {}
+    FW._order = {}
+    eq(FW.EnqueueWarmHave("brew"), true, "a recount enqueued before a brew stays queued")
+    eq(FW.Pump(), true, "a brew does not freeze the recount pump")
+    eq(FW.IsActive("prewarm-warm-have"), true, "one brew frame does not finish the whole recount")
+    StockPiler.Orchestrator = nil
+end
+
+local function testThinContainerProductKey()
+    local saved = {}
+    local fields = { "Key", "ProductKey", "ProductMatches", "IsSeedOrSpore", "Label", "FromItemData", "Matches" }
+    for i = 1, #fields do
+        saved[fields[i]] = StockPiler.MaterialSpec[fields[i]]
+    end
+    if StockPiler.Util.T == nil then
+        StockPiler.Util.T = function(key)
+            return tostring(key)
+        end
+    end
+    load_module("Source/Knowledge/MaterialSpec.lua")
+    local MS = StockPiler.MaterialSpec
+    local learned = {
+        role = "container",
+        tradeSkill = 4,
+        slotType = 5,
+        skillLevel = 200,
+        cultivationType = 0,
+        bonuses = {},
+        uid = 777,
+    }
+    StockPiler.Items = {
+        ToSpec = function(uid)
+            if tonumber(uid) == 777 then
+                return learned
+            end
+            return nil
+        end,
+    }
+    local thin = { uniqueID = 777, craftingSkillRequirement = 200, stackCount = 3 }
+    local other = { uniqueID = 778, craftingSkillRequirement = 200, stackCount = 9, slotType = 2 }
+    local pk = MS.ProductKey(thin)
+    eq(pk, "ts:4|st:0|lv:200|ct:0|role:ingredient", "a thin container keys as slot 0")
+    local vial = {
+        role = "container",
+        tradeSkill = 4,
+        slotType = 5,
+        skillLevel = 200,
+        cultivationType = 0,
+        bonuses = {},
+    }
+    eq(MS.ProductMatches(thin, vial), true, "ProductMatches enriches the thin container")
+    eq(MS.ProductMatches(other, vial), false, "a slotted stack does not match the vial")
+    H.items = { thin, other }
+    H.watches = {
+        ["uid:1"] = { enabled = true, autoGrow = true, targetStock = 1 },
+    }
+    H.recipes = {
+        ["uid:1"] = {
+            recipeKey = "rThin", recipeYield = 1, out = 1,
+            slots = { { spec = vial, perCraft = 1, role = "container" } },
+        },
+    }
+    reset()
+    P.WarmSpecHaveCacheForWatches()
+    eq(P.CountItemsMatchingSpec(vial), 3, "sync warm counts the thin container")
+    reset()
+    P.WARM_HAVE_ITEMS_PER_PUMP = 1
+    eq(P.BeginWarmHaveSlice(), "continue", "thin container slice starts")
+    local guard = 0
+    local result = "continue"
+    while result == "continue" and guard < 8 do
+        guard = guard + 1
+        result = P.FinishWarmHaveSlice()
+    end
+    eq(result, "done", "thin container slice finishes")
+    eq(P.CountItemsMatchingSpec(vial), 3, "sliced warm counts the thin container")
+    for i = 1, #fields do
+        StockPiler.MaterialSpec[fields[i]] = saved[fields[i]]
+    end
+    StockPiler.Items = nil
+    if StockPiler.Inventory then
+        StockPiler.Inventory._specParseCache = nil
+    end
+end
+
+local function testWarmHaveSliceDoesNotScanWholeBag()
+    local spec = { key = "scanA", role = "main", slotType = 2 }
+    H.items = {
+        { uniqueID = 61, stackCount = 4, pk = "ts:4|st:2|lv:1", matches = { scanA = true } },
+        { uniqueID = 62, stackCount = 5, pk = "ts:4|st:2|lv:1", matches = { scanA = true } },
+        { uniqueID = 63, stackCount = 6, pk = "ts:4|st:2|lv:1", matches = { scanA = true } },
+    }
+    H.watches = {
+        ["uid:1"] = { enabled = true, autoGrow = true, targetStock = 1 },
+    }
+    H.recipes = {
+        ["uid:1"] = {
+            recipeKey = "rScan", recipeYield = 1, out = 1,
+            slots = { { spec = spec, perCraft = 1, role = "main" } },
+        },
+    }
+    reset()
+    P.WARM_HAVE_ITEMS_PER_PUMP = 1
+    eq(P.BeginWarmHaveSlice(), "continue", "scan slice starts")
+    local visits = 0
+    local orig = StockPiler.Inventory.ForEachItem
+    StockPiler.Inventory.ForEachItem = function(fn)
+        orig(function(item)
+            visits = visits + 1
+            return fn(item)
+        end)
+    end
+    eq(P.FinishWarmHaveSlice(), "continue", "first bag pump does not commit")
+    StockPiler.Inventory.ForEachItem = orig
+    eq(visits, 1, "the first bag pump does not walk the whole bag")
+    H.items[1].stackCount = 20
+    eq(P.FinishWarmHaveSlice(), "done", "an in-place count change drops the partial")
+    eq(P.IsHaveCacheWarmForSnap(), false, "a mixed count is not published")
+    eq(P.CountItemsMatchingSpec(spec, { cacheOnly = true }), nil, "partial totals stay private")
+    eq(P.BeginWarmHaveSlice(), "continue", "the next slice starts clean")
+    local guard = 0
+    local result = "continue"
+    while result == "continue" and guard < 8 do
+        guard = guard + 1
+        result = P.FinishWarmHaveSlice()
+    end
+    eq(result, "done", "a stable slice publishes")
+    eq(P.CountItemsMatchingSpec(spec), 31, "the retry counts the stacks it actually read")
+end
+
+local function testDemandPrivateDuringRebuild()
+    local spec = { key = "demLeaf", role = "main", slotType = 2, skillLevel = 15 }
+    H.items = {
+        { uniqueID = 71, stackCount = 2, pk = "ts:4|st:2|lv:15", matches = { demLeaf = true } },
+    }
+    H.watches = {
+        ["uid:81"] = { enabled = true, autoGrow = true, targetStock = 3, priorityTier = 1 },
+        ["uid:82"] = { enabled = true, autoGrow = true, targetStock = 3, priorityTier = 2 },
+    }
+    H.recipes = {
+        ["uid:81"] = {
+            recipeKey = "rDemA", recipeYield = 1, out = 81,
+            slots = { { spec = spec, perCraft = 1, role = "main" } },
+        },
+        ["uid:82"] = {
+            recipeKey = "rDemB", recipeYield = 1, out = 82,
+            slots = { { spec = spec, perCraft = 1, role = "main" } },
+        },
+    }
+    reset()
+    P._lazyWatchTips = true
+    local syncPlan = P.Build({ force = true })
+    local syncRows = rowSig(syncPlan)
+    reset()
+    P.BUILD_ROWS_PER_PUMP = 1
+    P.WARM_HAVE_ITEMS_PER_PUMP = 50
+    P._lazyWatchTips = true
+    eq(P.BeginBuildSlice(), "continue", "demand leak test starts a slice")
+    local pumps = 0
+    local parked = false
+    while pumps < 12 do
+        pumps = pumps + 1
+        local result = P.PumpBuildSlice()
+        if result ~= "continue" then
+            break
+        end
+        if P._buildSliceSuspended == true and type(P._buildRows) == "table"
+            and #P._buildRows >= 1 and #P._buildRows < 2
+        then
+            parked = true
+            break
+        end
+    end
+    check(parked == true, "the slice is parked on a partial row list")
+    local buildGen = tostring(P._buildPlanGen)
+    P._demandCache = nil
+    P._demandCacheKey = nil
+    P._demandNeedScratch = { sentinel = true }
+    P._demandDeferStore = true
+    P.WarmDemand()
+    eq(P._demandNeedScratch.sentinel, true, "prewarm does not write the rebuild scratch")
+    eq(P._demandNeedScratch["uid:81"], nil, "prewarm does not record the partial grow answer")
+    local suffix = "|demand:" .. buildGen
+    local key = tostring(P._demandCacheKey or "")
+    check(key:sub(-#suffix) ~= suffix, "prewarm does not cache under the in-progress plan gen")
+    check(type(P._demandCache) == "table", "prewarm still stores demand for the published plan")
+    P._demandCache._probe = "prewarm"
+    P._demandDeferStore = nil
+    local guard = 0
+    local result = "continue"
+    while result == "continue" and guard < 20 do
+        guard = guard + 1
+        result = P.PumpBuildSlice()
+    end
+    eq(result, "done", "the slice finishes after the prewarm")
+    local sliced = StockPiler.PlanSnapshot.Get()
+    eq(rowSig(sliced), syncRows, "prewarm does not publish demand from partial rows")
+    check(P._lastDemand == nil or P._lastDemand._probe ~= "prewarm", "the rebuild demand is not the prewarm table")
+end
+
+local function testBuildSliceRestartCap()
+    local spec = { key = "capLeaf", role = "main", slotType = 2, skillLevel = 15 }
+    H.items = {
+        { uniqueID = 91, stackCount = 4, pk = "ts:4|st:2|lv:15", matches = { capLeaf = true } },
+    }
+    H.watches = {
+        ["uid:91"] = { enabled = true, autoGrow = true, targetStock = 2, priorityTier = 1 },
+        ["uid:92"] = { enabled = true, autoGrow = true, targetStock = 2, priorityTier = 2 },
+    }
+    H.recipes = {
+        ["uid:91"] = {
+            recipeKey = "rCapA", recipeYield = 1, out = 91,
+            slots = { { spec = spec, perCraft = 1, role = "main" } },
+        },
+        ["uid:92"] = {
+            recipeKey = "rCapB", recipeYield = 1, out = 92,
+            slots = { { spec = spec, perCraft = 1, role = "main" } },
+        },
+    }
+    reset()
+    P.BUILD_ROWS_PER_PUMP = 1
+    P.WARM_HAVE_ITEMS_PER_PUMP = 50
+    P.BUILD_SLICE_RESTART_CAP = 2
+    P._lazyWatchTips = true
+    eq(P.BeginBuildSlice(), "continue", "cap test starts a slice")
+    eq(P.PumpBuildSlice(), "continue", "cap test gets a partial pump")
+    H.snap = H.snap + 1
+    eq(P.PumpBuildSlice(), "restart", "the first stale pump still restarts")
+    eq(StockPiler.PlanSnapshot.Get(), nil, "the first restart does not publish")
+    eq(P.BeginBuildSlice(), "continue", "the second attempt starts")
+    eq(P.PumpBuildSlice(), "continue", "the second attempt gets a partial pump")
+    H.snap = H.snap + 1
+    eq(P.PumpBuildSlice(), "done", "the cap finishes the rebuild in one call")
+    check(type(StockPiler.PlanSnapshot.Get()) == "table", "the capped rebuild publishes a plan")
+
+    reset()
+    P.BUILD_ROWS_PER_PUMP = 1
+    P.WARM_HAVE_ITEMS_PER_PUMP = 50
+    P.BUILD_SLICE_RESTART_CAP = 50
+    P.BUILD_SLICE_BUDGET_SEC = 5
+    P._lazyWatchTips = true
+    local prevClock = GetGameTime
+    local now = 2000
+    GetGameTime = function()
+        return now
+    end
+    eq(P.BeginBuildSlice(), "continue", "budget test starts a slice")
+    eq(P.PumpBuildSlice(), "continue", "budget test gets a partial pump")
+    now = 2006
+    H.snap = H.snap + 1
+    eq(P.PumpBuildSlice(), "done", "the time budget finishes the rebuild in one call")
+    check(type(StockPiler.PlanSnapshot.Get()) == "table", "the timed rebuild publishes a plan")
+    GetGameTime = prevClock
+
+    reset()
+    P.BUILD_ROWS_PER_PUMP = 1
+    P.WARM_HAVE_ITEMS_PER_PUMP = 50
+    P._lazyWatchTips = true
+    local logs = 0
+    StockPiler.Debug = {
+        ReportProtectedCallFailure = function()
+            logs = logs + 1
+        end,
+    }
+    local orig = StockPiler.RecipeSpec.HydrateRecipeSlots
+    StockPiler.RecipeSpec.HydrateRecipeSlots = function()
+        error("slice-boom")
+    end
+    eq(P.BeginBuildSlice(), "continue", "error test starts a slice")
+    eq(P.PumpBuildSlice(), "retry", "a slice error keeps the rebuild pending")
+    eq(logs, 1, "the slice error is logged once")
+    local retryAt = tonumber(P._buildSliceRetryAt) or 0
+    check(retryAt > GetGameTime(), "the slice error waits before the next attempt")
+    eq(P.BeginBuildSlice(), "continue", "the retry starts another slice")
+    eq(P.PumpBuildSlice(), "retry", "the second error still asks for a retry")
+    eq(logs, 1, "the second error does not log again")
+    eq(StockPiler.PlanSnapshot.Get(), nil, "a failed slice does not publish")
+    StockPiler.RecipeSpec.HydrateRecipeSlots = orig
+    StockPiler.Debug = nil
 end
 
 testSameOutput()
@@ -909,6 +1207,10 @@ testColdDemandPlantAndPotion()
 testWarmHaveSliceMatchesSync()
 testWarmHaveSliceRestartsOnSnap()
 testWarmHaveSlotFilter()
+testThinContainerProductKey()
+testWarmHaveSliceDoesNotScanWholeBag()
+testDemandPrivateDuringRebuild()
+testBuildSliceRestartCap()
 testBuildSliceMatchesSync()
 testFrameWorkBagPumps()
 

@@ -77,10 +77,9 @@ local function ShouldSkipPump()
             return true
         end
     end
-    local Orch = StockPiler.Orchestrator
-    if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
-        return true
-    end
+    -- Brew used to skip the whole queue. A recount or plan slice started
+    -- just before the session then sat suspended until the brew ended.
+    -- One step per Pump stays bounded, so the slice keeps moving.
     return false
 end
 
