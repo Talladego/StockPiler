@@ -1870,16 +1870,11 @@ local function AppendL1VendorBuyJob(jobs, seenBuy, ladder, needReq, fallbackSpec
         return
     end
     local buyReq = math.max(1, tonumber(buy.skillReq) or 1)
-    -- Scan owned seeds up to Cult floor, not only needReq. A mid-tier plant-watch
-    -- arrive (needReq=50) used to miss bag L200 and AutoBuy L1.
-    local ownedCap = math.max(US.ClimbCap(needReq), US.FloorCultTier(US.GetCultSkill()))
-    local owned = US.PickBestOwnedSeed({
-        ladder = ladder,
-        climbCap = ownedCap,
-    })
-    local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
-    if ownedReq > buyReq then
-        -- Family already past the vendor rung; climb via plant/refine only.
+    -- Same arrival rule as the climb: bag seeds, in-ground seeds, and plants
+    -- on a rung that has a known seed. Seed counts alone still queued the
+    -- basic vendor seed after the watched plant was already in the bags.
+    -- At the vendor rung itself, a short seed buffer may still buy.
+    if HaveTargetRung(ladder, buyReq + 1, 0, 0) then
         return
     end
     if seenBuy[seedUid] == true then

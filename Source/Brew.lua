@@ -1706,7 +1706,27 @@ end
 local OPEN_WAIT_TICKS = 180
 local CLEAR_WAIT_TICKS = 90
 
+--- Items left on one physical stack. Nil when the bag row does not say.
+local function SourceStackQuantity(item)
+    if type(item) ~= "table" then
+        return nil
+    end
+    local quantity = tonumber(item.stackCount)
+    if quantity == nil then
+        quantity = tonumber(item.stackcount)
+    end
+    if quantity == nil then
+        quantity = tonumber(item.StackCount)
+    end
+    if quantity == nil then
+        quantity = tonumber(item.Count)
+    end
+    return quantity
+end
+
 --- Every saved recipe step must still be present on the apo board.
+--- Two steps can name the same backpack slot. Presence is not enough once
+--- that stack has fewer items than the slots that draw from it.
 local function BoardCoversRecipe(recipe)
     if type(recipe) ~= "table" then
         return true
@@ -1716,12 +1736,26 @@ local function BoardCoversRecipe(recipe)
         return false
     end
     local steps = BuildLoadSteps(recipe)
+    local usedBySource = {}
     for i = 1, #steps do
         local step = steps[i]
         if type(step) == "table" then
             local craftSlot = tonumber(step.craftingSlot)
-            if craftSlot == nil or a.GetSlottedItem(craftSlot) == nil then
+            local item, backpack, sourceSlot
+            if craftSlot ~= nil then
+                item, backpack, sourceSlot = a.GetSlottedItem(craftSlot)
+            end
+            if item == nil then
                 return false
+            end
+            local quantity = SourceStackQuantity(item)
+            if backpack ~= nil and sourceSlot ~= nil and quantity ~= nil then
+                local key = tostring(backpack) .. ":" .. tostring(sourceSlot)
+                local used = (usedBySource[key] or 0) + 1
+                usedBySource[key] = used
+                if used > quantity then
+                    return false
+                end
             end
         end
     end
