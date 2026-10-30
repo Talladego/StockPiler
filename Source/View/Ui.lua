@@ -489,14 +489,15 @@ local function RequestForcedWatchRecount(_reason)
                     end
                 end
                 if state.phase == "warm" then
-                    state.phase = "rows"
+                    local result = nil
                     if P and P.FinishWarmHaveSlice then
-                        local result = P.FinishWarmHaveSlice()
-                        if result == "defer" then
-                            state.phase = "warm"
-                            return "continue"
-                        end
+                        result = P.FinishWarmHaveSlice()
                     end
+                    -- Stay on the bag cursor until the slice commits.
+                    if result == "defer" or result == "continue" then
+                        return "continue"
+                    end
+                    state.phase = "rows"
                     return "continue"
                 end
                 run()

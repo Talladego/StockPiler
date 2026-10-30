@@ -191,13 +191,20 @@ function FW.StartOnce(id, gen, fn)
 end
 
 --- WarmHave / Demand / seed-lines: one phase per Pump frame (budget=1).
---- WarmHave itself is two resume steps (collect vs bag) so recipe hydrate
---- never shares a frame with the bag walk - and never with Watch paint.
+--- WarmHave collect is its own Pump. The bag phase then credits a cursor of
+--- stacks per Pump (FinishWarmHaveSlice returns "continue" until it commits).
 function FW.EnqueueWarmHave(gen)
     return FW.Start({
         id = "prewarm-warm-have",
         gen = gen,
         stepsPerFrame = 1,
+        cancel = function()
+            local P = StockPiler.Planner
+            if P then
+                -- Drop the cursor. Do not mark the cache warm.
+                P._warmHaveSlice = nil
+            end
+        end,
         resume = function(state)
             local P = StockPiler.Planner
             if not P then
@@ -223,8 +230,8 @@ function FW.EnqueueWarmHave(gen)
                 state.phase = "bag"
                 if P.FinishWarmHaveSlice then
                     local result = P.FinishWarmHaveSlice()
-                    -- Defer bag walk off BagFlush/PlanRebuild same frame.
-                    if result == "defer" then
+                    -- Defer, or keep the bag cursor for the next Pump.
+                    if result == "defer" or result == "continue" then
                         return "continue"
                     end
                 end

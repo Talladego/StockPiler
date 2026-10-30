@@ -402,9 +402,92 @@ local function RebuildPlanIfDue()
     end
     Sch._planWarmHoldAt = 0
     Sch._planWarmHoldRetries = 0
+    Sch._lastPlanBuiltAt = Now()
+    -- Full rebuilds run as a FrameWork cursor (rows and bag credit per Pump).
+    -- _planDue stays set until the slice publishes so GetOrBuild will not
+    -- start a second sync build over the partial rows.
+    if Planner and Planner.BeginBuildSlice and FW and FW.Start
+        and type(coroutine) == "table" and type(coroutine.create) == "function"
+    then
+        Sch._planSliceEpoch = (tonumber(Sch._planSliceEpoch) or 0) + 1
+        Sch._planSliceStale = false
+        Sch._planSliceRestart = false
+        local function settle(restart)
+            Sch._planSliceJob = false
+            if StockPiler.Perf and StockPiler.Perf.End then
+                StockPiler.Perf.End("PlanRebuild")
+            end
+            if restart == true then
+                return
+            end
+            Sch._planDue = false
+            Sch._planAt = 0
+            Sch._lastPlanBuiltAt = Now()
+            if Planner and Planner.EnqueueLazyWatchTips then
+                Planner.EnqueueLazyWatchTips()
+            end
+            -- Never paint Watch on the same frame as a full Build (WarmHave hitch).
+            Sch.SkipUiThisFrame()
+            Sch.MarkWatchUiDirty()
+        end
+        local started = FW.Start({
+            id = "plan-build",
+            gen = tostring(Sch._planSliceEpoch),
+            stepsPerFrame = 1,
+            cancel = function()
+                if Planner and Planner.AbortBuildSlice then
+                    Planner.AbortBuildSlice()
+                end
+                Sch._planSliceJob = false
+                if StockPiler.Perf and StockPiler.Perf.End then
+                    StockPiler.Perf.End("PlanRebuild")
+                end
+            end,
+            done = function()
+                local restart = Sch._planSliceRestart == true
+                Sch._planSliceRestart = false
+                settle(restart)
+            end,
+            resume = function(state)
+                if Sch._planSliceStale == true then
+                    Sch._planSliceRestart = true
+                    if Planner and Planner.AbortBuildSlice then
+                        Planner.AbortBuildSlice()
+                    end
+                    return "done"
+                end
+                if state.phase == nil then
+                    state.phase = "run"
+                    local result = Planner.BeginBuildSlice()
+                    if result ~= "continue" then
+                        return "done"
+                    end
+                end
+                local result = Planner.PumpBuildSlice()
+                if result == "continue" then
+                    return "continue"
+                end
+                if result == "restart" then
+                    Sch._planSliceRestart = true
+                end
+                return "done"
+            end,
+        })
+        if started == true then
+            Sch._planSliceJob = true
+            if StockPiler.Perf and StockPiler.Perf.Begin then
+                StockPiler.Perf.Begin("PlanRebuild")
+            end
+            -- Pump already ran earlier this frame. Take the first chunk now
+            -- (cheap hit, or the first bag/row slice) so it does not wait a frame.
+            if FW.Pump then
+                FW.Pump()
+            end
+            return true
+        end
+    end
     Sch._planDue = false
     Sch._planAt = 0
-    Sch._lastPlanBuiltAt = Now()
     if Planner and Planner.GetOrBuild then
         if StockPiler.Perf and StockPiler.Perf.Begin then
             StockPiler.Perf.Begin("PlanRebuild")
@@ -1022,6 +1105,11 @@ function Sch.EnqueuePlanRebuild(opts)
     local nudge = opts.nudge == true
     -- Structural watch mark/clear: fire on next tick; skip AutoGrow 3s coalesce + min-gap.
     local urgent = opts.urgent == true
+    -- A sliced rebuild is in flight. A real request (not a nudge) must not
+    -- publish the plan that was already half built.
+    if Sch._planSliceJob == true and nudge ~= true then
+        Sch._planSliceStale = true
+    end
     if Sch.IsInventorySideEffectsSuppressed() then
         Sch._pendingPlanAfterSuppress = true
         if urgent == true then
@@ -1332,6 +1420,9 @@ function Sch.Shutdown()
     Sch._initialized = false
     Sch._bagDue = false
     Sch._planDue = false
+    Sch._planSliceJob = false
+    Sch._planSliceStale = false
+    Sch._planSliceRestart = false
     Sch._harvestStormUntil = 0
     Sch._plantQuietUntil = 0
     Sch._pendingPrewarmAfterQuiet = false
