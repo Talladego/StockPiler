@@ -290,6 +290,34 @@ eq(emptyFamily.statusText, "watch.note.buy_seeds", "the empty family line uses t
 eq(partialFamily.statusKey, "need_seeds", "the partial family line stays Seed buffer")
 eq(partialFamily.statusText, "plan.status.need_seeds", "the partial family line does not turn red")
 
+-- Craft button red wait follows the same empty-only rule.
+StockPiler.Grow = {
+    IsSeedBufferSatisfied = function()
+        return false
+    end,
+}
+StockPiler.PlanSnapshot = nil
+load_module("Source/Macro/CraftHarvestTimer.lua")
+local Timer = StockPiler.CraftHarvestTimer
+StockPiler.UpgradeSeed._stallLatch = nil
+StockPiler.UpgradeSeed._active = {
+    why = "need_buy",
+    genus = "goldweed",
+    seedUid = SEED,
+}
+creditByUid[SEED] = 0
+local emptyStay = Timer.UserStayInfo()
+eq(type(emptyStay) == "table" and emptyStay.key, "need_buy",
+    "an empty seed line turns the Craft button red")
+StockPiler.UpgradeSeed._active = {
+    why = "need_buy",
+    genus = "goldweed",
+    seedUid = SEED_PARTIAL,
+}
+creditByUid[SEED_PARTIAL] = 3
+eq(Timer.UserStayInfo(), nil,
+    "a partial cushion in that family does not turn the Craft button red")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

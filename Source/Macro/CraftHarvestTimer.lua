@@ -474,6 +474,43 @@ local function HasPendingPlant()
     return false
 end
 
+--- need_buy / no_family is a player stall only while that seed line is empty.
+--- A partial cushion (credit > 0) is not a red wait, even in the same family.
+local function EmptySeedBuyStall(active)
+    if type(active) ~= "table" then
+        return false
+    end
+    local why = tostring(active.why or "")
+    if why ~= "need_buy" and why ~= "no_family" then
+        return false
+    end
+    local seedUid = tonumber(active.seedUid) or 0
+    if seedUid <= 0 then
+        return true
+    end
+    local credit = nil
+    local Refine = StockPiler.Refine
+    if Refine and Refine.GetSeedBudget then
+        local budget = Refine.GetSeedBudget(seedUid)
+        if type(budget) == "table" then
+            credit = tonumber(budget.credit)
+            if credit == nil then
+                credit = tonumber(budget.live)
+            end
+        end
+    end
+    if credit == nil then
+        local Inv = StockPiler.Inventory
+        if Inv and Inv.CountByUid then
+            credit = tonumber(Inv.CountByUid(seedUid)) or 0
+        end
+    end
+    if credit == nil then
+        return true
+    end
+    return credit <= 0
+end
+
 --- Garden / buffer / buy still moving: stay icon must wait.
 local function HasActiveWork()
     if Timer.ShortestSeconds() ~= nil then
@@ -494,15 +531,12 @@ local function HasActiveWork()
         return true
     end
     if SeedBufferSettled() ~= true then
-        -- Empty Cult-max buffer with need_buy / no_family is a player stall
-        -- (Buy seeds), not plant/refine work. Counting it as active work hid
-        -- the HUD/macro red tint while the Watch row already said Buy seeds.
+        -- Empty seed line waiting on a buy is a player stall, not plant work.
+        -- A partial cushion still counts as work, so it does not turn the
+        -- Craft button red just because the family has another empty line.
         local US = StockPiler.UpgradeSeed
-        local why = ""
-        if type(US) == "table" and type(US._active) == "table" then
-            why = tostring(US._active.why or "")
-        end
-        if why ~= "need_buy" and why ~= "no_family" then
+        local active = type(US) == "table" and US._active or nil
+        if EmptySeedBuyStall(active) ~= true then
             return true
         end
     end
@@ -551,14 +585,25 @@ function Timer.UserStayInfo()
     -- while the Watch row already said Buy seeds.
     local US = StockPiler.UpgradeSeed
     if US then
+        local active = type(US._active) == "table" and US._active or nil
         local latch = tostring(US._stallLatch or "")
         if USER_STALL[latch] == true then
-            return { key = latch }
+            local latchActive = active
+            if latch == "need_buy" or latch == "no_family" then
+                latchActive = active or { why = latch }
+                if tostring(latchActive.why or "") ~= latch then
+                    latchActive = { why = latch, seedUid = active and active.seedUid or 0 }
+                end
+            end
+            if (latch ~= "need_buy" and latch ~= "no_family")
+                or EmptySeedBuyStall(latchActive) == true
+            then
+                return { key = latch }
+            end
         end
-        local active = US._active
-        if type(active) == "table" then
+        if active ~= nil then
             local why = tostring(active.why or "")
-            if USER_STALL[why] == true then
+            if USER_STALL[why] == true and EmptySeedBuyStall(active) == true then
                 return {
                     key = why,
                     name = active.genus or active.name,
