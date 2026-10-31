@@ -5,8 +5,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 ## 1.1.6
 
 - Fixed an error that could stop AutoGrow after your harvests were tracked.
-- A watched potion with an empty seed line now upgrades or buys the basic seed instead of waiting on Seed buffer, and that empty line shows red Buy seeds. A line that still has some seeds shows Seed buffer. The Craft button and macro turn red only while that line is empty.
-- Upgrade Seeds AutoBuy no longer keeps re-queuing the basic seed after each plant/harvest wave; it buys a first cushion+plots fill, then only tops the cushion when idle.
+- A watched potion with an empty seed line now upgrades or buys the basic seed instead of waiting, and shows red Buy seeds until it can plant.
+- Upgrade Seeds no longer keeps buying the basic seed after every harvest. It buys enough to start, then only tops up your spare seeds when the garden is idle.
 
 ## 1.1.5
 
