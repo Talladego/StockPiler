@@ -1,5 +1,5 @@
--- Empty potion seed lines paint Restocking / Buy seeds, not Seed buffer.
--- A partial cushion stays Seed buffer even when a climb status exists.
+-- Empty potion seed lines paint red Buy seeds, not Seed buffer or climb text.
+-- A partial cushion stays Seed buffer when no climb is waiting on a purchase.
 -- Run: lua5.1 tests/empty_seed_buffer_status.lua
 
 local function script_dir()
@@ -234,9 +234,11 @@ climbs = {
 }
 local empty = rowFor(0)
 P.PatchWatchRowsLiveCounts({ empty }, { syncSnapshot = false })
-eq(empty.statusKey, "restocking", "an empty seed line paints Restocking, not Seed buffer")
+eq(empty.statusKey, "buy_ingredients", "an empty seed line paints Buy seeds, not Seed buffer")
+eq(empty.statusText, "watch.note.buy_seeds", "that paint uses the Buy seeds label")
 check(empty.statusKey ~= "need_seeds", "an empty seed line is not Seed buffer")
-check(empty.statusKey ~= "upgrading_seed", "a climb does not hide the empty-line Restocking paint")
+check(empty.statusKey ~= "upgrading_seed", "a need_buy climb does not hide Buy seeds")
+check(empty.statusKey ~= "restocking", "an empty seed line is not Restocking")
 eq(empty.seedBufferShort, true, "an empty seed line still marks the buffer short")
 
 -- No climb is raised for a partial line (see upgrade_cult_floor). Status stays Seed buffer.
