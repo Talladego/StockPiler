@@ -353,7 +353,9 @@ function US.CountEmptyPlots()
 end
 
 --- Seeds still needed for planting / AutoBuy.
---- mode "climb" (default): with buffer on, buy to (buffer + empty) so climb surplus exists.
+--- mode "climb" (default): first fill buys (buffer + empty). After any credit
+--- exists, only restore the cushion - empty plots cycle through plant/harvest
+--- and must not re-open buffer+empty buys forever.
 --- mode "skillup": max(headroom, empty-plot need) - AutoBuy / refine target only.
 function US.SeedDeficit(seedUid, mode)
     seedUid = tonumber(seedUid) or 0
@@ -362,6 +364,10 @@ function US.SeedDeficit(seedUid, mode)
     local budget = US.GetSeedBudget(seedUid)
     local buffer = tonumber(budget.bufferMin) or 0
     local live = tonumber(budget.live) or 0
+    local credit = tonumber(budget.credit)
+    if credit == nil then
+        credit = live
+    end
     local headroom = tonumber(budget.headroom) or 0
     local needPlots = empty
     if live >= empty then
@@ -372,10 +378,12 @@ function US.SeedDeficit(seedUid, mode)
     if mode == "skillup" then
         return math.max(headroom, needPlots)
     end
-    -- Climb planting only uses surplus above the seed buffer, so AutoBuy must
-    -- top up to (buffer + empty plots) or every harvest can wipe the rung.
     if buffer > 0 then
-        return math.max(0, buffer + empty - live)
+        if credit < 1 then
+            -- First wave: cushion plus a full plant into open plots.
+            return math.max(0, buffer + empty - live)
+        end
+        return math.max(0, buffer - credit)
     end
     return math.max(headroom, needPlots)
 end
@@ -1924,6 +1932,15 @@ local function AppendL1VendorBuyJob(jobs, seenBuy, ladder, needReq, fallbackSpec
     -- At the vendor rung itself, a short seed buffer may still buy.
     if HaveTargetRung(ladder, buyReq + 1, 0, 0) then
         return
+    end
+    -- Planting / refining already owns the L1 wave. Re-queuing buffer+empty
+    -- after each harvest left AutoBuy buying forever (9 -> plant -> 6 more...).
+    local active = US._active
+    if type(active) == "table" then
+        local why = tostring(active.why or "")
+        if why == "planting" or why == "refining" or why == "climbing" then
+            return
+        end
     end
     if seenBuy[seedUid] == true then
         return

@@ -702,6 +702,34 @@ end
 eq(#US.CollectBuyJobs(), 0, "an empty plant-watch buffer line does not bypass the idle gate")
 eq(US.PickPlantJob(), nil, "an empty plant-watch buffer line does not plant L1")
 
+-- Climb AutoBuy: first wave buffer+empty; after credit, cushion only; no requeue while refining.
+nextFrame()
+clearBags()
+watches = {}
+bufferOn = true
+bufferMin = 5
+emptyPlots = 4
+credit[L1_SEED] = 0
+headroom[L1_SEED] = 5
+US._active = nil
+eq(US.SeedDeficit(L1_SEED), 9, "first climb buy is buffer plus empty plots")
+counts[L1_SEED] = 3
+credit[L1_SEED] = 3
+headroom[L1_SEED] = 2
+eq(US.SeedDeficit(L1_SEED), 2, "after some L1 credit only the cushion is topped up")
+US._active = { why = "refining", genus = "goldweed" }
+pinTargets({
+    {
+        spec = { name = "Goldweed", skillLevel = 200 },
+        needReq = 200,
+        ladder = sparseLadder(),
+        plantUid = L200_PLANT,
+        seedUid = L200_SEED,
+    },
+})
+eq(#US.CollectBuyJobs(), 0, "refining does not re-queue L1 after the first buy wave")
+US._active = nil
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)
