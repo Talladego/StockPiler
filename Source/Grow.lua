@@ -1848,7 +1848,10 @@ local function HarvestRate(seedUid)
     if not (SM and SM.HarvestSuccessRate) then
         return nil
     end
-    local rate = tonumber(SM.HarvestSuccessRate(seedUid))
+    -- Drop extras (successes, attempts, fails): tonumber(f()) would use
+    -- successes as the base and throw "base out of range".
+    local rate = SM.HarvestSuccessRate(seedUid)
+    rate = tonumber(rate)
     if rate == nil or rate <= 0 or rate >= 1 then
         return nil
     end

@@ -353,7 +353,9 @@ function US.CountEmptyPlots()
 end
 
 --- Seeds still needed for planting / AutoBuy.
---- mode "climb" (default): with buffer on, buy to (buffer + empty) so climb surplus exists.
+--- mode "climb" (default): first fill buys (buffer + empty). After any credit
+--- exists, only restore the cushion - empty plots cycle through plant/harvest
+--- and must not re-open buffer+empty buys forever.
 --- mode "skillup": max(headroom, empty-plot need) - AutoBuy / refine target only.
 function US.SeedDeficit(seedUid, mode)
     seedUid = tonumber(seedUid) or 0
@@ -362,6 +364,10 @@ function US.SeedDeficit(seedUid, mode)
     local budget = US.GetSeedBudget(seedUid)
     local buffer = tonumber(budget.bufferMin) or 0
     local live = tonumber(budget.live) or 0
+    local credit = tonumber(budget.credit)
+    if credit == nil then
+        credit = live
+    end
     local headroom = tonumber(budget.headroom) or 0
     local needPlots = empty
     if live >= empty then
@@ -372,10 +378,12 @@ function US.SeedDeficit(seedUid, mode)
     if mode == "skillup" then
         return math.max(headroom, needPlots)
     end
-    -- Climb planting only uses surplus above the seed buffer, so AutoBuy must
-    -- top up to (buffer + empty plots) or every harvest can wipe the rung.
     if buffer > 0 then
-        return math.max(0, buffer + empty - live)
+        if credit < 1 then
+            -- First wave: cushion plus a full plant into open plots.
+            return math.max(0, buffer + empty - live)
+        end
+        return math.max(0, buffer - credit)
     end
     return math.max(headroom, needPlots)
 end
@@ -1261,6 +1269,54 @@ local function CollectUpgradeTargets()
         end
     end
 
+    -- Potion AutoGrow seed-buffer lines with no Cult-max / target-tier stock
+    -- at all (0, not 3/5). Must not wait on WatchesAllowUpgradeClimb: that gate
+    -- requires SeedBufferOk, which stays false while the line is empty.
+    -- Plant-watch lines keep that gate so plants still wait until potions are done.
+    -- A partial cushion stays on Seed buffer and is not a climb or an L1 buy.
+    if Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
+        local lines = RS and RS.CollectAutoGrowSeedLines and RS.CollectAutoGrowSeedLines() or nil
+        if type(lines) ~= "table" and StockPiler.Planner and StockPiler.Planner.CollectAutoGrowSeedLines then
+            lines = StockPiler.Planner.CollectAutoGrowSeedLines()
+        end
+        local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+        if buffer < 1 then
+            buffer = 1
+        end
+        if type(lines) == "table" then
+            for i = 1, #lines do
+                local line = lines[i]
+                if type(line) == "table" and type(line.spec) == "table" and line.plantStock ~= true then
+                    local plantUid = tonumber(line.plantUid) or 0
+                    local seedUid = tonumber(line.seedUid) or 0
+                    if plantUid > 0 and seenPlant[plantUid] ~= true then
+                        local credit = 0
+                        if seedUid > 0 then
+                            local budget = US.GetSeedBudget and US.GetSeedBudget(seedUid)
+                            credit = tonumber(budget and budget.credit) or 0
+                        elseif Inv and Inv.CountByUid then
+                            credit = tonumber(Inv.CountByUid(plantUid)) or 0
+                        end
+                        if credit <= 0 then
+                            local needReq = NeedReqFor(line.spec, plantUid)
+                            local ladder = LadderFor(line.spec)
+                            if not HaveTargetRung(ladder, needReq, plantUid, seedUid, {
+                                requireBufferFull = true,
+                            }) then
+                                Consider(line.spec, math.max(1, buffer - credit), plantUid, {
+                                    needReq = needReq,
+                                    seedUid = seedUid,
+                                    ladder = ladder,
+                                    requireBufferFull = true,
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     table.sort(out, function(a, b)
         return (tonumber(a.short) or 0) > (tonumber(b.short) or 0)
     end)
@@ -1458,6 +1514,7 @@ function US.PickPlantJob()
                 needReq = needReq,
                 why = "no_family",
                 genus = SM and SM.GenusKeyFromName and SM.GenusKeyFromName(t.spec and t.spec.name),
+                seedUid = tonumber(t.seedUid) or 0,
             }
         else
             local up, ownedReq = TargetUpgradePlant(t)
@@ -1595,6 +1652,7 @@ function US.PickPlantJob()
                         needReq = needReq,
                         why = "need_buy",
                         genus = t.ladder.genus,
+                        seedUid = seedUid,
                     }
                 else
                     stallActive = stallActive or {
@@ -1621,6 +1679,7 @@ function US.PickPlantJob()
                     needReq = needReq,
                     why = "need_buy",
                     genus = t.ladder.genus,
+                    seedUid = tonumber(t.seedUid) or 0,
                 }
             end
         end
@@ -1877,6 +1936,26 @@ local function AppendL1VendorBuyJob(jobs, seenBuy, ladder, needReq, fallbackSpec
     if HaveTargetRung(ladder, buyReq + 1, 0, 0) then
         return
     end
+    -- Same family already planting or refining, and this seed already has
+    -- credit: do not re-queue. Another family's empty line still buys, and a
+    -- first fill (credit 0) still buys even if the garden is full.
+    local active = US._active
+    if type(active) == "table" then
+        local why = tostring(active.why or "")
+        if (why == "planting" or why == "refining" or why == "climbing")
+            and tostring(active.familyKey or "") ~= ""
+            and active.familyKey == ladder.key
+        then
+            local budget = US.GetSeedBudget and US.GetSeedBudget(seedUid) or nil
+            local credit = tonumber(type(budget) == "table" and budget.credit or nil)
+            if credit == nil and type(budget) == "table" then
+                credit = tonumber(budget.live) or 0
+            end
+            if credit ~= nil and credit >= 1 then
+                return
+            end
+        end
+    end
     if seenBuy[seedUid] == true then
         return
     end
@@ -1969,6 +2048,29 @@ function US.MaybeNotifyStall()
         return
     end
     local why = tostring(active.why or "")
+    -- Empty-line buy stall is over once that seed has any credit.
+    local lineCredit = nil
+    local lineSeed = tonumber(active.seedUid) or 0
+    if lineSeed > 0 and US.GetSeedBudget then
+        local budget = US.GetSeedBudget(lineSeed)
+        if type(budget) == "table" then
+            lineCredit = tonumber(budget.credit)
+            if lineCredit == nil then
+                lineCredit = tonumber(budget.live) or 0
+            end
+        end
+    end
+    if lineCredit ~= nil and lineCredit > 0 then
+        local latch = tostring(US._stallLatch or "")
+        if latch == "need_buy" or latch == "need_vendor" or latch == "autobuy_off"
+            or latch == "no_vendor_seed" or latch == "no_family"
+        then
+            US._stallLatch = nil
+        end
+        if why == "need_buy" or why == "no_family" then
+            return
+        end
+    end
     -- Progress: clear latch so a later real stall can warn once.
     if why == "planting" then
         US._stallLatch = nil

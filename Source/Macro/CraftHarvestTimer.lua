@@ -474,6 +474,43 @@ local function HasPendingPlant()
     return false
 end
 
+--- True only when this climb names a seed line and that line has no credit.
+--- A missing seed id is not an empty line.
+local function LineIsEmpty(active)
+    if type(active) ~= "table" then
+        return false
+    end
+    local seedUid = tonumber(active.seedUid) or 0
+    if seedUid <= 0 then
+        return false
+    end
+    local credit = nil
+    local Refine = StockPiler.Refine
+    if Refine and Refine.GetSeedBudget then
+        local budget = Refine.GetSeedBudget(seedUid)
+        if type(budget) == "table" then
+            credit = tonumber(budget.credit)
+            if credit == nil then
+                credit = tonumber(budget.live)
+            end
+        end
+    end
+    if credit == nil then
+        local Inv = StockPiler.Inventory
+        if Inv and Inv.CountByUid then
+            credit = tonumber(Inv.CountByUid(seedUid)) or 0
+        end
+    end
+    if credit == nil then
+        return false
+    end
+    return credit <= 0
+end
+
+local function BuyLatchFromEmptyLine(reason)
+    return reason == "need_buy" or reason == "need_vendor" or reason == "autobuy_off"
+end
+
 --- Garden / buffer / buy still moving: stay icon must wait.
 local function HasActiveWork()
     if Timer.ShortestSeconds() ~= nil then
@@ -494,7 +531,15 @@ local function HasActiveWork()
         return true
     end
     if SeedBufferSettled() ~= true then
-        return true
+        -- An empty line waiting on a buy is a player stall, not garden work.
+        -- Anything else, including a partial cushion, stays active work.
+        local US = StockPiler.UpgradeSeed
+        local active = type(US) == "table" and US._active or nil
+        local why = tostring(type(active) == "table" and active.why or "")
+        local emptyStall = (why == "need_buy" or why == "no_family") and LineIsEmpty(active)
+        if emptyStall ~= true then
+            return true
+        end
     end
     if VendorBuyInProgress() then
         return true
@@ -536,8 +581,30 @@ end
 --- Why Craft is user-blocked (red tint). Nil when not waiting on the player.
 --- key is a USER_STALL reason; text/name are optional plan-row hints.
 function Timer.UserStayInfo()
+    -- Timers, refines, and an open vendor buy stay the normal button.
     if HasActiveWork() == true then
         return nil
+    end
+    local US = StockPiler.UpgradeSeed
+    if US then
+        local active = type(US._active) == "table" and US._active or nil
+        local latch = tostring(US._stallLatch or "")
+        if USER_STALL[latch] == true then
+            if not BuyLatchFromEmptyLine(latch) or LineIsEmpty(active) then
+                return { key = latch }
+            end
+        end
+        if active ~= nil then
+            local why = tostring(active.why or "")
+            if USER_STALL[why] == true
+                and (not BuyLatchFromEmptyLine(why) or LineIsEmpty(active))
+            then
+                return {
+                    key = why,
+                    name = active.genus or active.name,
+                }
+            end
+        end
     end
     local SkillUp = StockPiler.SkillUp
     if SkillUp then
@@ -554,23 +621,6 @@ function Timer.UserStayInfo()
             local cult = SkillUp.CultStallReason()
             if cult ~= nil and USER_STALL[tostring(cult)] == true then
                 return { key = tostring(cult) }
-            end
-        end
-    end
-    local US = StockPiler.UpgradeSeed
-    if US then
-        local latch = tostring(US._stallLatch or "")
-        if USER_STALL[latch] == true then
-            return { key = latch }
-        end
-        local active = US._active
-        if type(active) == "table" then
-            local why = tostring(active.why or "")
-            if USER_STALL[why] == true then
-                return {
-                    key = why,
-                    name = active.genus or active.name,
-                }
             end
         end
     end
