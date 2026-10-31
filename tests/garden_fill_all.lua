@@ -76,6 +76,7 @@ local holdPlots = false
 local skillOn = false
 local buyCalls = 0
 local specScans = 0
+local clock = 1000
 
 local function setPlots(n, groundUid, groundN)
     plots = {}
@@ -135,7 +136,7 @@ end
 StockPiler = {}
 StockPiler.FrameCounter = 1
 StockPiler.Util = {
-    NowSec = function() return 1000 end,
+    NowSec = function() return clock end,
     ToNarrow = function(v) return tostring(v or "") end,
 }
 StockPiler.T = function(k) return tostring(k) end
@@ -608,14 +609,102 @@ local demandJob = Grow.PickPlantCandidate()
 eq(demandJob and demandJob.pickMode, "fill_all", "the demand path fills spare plots")
 eq(demandJob and demandJob.craftsShort, 0, "demand-path fill-all is not a buy quantity")
 
--- Optimistic off and an Upgrade Seed hold do not fill plots.
+-- Optimistic off still fills 4 free plots for need 1, and stops at the buffer.
 optimisticOn = false
-rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 3, 0) }
+outcomeRate = 1
+harvestRate = nil
+bufferOn = true
+bufferMin = 5
+skillOn = false
+seeds[SEED_A] = 9
+seeds[SEED_B] = 0
+plantBags[PLANT_A] = 0
+variants[PLANT_A] = { SEED_A }
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 0) }
+rows[1].buyQty = 4
+setPlots(4, 0, 0)
 resetCursor()
-eq(Grow.PickPlantCandidate(), nil, "Optimistic off does not fill-all")
+buyCalls = 0
+local offBefore = planBuyQty()
+local offFilled = plantAll(6)
+eq(#offFilled, 4, "Optimistic off fills 4 free plots with need 1")
+for i = 1, #offFilled do
+    eq(offFilled[i] and offFilled[i].plantReason, "fill_all",
+        "Optimistic off plot " .. tostring(i) .. " is fill-all")
+    eq(offFilled[i] and offFilled[i].plantable, 1,
+        "Optimistic off plot " .. tostring(i) .. " plants one seed")
+    eq(tonumber(offFilled[i] and offFilled[i].craftsShort), 0,
+        "Optimistic off plot " .. tostring(i) .. " is not a buy")
+end
+eq(seeds[SEED_A], bufferMin, "Optimistic off stops at the seed buffer")
+eq(buyCalls, 0, "Optimistic off fill-all does not call AutoBuy")
+eq(planBuyQty(), offBefore, "Optimistic off fill does not change the plan or buy quantity")
+local offAgain = Grow.PickPlantCandidate()
+eq(offAgain, nil, "Optimistic off does not plant once the garden is full")
+eq(planBuyQty(), offBefore, "a second Optimistic-off pick leaves plan and buy unchanged")
+
+-- Demand path with Optimistic off still reaches fill-all before SkillUp.
+optimisticOn = false
+skillOn = true
+bufferOn = false
+seeds[SEED_A] = 6
+plantBags[PLANT_A] = 1
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 1) }
+setPlots(2, 0, 0)
+resetCursor()
+local offDemand = Grow.PickPlantCandidate()
+eq(offDemand and offDemand.pickMode, "fill_all", "Optimistic off demand path fills spare plots")
+eq(offDemand and offDemand.plantable, 1, "Optimistic off demand path plants one plot")
+skillOn = false
+
+-- Optimistic off with nothing above the buffer plants nothing.
+optimisticOn = false
+bufferOn = true
+bufferMin = 5
+seeds[SEED_A] = 5
+plantBags[PLANT_A] = 0
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 0) }
+setPlots(4, 0, 0)
+resetCursor()
+eq(Grow.PickPlantCandidate(), nil, "Optimistic off with no spare above the buffer plants nothing")
+eq(seeds[SEED_A], 5, "no spare means the buffer bag is untouched")
+
+-- A cached nil re-probes when Optimistic toggles, in either direction.
+bufferOn = true
+bufferMin = 5
+seeds[SEED_A] = 5
+outcomeRate = 1
+harvestRate = nil
+optimisticOn = false
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 0) }
+setPlots(2, 0, 0)
+resetCursor()
+local optPicks = 0
+local realPick = Grow.PickPlantCandidate
+Grow.PickPlantCandidate = function(...)
+    optPicks = optPicks + 1
+    return realPick(...)
+end
+eq(Grow.GetPlantJob(), nil, "Optimistic off with no spare caches nil")
+eq(optPicks, 1, "the first nil probe runs once")
+clock = clock + 3
+eq(Grow.GetPlantJob(), nil, "the same Optimistic-off nil stays cached")
+eq(optPicks, 1, "an unchanged nil does not re-probe")
 optimisticOn = true
+clock = clock + 3
+eq(Grow.GetPlantJob(), nil, "turning Optimistic on with no spare is still nil")
+eq(optPicks, 2, "turning Optimistic on re-probes the nil cache")
+optimisticOn = false
+clock = clock + 3
+eq(Grow.GetPlantJob(), nil, "turning Optimistic off again is still nil")
+eq(optPicks, 3, "turning Optimistic off re-probes the nil cache")
+Grow.PickPlantCandidate = realPick
+optimisticOn = true
+
 upgradeEnabled = true
 holdPlots = true
+seeds[SEED_A] = 9
+setPlots(2, 0, 0)
 resetCursor()
 eq(Grow.PickPlantCandidate(), nil, "an Upgrade Seed hold blocks fill-all")
 holdPlots = false

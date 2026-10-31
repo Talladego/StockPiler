@@ -292,10 +292,11 @@ eq(job and job.plantReason, "fill_all", "unknown rate does not measure-backfill;
 eq(job and job.plantable, 1, "fill-all asks for one plot")
 outcomeRate = 0.5
 
--- Optimistic Off: no estimate backfill stage.
+-- Optimistic Off: measured backfill stays idle. Spare seeds still fill one plot.
 optimisticOn = false
 job = Grow.PickPlantCandidate()
-eq(job, nil, "Optimistic Off does not use estimate backfill")
+eq(job and job.plantReason, "fill_all", "Optimistic Off fills spare plots and does not measure-backfill")
+eq(job and job.plantable, 1, "Optimistic Off fill-all asks for one plot")
 optimisticOn = true
 
 -- No empty plot: no backfill.
