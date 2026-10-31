@@ -3289,8 +3289,10 @@ local function ApplySeedBufferStatus(row)
         end
     end
     local why = type(climb) == "table" and tostring(climb.why or "") or ""
-    -- Waiting on vendor / AutoBuy: red Buy seeds (not yellow Restocking).
-    if why == "need_buy" or why == "no_family" then
+    local emptyLine = SeedBufferHasEmptyLine(row)
+    -- Red Buy seeds only for a completely empty line. A partial cushion that
+    -- shares a family with another empty line stays Seed buffer.
+    if emptyLine and (why == "need_buy" or why == "no_family") then
         ApplyBuySeedsStatus(row, buffer)
         return
     end
@@ -3330,9 +3332,8 @@ local function ApplySeedBufferStatus(row)
         row.craftableShared = false
         return
     end
-    -- Empty Cult-max line with nothing plantable yet: Buy seeds (red).
-    -- Issue #81: do not paint AutoGrow Restocking while bags have 0 of the line.
-    if SeedBufferHasEmptyLine(row) then
+    -- Empty line with no climb in progress: Buy seeds (red), not Restocking.
+    if emptyLine then
         ApplyBuySeedsStatus(row, buffer)
         return
     end
