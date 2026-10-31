@@ -2275,6 +2275,7 @@ local function PickFillAllCandidate(SM, RS, watches)
     if fp ~= Grow._fillAllFp then
         Grow._fillAllCredit = {}
         Grow._fillAllFp = fp
+        Grow._fillAllArmed = nil
     end
     if #active > 1 then
         table.sort(active, function(a, b)
@@ -2284,23 +2285,30 @@ local function PickFillAllCandidate(SM, RS, watches)
     local credits = Grow._fillAllCredit
     if type(credits) ~= "table" then
         credits = {}
-        Grow._fillAllCredit = credits
     end
+    -- Preview the next step. CommitFillAllSpread copies it only after a plant.
+    local preview = {}
     local total = 0
     for i = 1, #active do
         total = total + active[i].weight
+        local uid = active[i].seedUid
+        preview[uid] = (tonumber(credits[uid]) or 0) + active[i].weight
     end
     local best, bestCredit = nil, nil
     for i = 1, #active do
         local cand = active[i]
-        local credit = (tonumber(credits[cand.seedUid]) or 0) + cand.weight
-        credits[cand.seedUid] = credit
+        local credit = preview[cand.seedUid]
         if best == nil or credit > bestCredit then
             best = cand
             bestCredit = credit
         end
     end
-    credits[best.seedUid] = bestCredit - total
+    preview[best.seedUid] = bestCredit - total
+    Grow._fillAllArmed = {
+        seedUid = best.seedUid,
+        credits = preview,
+        fp = fp,
+    }
     local row = best.row
     local seedUid = best.seedUid
     return {
@@ -2322,6 +2330,23 @@ local function PickFillAllCandidate(SM, RS, watches)
         watchName = row.watchName,
         potionDeficit = row.potionDeficit,
     }
+end
+
+--- Apply one weighted-round-robin step after a fill-all seed is actually planted.
+--- Picks alone only arm the step, so a repeated pick does not skew the spread.
+function Grow.CommitFillAllSpread(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    local armed = Grow._fillAllArmed
+    if type(armed) ~= "table" or (tonumber(armed.seedUid) or 0) ~= seedUid then
+        return
+    end
+    if armed.fp ~= Grow._fillAllFp then
+        return
+    end
+    if type(armed.credits) == "table" then
+        Grow._fillAllCredit = armed.credits
+    end
+    Grow._fillAllArmed = nil
 end
 
 function Grow.PickPlantCandidate()
@@ -2366,7 +2391,8 @@ function Grow.PickPlantCandidate()
         Perf.Mark("PickPlant.lackDemand")
     end
     if PlanRowsLackPlantDemand() == true then
-        -- Measured loss is Optimistic-only. Fill-all runs either way, before SkillUp.
+        -- Measured loss stays ahead of SkillUp. SkillUp then takes the plots
+        -- it still wants. Fill-all uses only what is left.
         -- Upgrade Seed hold lives inside both pickers (late path too).
         local USIdle = StockPiler.UpgradeSeed
         local bf = PickEstimateBackfillCandidate(SM, RS, nil)
@@ -2378,6 +2404,12 @@ function Grow.PickPlantCandidate()
         local RefineEarly = StockPiler.Refine
         local bufferPending = RefineEarly and RefineEarly.PeekFreshBufferPending
             and RefineEarly.PeekFreshBufferPending() == true
+        if Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true then
+            local skillJob = TrySkillUpPlantJob()
+            if type(skillJob) == "table" then
+                return done(skillJob)
+            end
+        end
         -- A short buffer or a fresh climb still needs the full path. Fill-all
         -- would take the empty plots and starve that work.
         if climbPending ~= true and bufferPending ~= true then
@@ -2386,17 +2418,6 @@ function Grow.PickPlantCandidate()
                 LogPlantPick(fill)
                 return done(fill)
             end
-        end
-        local SkillUp = StockPiler.SkillUp
-        if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
-            and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
-        then
-            local skillJob = TrySkillUpPlantJob()
-            if type(skillJob) == "table" then
-                return done(skillJob)
-            end
-        end
-        if climbPending ~= true and bufferPending ~= true then
             return done(nil)
         end
     end
@@ -2549,24 +2570,25 @@ function Grow.PickPlantCandidate()
     end
 
     -- Optimistic empty-plot backfill: measured brew/harvest shortfall only.
+    -- Still ahead of SkillUp, same as the stocked-plan path.
     best = PickEstimateBackfillCandidate(SM, RS, watches)
     if best ~= nil then
         LogPlantPick(best)
         return done(best)
     end
 
-    -- Spare seeds above the buffer fill every remaining plot for watched recipes.
+    -- SkillUp seed jobs take free plots before spare-seed fill-all.
+    local skillJob = TrySkillUpPlantJob()
+    if type(skillJob) == "table" then
+        return done(skillJob)
+    end
+
+    -- Spare seeds above the buffer fill every plot SkillUp did not use.
     -- This job is not demand and does not buy seeds.
     best = PickFillAllCandidate(SM, RS, watches)
     if best ~= nil then
         LogPlantPick(best)
         return done(best)
-    end
-
-    -- Idle SkillUp Cult: only after watches are done (SkillUp.ShouldCultPlant gates).
-    local skillJob = TrySkillUpPlantJob()
-    if type(skillJob) == "table" then
-        return done(skillJob)
     end
     return done(nil)
 end
@@ -2589,7 +2611,16 @@ function Grow.GetPlantJob()
             if reason == "estimate_backfill" or reason == "fill_all" then
                 local key = EstimateBackfillStateKey and EstimateBackfillStateKey() or ""
                 if key ~= Grow._estimateBackfillKey then
-                    backfillStale = true
+                    -- Same 2s guard as a cached nil. A chattering key must not
+                    -- re-walk the watches on every frame. A full garden re-picks
+                    -- once so the stale job does not stick.
+                    local due = true
+                    if Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true then
+                        due = EstimateBackfillRetryDue() == true
+                    end
+                    if due then
+                        backfillStale = true
+                    end
                 end
             end
             if backfillStale ~= true then
@@ -2873,6 +2904,9 @@ function Grow.IssuePlantOne(opId)
     end
 
     -- Seed left the bag; keep _pendingPlant until soil confirm so plots are not reused.
+    if tostring(job.plantReason or "") == "fill_all" then
+        Grow.CommitFillAllSpread(seedUid)
+    end
     ReleaseSeedReservation(plotNum)
     Grow._deferPlantFrame = 0
     Grow._lastPlantedSeedUid = seedUid
