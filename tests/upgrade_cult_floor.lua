@@ -669,6 +669,39 @@ US._upgradeTargetsKey = nil
 local bufPlant = US.PickPlantJob()
 eq(bufPlant and bufPlant.seedUid, L1_SEED, "empty potion buffer climbs by planting owned L1")
 
+-- Partial cushion is Seed buffer maintenance, not a climb or an L1 buy.
+nextFrame()
+clearBags()
+counts[L200_SEED] = 3
+credit[L200_SEED] = 3
+headroom[L200_SEED] = 2
+credit[L1_SEED] = 0
+counts[L1_SEED] = 0
+US._upgradeTargetsCache = nil
+US._upgradeTargetsKey = nil
+eq(#US.CollectBuyJobs(), 0, "a partial cult-max cushion does not AutoBuy L1")
+eq(US.PickPlantJob(), nil, "a partial cult-max cushion does not start an upgrade plant")
+
+-- Plant watches stay behind the idle gate even when their seed line is empty.
+nextFrame()
+clearBags()
+credit[L200_SEED] = 0
+headroom[L200_SEED] = 5
+US._upgradeTargetsCache = nil
+US._upgradeTargetsKey = nil
+StockPiler.RecipeSpec.CollectAutoGrowSeedLines = function()
+    return {
+        {
+            spec = { name = "Goldweed", skillLevel = 200, role = "main" },
+            plantUid = L200_PLANT,
+            seedUid = L200_SEED,
+            plantStock = true,
+        },
+    }
+end
+eq(#US.CollectBuyJobs(), 0, "an empty plant-watch buffer line does not bypass the idle gate")
+eq(US.PickPlantJob(), nil, "an empty plant-watch buffer line does not plant L1")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

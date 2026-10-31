@@ -1261,10 +1261,11 @@ local function CollectUpgradeTargets()
         end
     end
 
-    -- Potion AutoGrow seed-buffer lines missing Cult-max / target-tier stock.
-    -- Must not wait on WatchesAllowUpgradeClimb: that gate requires SeedBufferOk,
-    -- which stays false while these lines are empty (Draught stimulant Marshroot
-    -- stuck on "Seed buffer" with no climb and no L1 AutoBuy).
+    -- Potion AutoGrow seed-buffer lines with no Cult-max / target-tier stock
+    -- at all (0, not 3/5). Must not wait on WatchesAllowUpgradeClimb: that gate
+    -- requires SeedBufferOk, which stays false while the line is empty.
+    -- Plant-watch lines keep that gate so plants still wait until potions are done.
+    -- A partial cushion stays on Seed buffer and is not a climb or an L1 buy.
     if Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
         local lines = RS and RS.CollectAutoGrowSeedLines and RS.CollectAutoGrowSeedLines() or nil
         if type(lines) ~= "table" and StockPiler.Planner and StockPiler.Planner.CollectAutoGrowSeedLines then
@@ -1277,7 +1278,7 @@ local function CollectUpgradeTargets()
         if type(lines) == "table" then
             for i = 1, #lines do
                 local line = lines[i]
-                if type(line) == "table" and type(line.spec) == "table" then
+                if type(line) == "table" and type(line.spec) == "table" and line.plantStock ~= true then
                     local plantUid = tonumber(line.plantUid) or 0
                     local seedUid = tonumber(line.seedUid) or 0
                     if plantUid > 0 and seenPlant[plantUid] ~= true then
@@ -1288,7 +1289,7 @@ local function CollectUpgradeTargets()
                         elseif Inv and Inv.CountByUid then
                             credit = tonumber(Inv.CountByUid(plantUid)) or 0
                         end
-                        if credit < buffer then
+                        if credit <= 0 then
                             local needReq = NeedReqFor(line.spec, plantUid)
                             local ladder = LadderFor(line.spec)
                             if not HaveTargetRung(ladder, needReq, plantUid, seedUid, {

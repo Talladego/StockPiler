@@ -3190,6 +3190,16 @@ local function ApplySeedBufferStatus(row)
     if Watch and Watch.GetSeedBufferMin then
         buffer = tonumber(Watch.GetSeedBufferMin()) or 5
     end
+    -- Empty line (0/5) before climb paint. A live climb would otherwise hide
+    -- Restocking / Buy seeds and leave the row looking like a cushion problem.
+    -- Partial credit still falls through to Seed buffer below.
+    if SeedBufferHasEmptyLine(row) then
+        SetMaterialsShortStatus(row, true, T("watch.note.buy_seeds"))
+        row.tipBuffer = buffer
+        row.seedBufferShort = true
+        row.craftableShared = false
+        return
+    end
     local US = StockPiler.UpgradeSeed
     local climb = nil
     local climbs = nil
@@ -3285,15 +3295,6 @@ local function ApplySeedBufferStatus(row)
         end
         lines[#lines + 1] = T("tip.watch.upgrade_seeds")
         row.statusLines = lines
-        row.craftableShared = false
-        return
-    end
-    -- Completely missing seed/plant line: same paint as other material shorts
-    -- (Restocking / Enable AutoGrow / Buy seeds), not cushion "Seed buffer".
-    if SeedBufferHasEmptyLine(row) then
-        SetMaterialsShortStatus(row, true, T("watch.note.buy_seeds"))
-        row.tipBuffer = buffer
-        row.seedBufferShort = true
         row.craftableShared = false
         return
     end
