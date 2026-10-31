@@ -77,6 +77,9 @@ local skillOn = false
 local buyCalls = 0
 local specScans = 0
 local clock = 1000
+local snapGen = 1
+local cultMaxed = false
+local skillWant = 0
 
 local function setPlots(n, groundUid, groundN)
     plots = {}
@@ -147,7 +150,7 @@ StockPiler.Scheduler = {
 }
 StockPiler.Inventory = {
     IsReady = function() return true end,
-    GetSnapGen = function() return 1 end,
+    GetSnapGen = function() return snapGen end,
     CountByUid = function(uid)
         return tonumber(seeds[tonumber(uid) or 0]) or 0
     end,
@@ -223,13 +226,19 @@ StockPiler.Refine = {
 }
 StockPiler.SkillUp = {
     ShouldCultPlant = function()
-        return skillOn == true
+        if skillOn ~= true or cultMaxed == true then
+            return false
+        end
+        if skillWant > 0 and groundPlots(55) >= skillWant then
+            return false
+        end
+        return true
     end,
     PickPlantJob = function()
-        if skillOn == true then
-            return { seedUid = 55, plantReason = "skill_up", plantable = 1 }
+        if StockPiler.SkillUp.ShouldCultPlant() ~= true then
+            return nil
         end
-        return nil
+        return { seedUid = 55, plantReason = "skill_up", plantable = 1 }
     end,
 }
 StockPiler.PlanSnapshot = {
@@ -335,6 +344,7 @@ local Grow = StockPiler.Grow
 local function resetCursor()
     Grow._fillAllCredit = nil
     Grow._fillAllFp = nil
+    Grow._fillAllArmed = nil
     Grow._bfScratch = nil
     Grow._bfScratchWatch = nil
     Grow.InvalidatePlantQueue({ reason = "test" })
@@ -365,6 +375,9 @@ local function plantAll(limit)
         jobs[#jobs + 1] = job
         if occupy(job.seedUid) ~= true then
             break
+        end
+        if job.plantReason == "fill_all" then
+            Grow.CommitFillAllSpread(job.seedUid)
         end
     end
     return jobs
@@ -417,37 +430,78 @@ eq(again, nil, "a full garden does not ask for another seed")
 eq(planBuyQty(), buyBefore, "a second pick after the fill leaves plan and buy unchanged")
 eq(rows[1].buyQty, 4, "the plan buy quantity field is untouched")
 
--- Fill-all wins over SkillUp while spare seeds remain, and does not dip the buffer.
+-- SkillUp off: fill-all uses the spare seeds and does not dip into the buffer.
 skillOn = false
+cultMaxed = false
+skillWant = 0
 outcomeRate = nil
-harvestRate = 0.5
+harvestRate = nil
 bufferOn = true
 bufferMin = 5
+optimisticOn = true
 seeds[SEED_A] = 7
 plantBags[PLANT_A] = 4
 rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 4, 0) }
 setPlots(6, 0, 0)
 resetCursor()
 local dipped = plantAll(8)
-eq(#dipped, 2, "spare above the buffer fills two plots, not the cushion")
-eq(dipped[1] and dipped[1].plantReason, "fill_all", "spare plots are fill-all ahead of SkillUp")
-eq(dipped[2] and dipped[2].plantReason, "fill_all", "the second spare plot is fill-all")
+eq(#dipped, 2, "SkillUp off fills only the spare plots")
+eq(dipped[1] and dipped[1].plantReason, "fill_all", "SkillUp off plot 1 is fill-all")
+eq(dipped[2] and dipped[2].plantReason, "fill_all", "SkillUp off plot 2 is fill-all")
 eq(seeds[SEED_A], 5, "the seed buffer is left in the bag")
--- SkillUp is armed, but spare seeds still fill plots first.
+
+-- Cultivation maxed is the same as SkillUp off: fill-all fills every spare plot.
 skillOn = true
-seeds[SEED_A] = 7
-plantBags[PLANT_A] = 4
+cultMaxed = true
+seeds[SEED_A] = 9
+plantBags[PLANT_A] = 1
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 0) }
+setPlots(4, 0, 0)
+resetCursor()
+local maxed = plantAll(6)
+eq(#maxed, 4, "Cultivation maxed lets fill-all use every free plot")
+local maxedFill = true
+for i = 1, #maxed do
+    if maxed[i].plantReason ~= "fill_all" then
+        maxedFill = false
+    end
+end
+check(maxedFill == true, "Cultivation maxed does not plant SkillUp seeds")
+eq(seeds[SEED_A], bufferMin, "Cultivation maxed still stops at the buffer")
+
+-- SkillUp on and Cultivation not maxed: SkillUp plots first, fill-all gets the rest.
+skillOn = true
+cultMaxed = false
+skillWant = 2
+seeds[SEED_A] = 9
+plantBags[PLANT_A] = 1
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 0) }
 setPlots(6, 0, 0)
 resetCursor()
-local ahead = Grow.PickPlantCandidate()
-eq(ahead and ahead.plantReason, "fill_all", "fill-all runs before SkillUp")
-occupy(ahead.seedUid)
-local second = Grow.PickPlantCandidate()
-eq(second and second.plantReason, "fill_all", "the remaining spare seed is still fill-all")
-occupy(second.seedUid)
-local afterDip = Grow.PickPlantCandidate()
-eq(afterDip and afterDip.plantReason, "skill_up", "SkillUp runs once spare seeds are gone")
+local ordered = plantAll(8)
+eq(#ordered, 6, "SkillUp plus fill-all cover the six plots")
+eq(ordered[1] and ordered[1].plantReason, "skill_up", "SkillUp takes the first free plot")
+eq(ordered[2] and ordered[2].plantReason, "skill_up", "SkillUp takes the second free plot")
+eq(ordered[3] and ordered[3].plantReason, "fill_all", "fill-all takes the first plot SkillUp left")
+eq(ordered[4] and ordered[4].plantReason, "fill_all", "fill-all takes the second plot SkillUp left")
+eq(ordered[5] and ordered[5].plantReason, "fill_all", "fill-all takes the third plot SkillUp left")
+eq(ordered[6] and ordered[6].plantReason, "fill_all", "fill-all takes the fourth plot SkillUp left")
+eq(seeds[SEED_A], bufferMin, "fill-all after SkillUp still stops at the buffer")
+
+-- Demand path: SkillUp still comes before fill-all.
+skillWant = 1
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 1) }
+seeds[SEED_A] = 8
+setPlots(3, 0, 0)
+resetCursor()
+local demandFirst = Grow.PickPlantCandidate()
+eq(demandFirst and demandFirst.plantReason, "skill_up", "demand path gives the first plot to SkillUp")
+occupy(demandFirst.seedUid)
+local demandRest = Grow.PickPlantCandidate()
+eq(demandRest and demandRest.plantReason, "fill_all", "demand path fill-all uses the plot SkillUp left")
 skillOn = false
+skillWant = 0
+cultMaxed = false
 
 -- Harvest loss alone backfills. No brew samples, and a perfect brew rate still counts.
 outcomeRate = nil
@@ -593,9 +647,49 @@ local cached = Grow.GetPlantJob()
 local cachedAgain = Grow.GetPlantJob()
 eq(cached, cachedAgain, "GetPlantJob reuses the fill-all pick")
 eq(cached and cached.seedUid, SEED_A, "the cached fill-all seed is the heavier need")
-Grow.InvalidatePlantQueue({ reason = "plant" })
-local nextJob = Grow.GetPlantJob()
-eq(nextJob and nextJob.seedUid, SEED_A, "the next plant advances the spread once")
+-- Picks that do not plant stay on the same round-robin step.
+local repeatPick = Grow.PickPlantCandidate()
+eq(repeatPick and repeatPick.seedUid, SEED_A, "a second pick without planting stays on the same seed")
+local thirdPick = Grow.PickPlantCandidate()
+eq(thirdPick and thirdPick.seedUid, SEED_A, "more picks without planting still do not advance")
+Grow.CommitFillAllSpread(SEED_A)
+local afterPlant = Grow.PickPlantCandidate()
+eq(afterPlant and afterPlant.seedUid, SEED_A, "the heavier need keeps the second planted step")
+Grow.CommitFillAllSpread(SEED_A)
+local spreadNext = Grow.PickPlantCandidate()
+eq(spreadNext and spreadNext.seedUid, SEED_B, "planting twice advances the spread to the lighter watch")
+
+-- A stale cached fill-all job re-picks at most once per 2 seconds.
+snapGen = 1
+setPlots(4, 0, 0)
+seeds[SEED_A] = 10
+seeds[SEED_B] = 10
+resetCursor()
+local stalePicks = 0
+local realStalePick = Grow.PickPlantCandidate
+Grow.PickPlantCandidate = function(...)
+    stalePicks = stalePicks + 1
+    return realStalePick(...)
+end
+local staleJob = Grow.GetPlantJob()
+eq(staleJob and staleJob.plantReason, "fill_all", "the guarded cache starts from a fill-all job")
+eq(stalePicks, 1, "the first fill-all probe runs once")
+eq(Grow.GetPlantJob(), staleJob, "an unchanged key reuses the cached fill-all job")
+eq(stalePicks, 1, "an unchanged key does not re-pick")
+snapGen = 2
+local held = Grow.GetPlantJob()
+eq(stalePicks, 2, "the first key change re-picks once")
+eq(held and held.seedUid, SEED_A, "the re-pick without a plant stays on the same seed")
+snapGen = 3
+eq(Grow.GetPlantJob(), held, "a second key change inside 2 seconds keeps the cached job")
+eq(stalePicks, 2, "the 2 second guard blocks another fill-all re-pick")
+clock = clock + 3
+snapGen = 3
+local afterGuard = Grow.GetPlantJob()
+eq(stalePicks, 3, "after 2 seconds the stale fill-all job is picked again")
+eq(afterGuard and afterGuard.plantReason, "fill_all", "the later re-pick is still fill-all")
+Grow.PickPlantCandidate = realStalePick
+snapGen = 1
 
 -- Demand path (bottle gap still open) reaches fill-all after lift has nothing to do.
 rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 3, 1) }
@@ -643,9 +737,9 @@ local offAgain = Grow.PickPlantCandidate()
 eq(offAgain, nil, "Optimistic off does not plant once the garden is full")
 eq(planBuyQty(), offBefore, "a second Optimistic-off pick leaves plan and buy unchanged")
 
--- Demand path with Optimistic off still reaches fill-all before SkillUp.
+-- Demand path with Optimistic off still reaches fill-all when SkillUp is off.
 optimisticOn = false
-skillOn = true
+skillOn = false
 bufferOn = false
 seeds[SEED_A] = 6
 plantBags[PLANT_A] = 1
