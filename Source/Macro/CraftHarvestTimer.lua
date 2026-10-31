@@ -494,7 +494,17 @@ local function HasActiveWork()
         return true
     end
     if SeedBufferSettled() ~= true then
-        return true
+        -- Empty Cult-max buffer with need_buy / no_family is a player stall
+        -- (Buy seeds), not plant/refine work. Counting it as active work hid
+        -- the HUD/macro red tint while the Watch row already said Buy seeds.
+        local US = StockPiler.UpgradeSeed
+        local why = ""
+        if type(US) == "table" and type(US._active) == "table" then
+            why = tostring(US._active.why or "")
+        end
+        if why ~= "need_buy" and why ~= "no_family" then
+            return true
+        end
     end
     if VendorBuyInProgress() then
         return true
@@ -536,6 +546,26 @@ end
 --- Why Craft is user-blocked (red tint). Nil when not waiting on the player.
 --- key is a USER_STALL reason; text/name are optional plan-row hints.
 function Timer.UserStayInfo()
+    -- Upgrade Seed need_buy / no_family before HasActiveWork: an empty seed
+    -- buffer is still "unsettled work" otherwise, which hid the red HUD tint
+    -- while the Watch row already said Buy seeds.
+    local US = StockPiler.UpgradeSeed
+    if US then
+        local latch = tostring(US._stallLatch or "")
+        if USER_STALL[latch] == true then
+            return { key = latch }
+        end
+        local active = US._active
+        if type(active) == "table" then
+            local why = tostring(active.why or "")
+            if USER_STALL[why] == true then
+                return {
+                    key = why,
+                    name = active.genus or active.name,
+                }
+            end
+        end
+    end
     if HasActiveWork() == true then
         return nil
     end
@@ -554,23 +584,6 @@ function Timer.UserStayInfo()
             local cult = SkillUp.CultStallReason()
             if cult ~= nil and USER_STALL[tostring(cult)] == true then
                 return { key = tostring(cult) }
-            end
-        end
-    end
-    local US = StockPiler.UpgradeSeed
-    if US then
-        local latch = tostring(US._stallLatch or "")
-        if USER_STALL[latch] == true then
-            return { key = latch }
-        end
-        local active = US._active
-        if type(active) == "table" then
-            local why = tostring(active.why or "")
-            if USER_STALL[why] == true then
-                return {
-                    key = why,
-                    name = active.genus or active.name,
-                }
             end
         end
     end
