@@ -3184,21 +3184,22 @@ local function SeedBufferHasEmptyLine(row)
     return false
 end
 
+local function ApplyBuySeedsStatus(row, buffer)
+    row.statusKey = "buy_ingredients"
+    row.statusText = T("watch.note.buy_seeds")
+    row.tipBuffer = buffer
+    row.seedBufferShort = true
+    row.craftableShared = false
+    row.statusLines = {
+        T("plan.status.upgrading_seed_buy_note"),
+    }
+end
+
 local function ApplySeedBufferStatus(row)
     local buffer = 5
     local Watch = StockPiler.Watch
     if Watch and Watch.GetSeedBufferMin then
         buffer = tonumber(Watch.GetSeedBufferMin()) or 5
-    end
-    -- Empty line (0/5) before climb paint. A live climb would otherwise hide
-    -- Restocking / Buy seeds and leave the row looking like a cushion problem.
-    -- Partial credit still falls through to Seed buffer below.
-    if SeedBufferHasEmptyLine(row) then
-        SetMaterialsShortStatus(row, true, T("watch.note.buy_seeds"))
-        row.tipBuffer = buffer
-        row.seedBufferShort = true
-        row.craftableShared = false
-        return
     end
     local US = StockPiler.UpgradeSeed
     local climb = nil
@@ -3240,6 +3241,28 @@ local function ApplySeedBufferStatus(row)
                     end
                 end
             end
+            -- need_buy climbs often carry plantUid (Savage) with seedUid=0.
+            local pUids = row.seedBufferPlantUids
+            if type(pUids) == "table" then
+                for i = 1, #pUids do
+                    local pu = tonumber(pUids[i]) or 0
+                    if pu > 0 then
+                        plantSet[pu] = true
+                    end
+                end
+            end
+            local genusSet = {}
+            local SM = StockPiler.SeedMap
+            local Items = StockPiler.Items
+            if SM and SM.GenusKeyFromName and Items and Items.GetByUid then
+                for uid, _ in pairs(seedSet) do
+                    local it = Items.GetByUid(uid)
+                    local g = it and SM.GenusKeyFromName(it.name) or nil
+                    if type(g) == "string" and g ~= "" then
+                        genusSet[g] = true
+                    end
+                end
+            end
             local all = US.ListClimbStatuses and US.ListClimbStatuses() or nil
             if type(all) == "table" and #all > 0 then
                 climbs = {}
@@ -3248,7 +3271,11 @@ local function ApplySeedBufferStatus(row)
                     if type(c) == "table" then
                         local su = tonumber(c.seedUid) or 0
                         local pu = tonumber(c.plantUid) or 0
-                        if (su > 0 and seedSet[su] == true) or (pu > 0 and plantSet[pu] == true) then
+                        local genus = tostring(c.genus or "")
+                        if (su > 0 and seedSet[su] == true)
+                            or (pu > 0 and plantSet[pu] == true)
+                            or (genus ~= "" and genusSet[genus] == true)
+                        then
                             climbs[#climbs + 1] = c
                         end
                     end
@@ -3261,9 +3288,14 @@ local function ApplySeedBufferStatus(row)
             end
         end
     end
-    if type(climb) == "table" and (climb.why == "planting" or climb.why == "refining"
-        or climb.why == "need_buy" or climb.why == "need_cult" or climb.why == "no_family"
-        or climb.why == "climbing")
+    local why = type(climb) == "table" and tostring(climb.why or "") or ""
+    -- Waiting on vendor / AutoBuy: red Buy seeds (not yellow Restocking).
+    if why == "need_buy" or why == "no_family" then
+        ApplyBuySeedsStatus(row, buffer)
+        return
+    end
+    if type(climb) == "table" and (why == "planting" or why == "refining"
+        or why == "need_cult" or why == "climbing")
     then
         row.statusKey = "upgrading_seed"
         local haveReq = tonumber(climb.haveReq) or 0
@@ -3296,6 +3328,12 @@ local function ApplySeedBufferStatus(row)
         lines[#lines + 1] = T("tip.watch.upgrade_seeds")
         row.statusLines = lines
         row.craftableShared = false
+        return
+    end
+    -- Empty Cult-max line with nothing plantable yet: Buy seeds (red).
+    -- Issue #81: do not paint AutoGrow Restocking while bags have 0 of the line.
+    if SeedBufferHasEmptyLine(row) then
+        ApplyBuySeedsStatus(row, buffer)
         return
     end
     row.statusKey = "need_seeds"
