@@ -973,7 +973,14 @@ function Grow.MarkPlantJobProbed(job)
     if type(job) == "table" then
         Grow._cachedPlantJob = job
         Grow._plantNilPlanGen = nil
-        Grow._estimateBackfillKey = nil
+        local reason = tostring(job.plantReason or "")
+        if (reason == "estimate_backfill" or reason == "fill_all")
+            and EstimateBackfillStateKey
+        then
+            Grow._estimateBackfillKey = EstimateBackfillStateKey()
+        else
+            Grow._estimateBackfillKey = nil
+        end
     else
         Grow._cachedPlantJob = nil
         local plan = StockPiler.PlanSnapshot and StockPiler.PlanSnapshot.Get
@@ -1778,14 +1785,9 @@ EstimateBackfillStateKey = function()
 end
 
 --- Nil plant-job cache: re-probe only when backfill inputs changed.
+--- Fill-all runs with Optimistic off, so a toggle must move the key too.
 --- The 2s guard rate-limits those re-probes.
 local function EstimateBackfillRetryDue()
-    local Watch = StockPiler.Watch
-    if not (Watch and Watch.IsOptimisticOutcomeEstimate
-        and Watch.IsOptimisticOutcomeEstimate() == true)
-    then
-        return false
-    end
     if Grow.HasEmptyPlot and Grow.HasEmptyPlot() ~= true then
         return false
     end
@@ -2153,6 +2155,19 @@ local function BackfillStageOpen()
     return true
 end
 
+--- Fill-all does not require Optimistic. Upgrade Seed hold and an empty plot
+--- still apply. The stocked path also skips this while a climb or buffer
+--- refill is pending, so that work keeps the plots.
+local function FillAllStageOpen()
+    if UpgradeSeedHoldsBackfill() then
+        return false
+    end
+    if Grow.HasEmptyPlot and Grow.HasEmptyPlot() ~= true then
+        return false
+    end
+    return true
+end
+
 --- Optimistic ON: plant the measured brew/harvest shortfall after primary
 --- demand is met. Harvest loss counts even when the brew rate is unknown or
 --- perfect. Need is summed per plant before bag and ground are subtracted.
@@ -2211,12 +2226,12 @@ local function PickEstimateBackfillCandidate(SM, RS, watches)
 end
 
 --- After measured backfill: keep planting spare bag seeds for watched recipes
---- until every free plot is full. Optimistic stays on (BackfillStageOpen).
+--- until every free plot is full. Runs with Optimistic on or off.
 --- A measured loss is not required. Need only steers the spread; a satisfied
 --- watch (need 0) still gets weight 1. One plot per job so the round-robin
 --- actually alternates. craftsShort stays 0 so this is not a buy.
 local function PickFillAllCandidate(SM, RS, watches)
-    if BackfillStageOpen() ~= true or type(RS) ~= "table" or type(SM) ~= "table" then
+    if FillAllStageOpen() ~= true or type(RS) ~= "table" or type(SM) ~= "table" then
         return nil
     end
     -- Demand is still cold: lift has not run. Do not spend the plots first.
@@ -2351,7 +2366,7 @@ function Grow.PickPlantCandidate()
         Perf.Mark("PickPlant.lackDemand")
     end
     if PlanRowsLackPlantDemand() == true then
-        -- Optimistic ON: measured loss, then fill every free plot, before SkillUp.
+        -- Measured loss is Optimistic-only. Fill-all runs either way, before SkillUp.
         -- Upgrade Seed hold lives inside both pickers (late path too).
         local USIdle = StockPiler.UpgradeSeed
         local bf = PickEstimateBackfillCandidate(SM, RS, nil)
@@ -2565,9 +2580,21 @@ function Grow.GetPlantJob()
     -- Without nil-cache, idle AutoGrow ticks re-ran PickPlantCandidate every 5s.
     if Grow._plantQueueDirty ~= true and Grow._plantJobProbed == true then
         local cached = Grow._cachedPlantJob
+        local backfillStale = false
         if type(cached) == "table" and (tonumber(cached.seedUid) or 0) > 0 then
             -- Real job: do not deep-copy demand just to confirm the cache.
-            return cached
+            -- Measured backfill is Optimistic-only. Fill-all is not. Either
+            -- answer goes stale when Optimistic toggles, so re-pick then.
+            local reason = tostring(cached.plantReason or "")
+            if reason == "estimate_backfill" or reason == "fill_all" then
+                local key = EstimateBackfillStateKey and EstimateBackfillStateKey() or ""
+                if key ~= Grow._estimateBackfillKey then
+                    backfillStale = true
+                end
+            end
+            if backfillStale ~= true then
+                return cached
+            end
         end
         -- Nil-cache must not hide SkillUp when plots are empty (no watch demand).
         local SkillUp = StockPiler.SkillUp
