@@ -4,6 +4,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.5
 
+- The garden now fills all free plots with spare seeds for your watched potions.
 - AutoBrew no longer starts a brew when two ingredients share one stack that does not have enough left. It clears a board it loaded and tries again, and it leaves a board you loaded yourself alone.
 - Upgrade Seeds no longer buys the basic vendor seed when you already have a higher seed, or the plant from a higher tier of that family.
 - The AutoBuy queue in chat shows each item by name, the same way a purchase line does.
