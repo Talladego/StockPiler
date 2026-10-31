@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler = StockPiler or {}
-StockPiler.Version = L"1.1.4"
+StockPiler.Version = L"1.1.5"
 
 local function T(key, tokens)
     return StockPiler.Util.T(key, tokens)

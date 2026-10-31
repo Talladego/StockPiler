@@ -461,6 +461,169 @@ function Inv.GetSample(uid)
     return nil
 end
 
+--- Visit up to maxCalls slots, resuming from state. fn returning false stops.
+--- Does not resume a live pairs() iterator across calls. A removed cursor
+--- key marks state.invalid so the caller can drop a partial walk.
+function Inv.ForEachItemChunk(state, maxCalls, fn)
+    if type(state) ~= "table" or type(fn) ~= "function" then
+        return 0
+    end
+    if state.done == true then
+        return 0
+    end
+    maxCalls = tonumber(maxCalls) or 1
+    if maxCalls < 1 then
+        maxCalls = 1
+    end
+    if state.mode == nil then
+        if Inv._ready ~= true then
+            Inv.Flush({ force = true, forceEngine = false })
+        end
+        if Inv._ready == true and type(Inv._itemBySlot) == "table" then
+            state.mode = "slots"
+        else
+            state.mode = "scan"
+        end
+    end
+    if state.mode == "scan" then
+        -- No stable slot cursor. Skip stacks this slice already accepted.
+        local skip = tonumber(state.coldSkip) or 0
+        local index = 0
+        local n = 0
+        local stopped = false
+        Inv.ForEachItem(function(item, bag, slot)
+            if stopped or n >= maxCalls then
+                stopped = true
+                return
+            end
+            index = index + 1
+            if index <= skip then
+                return
+            end
+            n = n + 1
+            if fn(item, bag, slot) == false then
+                stopped = true
+            end
+        end)
+        state.coldSkip = skip + n
+        if stopped then
+            state.done = false
+        else
+            state.done = true
+            state.coldSkip = nil
+        end
+        return n
+    end
+    local slotsByBag = Inv._itemBySlot
+    local function NextKey(tbl, key)
+        if key ~= nil and tbl[key] == nil then
+            return nil, nil, false
+        end
+        local ok, nextKey, val = pcall(next, tbl, key)
+        if not ok then
+            return nil, nil, false
+        end
+        return nextKey, val, true
+    end
+    local visited = 0
+    local bagKey = state.bag
+    local slotKey = state.slot
+    if state.resume ~= true then
+        local firstBag, _, okBag = NextKey(slotsByBag, nil)
+        if okBag ~= true then
+            state.invalid = true
+            state.done = true
+            state.bag = nil
+            state.slot = nil
+            state.resume = false
+            return 0
+        end
+        bagKey = firstBag
+        slotKey = nil
+    elseif bagKey == nil or slotsByBag[bagKey] == nil then
+        state.invalid = true
+        state.done = true
+        state.bag = nil
+        state.slot = nil
+        state.resume = false
+        return 0
+    end
+    while bagKey ~= nil and visited < maxCalls do
+        local slots = slotsByBag[bagKey]
+        if type(slots) ~= "table" then
+            local nextBag, _, okBag = NextKey(slotsByBag, bagKey)
+            if okBag ~= true then
+                state.invalid = true
+                state.done = true
+                state.bag = nil
+                state.slot = nil
+                state.resume = false
+                return visited
+            end
+            bagKey = nextBag
+            slotKey = nil
+        else
+            if slotKey ~= nil and slots[slotKey] == nil then
+                state.invalid = true
+                state.done = true
+                state.bag = nil
+                state.slot = nil
+                state.resume = false
+                return visited
+            end
+            local guard = 0
+            local bagDone = false
+            while visited < maxCalls and guard < 100000 and bagDone ~= true do
+                guard = guard + 1
+                local nextSlot, item, okSlot = NextKey(slots, slotKey)
+                if okSlot ~= true then
+                    state.invalid = true
+                    state.done = true
+                    state.bag = nil
+                    state.slot = nil
+                    state.resume = false
+                    return visited
+                end
+                if nextSlot == nil then
+                    bagDone = true
+                else
+                    slotKey = nextSlot
+                    visited = visited + 1
+                    local keep = true
+                    if type(item) == "table" then
+                        keep = fn(item, bagKey, tonumber(nextSlot) or nextSlot)
+                    end
+                    if keep == false or visited >= maxCalls then
+                        state.bag = bagKey
+                        state.slot = slotKey
+                        state.resume = true
+                        state.done = false
+                        state.invalid = nil
+                        return visited
+                    end
+                end
+            end
+            local nextBag, _, okBag = NextKey(slotsByBag, bagKey)
+            if okBag ~= true then
+                state.invalid = true
+                state.done = true
+                state.bag = nil
+                state.slot = nil
+                state.resume = false
+                return visited
+            end
+            bagKey = nextBag
+            slotKey = nil
+        end
+    end
+    state.bag = nil
+    state.slot = nil
+    state.resume = false
+    state.done = true
+    state.invalid = nil
+    return visited
+end
+
 --- fn(item [, bagKey, slot]). Extra args are optional (Lua ignores unused params).
 function Inv.ForEachItem(fn)
     if type(fn) ~= "function" then

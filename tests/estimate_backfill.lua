@@ -285,16 +285,18 @@ eq(job and job.plantReason, "estimate_backfill", "plantReason is estimate_backfi
 eq(job and tonumber(job.seedUid), SEED_UID, "backfill uses the growable seed")
 eq(job and job.pickMode, "estimate_backfill", "pickMode is estimate_backfill")
 
--- No samples: no backfill.
+-- No brew samples: measured backfill stays idle. Spare seeds still fill one plot.
 outcomeRate = nil
 job = Grow.PickPlantCandidate()
-eq(job, nil, "unknown rate does not backfill empty plots")
+eq(job and job.plantReason, "fill_all", "unknown rate does not measure-backfill; spare seeds still fill a plot")
+eq(job and job.plantable, 1, "fill-all asks for one plot")
 outcomeRate = 0.5
 
--- Optimistic Off: no estimate backfill stage.
+-- Optimistic Off: measured backfill stays idle. Spare seeds still fill one plot.
 optimisticOn = false
 job = Grow.PickPlantCandidate()
-eq(job, nil, "Optimistic Off does not use estimate backfill")
+eq(job and job.plantReason, "fill_all", "Optimistic Off fills spare plots and does not measure-backfill")
+eq(job and job.plantable, 1, "Optimistic Off fill-all asks for one plot")
 optimisticOn = true
 
 -- No empty plot: no backfill.
@@ -352,7 +354,9 @@ upgradeEnabled = false
 craftShared = false
 
 -- Nil plant-job cache re-probes only when backfill inputs change.
+-- No bag seeds, so fill-all is idle too and the answer stays nil.
 outcomeRate = nil
+bagSeeds = 0
 Grow.InvalidatePlantQueue({ reason = "test" })
 local picks = 0
 local realPick = Grow.PickPlantCandidate

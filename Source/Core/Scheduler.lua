@@ -321,6 +321,40 @@ local function FlushBagIfDue()
     return true
 end
 
+local function FinishPlanSliceOverCap()
+    local Planner = StockPiler.Planner
+    Sch._planSliceJob = false
+    Sch._planSliceStale = false
+    Sch._planSliceRestart = false
+    Sch._planWarmHoldAt = 0
+    Sch._planWarmHoldRetries = 0
+    local plan = nil
+    if Planner and Planner.FinishBuildSliceSync then
+        if StockPiler.Perf and StockPiler.Perf.Begin then
+            StockPiler.Perf.Begin("PlanRebuild")
+        end
+        plan = Planner.FinishBuildSliceSync()
+        if StockPiler.Perf and StockPiler.Perf.End then
+            StockPiler.Perf.End("PlanRebuild")
+        end
+    end
+    if type(plan) ~= "table" then
+        local wait = tonumber(Planner and Planner.BUILD_SLICE_ERROR_BACKOFF_SEC) or 2
+        Sch._planAt = Now() + wait
+        Sch._planDue = true
+        return false
+    end
+    Sch._planDue = false
+    Sch._planAt = 0
+    Sch._lastPlanBuiltAt = Now()
+    if Planner and Planner.EnqueueLazyWatchTips then
+        Planner.EnqueueLazyWatchTips()
+    end
+    Sch.SkipUiThisFrame()
+    Sch.MarkWatchUiDirty()
+    return true
+end
+
 local function RebuildPlanIfDue()
     if Sch._planDue ~= true then
         return false
@@ -356,6 +390,13 @@ local function RebuildPlanIfDue()
         and not (FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true)
     if fwBusyOther then
         return false
+    end
+    -- Restart or time cap already tripped and the slice is not running.
+    -- Finish this rebuild in one call instead of waiting on another warm hold.
+    if Sch._planSliceJob ~= true and Planner and Planner.BuildSliceOverCap
+        and Planner.BuildSliceOverCap() == true
+    then
+        return FinishPlanSliceOverCap()
     end
     -- Hold rebuild until WarmHave finishes - including Cheap/Garden paths.
     -- Snap bumps InvalidateHaveWarm; without this wait CheapRebuild sync-warms
@@ -402,9 +443,123 @@ local function RebuildPlanIfDue()
     end
     Sch._planWarmHoldAt = 0
     Sch._planWarmHoldRetries = 0
+    Sch._lastPlanBuiltAt = Now()
+    -- Full rebuilds run as a FrameWork cursor (rows and bag credit per Pump).
+    -- _planDue stays set until the slice publishes so GetOrBuild will not
+    -- start a second sync build over the partial rows.
+    if Planner and Planner.BeginBuildSlice and FW and FW.Start
+        and type(coroutine) == "table" and type(coroutine.create) == "function"
+    then
+        Sch._planSliceEpoch = (tonumber(Sch._planSliceEpoch) or 0) + 1
+        Sch._planSliceStale = false
+        Sch._planSliceRestart = false
+        local function settle(restart)
+            Sch._planSliceJob = false
+            if StockPiler.Perf and StockPiler.Perf.End then
+                StockPiler.Perf.End("PlanRebuild")
+            end
+            if restart == true then
+                return
+            end
+            Sch._planDue = false
+            Sch._planAt = 0
+            Sch._lastPlanBuiltAt = Now()
+            if Planner and Planner.EnqueueLazyWatchTips then
+                Planner.EnqueueLazyWatchTips()
+            end
+            -- Never paint Watch on the same frame as a full Build (WarmHave hitch).
+            Sch.SkipUiThisFrame()
+            Sch.MarkWatchUiDirty()
+        end
+        local started = FW.Start({
+            id = "plan-build",
+            gen = tostring(Sch._planSliceEpoch),
+            stepsPerFrame = 1,
+            cancel = function()
+                if Planner and Planner.AbortBuildSlice then
+                    Planner.AbortBuildSlice()
+                end
+                Sch._planSliceJob = false
+                if StockPiler.Perf and StockPiler.Perf.End then
+                    StockPiler.Perf.End("PlanRebuild")
+                end
+            end,
+            done = function()
+                local restart = Sch._planSliceRestart == true
+                Sch._planSliceRestart = false
+                settle(restart)
+            end,
+            resume = function(state)
+                if Sch._planSliceStale == true then
+                    local over = Planner and Planner.NoteBuildSliceRestart
+                        and Planner.NoteBuildSliceRestart() == true
+                    local brew = Orch and Orch.IsBrewSessionActive
+                        and Orch.IsBrewSessionActive() == true
+                    if over == true and brew ~= true
+                        and Planner and Planner.FinishBuildSliceSync
+                    then
+                        Sch._planSliceStale = false
+                        local plan = Planner.FinishBuildSliceSync()
+                        if type(plan) ~= "table" then
+                            Sch._planSliceRestart = true
+                            local wait = tonumber(Planner.BUILD_SLICE_ERROR_BACKOFF_SEC) or 2
+                            local at = Now() + wait
+                            if at > (tonumber(Sch._planAt) or 0) then
+                                Sch._planAt = at
+                            end
+                        elseif Sch._planSliceStale == true then
+                            -- A newer request landed during the sync finish.
+                            Sch._planSliceStale = false
+                            Sch._planSliceRestart = true
+                        else
+                            Sch._planSliceRestart = false
+                        end
+                        return "done"
+                    end
+                    Sch._planSliceRestart = true
+                    if Planner and Planner.AbortBuildSlice then
+                        Planner.AbortBuildSlice()
+                    end
+                    return "done"
+                end
+                if state.phase == nil then
+                    state.phase = "run"
+                    local result = Planner.BeginBuildSlice()
+                    if result ~= "continue" then
+                        return "done"
+                    end
+                end
+                local result = Planner.PumpBuildSlice()
+                if result == "continue" then
+                    return "continue"
+                end
+                if result == "retry" then
+                    Sch._planSliceRestart = true
+                    local at = Planner and Planner.BuildSliceRetryAt and Planner.BuildSliceRetryAt() or 0
+                    at = tonumber(at) or 0
+                    if at > (tonumber(Sch._planAt) or 0) then
+                        Sch._planAt = at
+                    end
+                    return "done"
+                end
+                if result == "restart" then
+                    Sch._planSliceRestart = true
+                end
+                return "done"
+            end,
+        })
+        if started == true then
+            Sch._planSliceJob = true
+            if StockPiler.Perf and StockPiler.Perf.Begin then
+                StockPiler.Perf.Begin("PlanRebuild")
+            end
+            -- The next Pump takes the first chunk. Calling Pump here can run
+            -- whatever job is already at the head of the queue in this frame.
+            return true
+        end
+    end
     Sch._planDue = false
     Sch._planAt = 0
-    Sch._lastPlanBuiltAt = Now()
     if Planner and Planner.GetOrBuild then
         if StockPiler.Perf and StockPiler.Perf.Begin then
             StockPiler.Perf.Begin("PlanRebuild")
@@ -1022,6 +1177,11 @@ function Sch.EnqueuePlanRebuild(opts)
     local nudge = opts.nudge == true
     -- Structural watch mark/clear: fire on next tick; skip AutoGrow 3s coalesce + min-gap.
     local urgent = opts.urgent == true
+    -- A sliced rebuild is in flight. A real request (not a nudge) must not
+    -- publish the plan that was already half built.
+    if Sch._planSliceJob == true and nudge ~= true then
+        Sch._planSliceStale = true
+    end
     if Sch.IsInventorySideEffectsSuppressed() then
         Sch._pendingPlanAfterSuppress = true
         if urgent == true then
@@ -1218,9 +1378,6 @@ function Sch.OnUpdate(timeElapsed)
         Sch.NoteHeavyWork()
         didHeavy = true
     end
-    local brewSession = StockPiler.Orchestrator
-        and StockPiler.Orchestrator.IsBrewSessionActive
-        and StockPiler.Orchestrator.IsBrewSessionActive() == true
     if StockPiler.Ui and StockPiler.Ui.FlushBurstHeldWatchRecount then
         StockPiler.Ui.FlushBurstHeldWatchRecount()
     end
@@ -1231,8 +1388,9 @@ function Sch.OnUpdate(timeElapsed)
     then
         FlushPendingPrewarmAfterQuiet()
     end
-    local skipPump = brewSession
-        or Sch._skipPlanThisFrame == true
+    -- Brew no longer blocks Pump. A recount started before the session
+    -- keeps its one-step cursor. RebuildPlanIfDue still waits out the brew.
+    local skipPump = Sch._skipPlanThisFrame == true
         or (Sch.IsSuppressed and Sch.IsSuppressed() == true)
     if not didHeavy and not skipPump
         and StockPiler.FrameWork and StockPiler.FrameWork.Pump
@@ -1332,6 +1490,9 @@ function Sch.Shutdown()
     Sch._initialized = false
     Sch._bagDue = false
     Sch._planDue = false
+    Sch._planSliceJob = false
+    Sch._planSliceStale = false
+    Sch._planSliceRestart = false
     Sch._harvestStormUntil = 0
     Sch._plantQuietUntil = 0
     Sch._pendingPrewarmAfterQuiet = false

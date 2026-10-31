@@ -673,11 +673,7 @@ local function ChatMaterialFill(uid, name, count, spentBrass)
     end
 end
 
-local function JobChatName(job)
-    if type(job) ~= "table" then
-        return "?"
-    end
-    local name = job.name or job.label
+local function NarrowChatName(name)
     if type(name) == "wstring" then
         if StockPiler.Util and StockPiler.Util.ToNarrow then
             name = StockPiler.Util.ToNarrow(name)
@@ -688,19 +684,105 @@ local function JobChatName(job)
         end
     end
     name = tostring(name or "")
+    if name == "" then
+        return ""
+    end
+    return name
+end
+
+--- Bag sample, learned catalog, then the item database. Empty when unknown.
+local function CatalogNameForUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return ""
+    end
+    local Inv = StockPiler.Inventory
+    local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
+    if type(sample) == "table" then
+        local fromBag = NarrowChatName(sample.name)
+        if fromBag ~= "" then
+            return fromBag
+        end
+    end
+    local Items = StockPiler.Items
+    if Items and Items.GetByUid then
+        local row = Items.GetByUid(uid)
+        if type(row) == "table" then
+            local fromItems = NarrowChatName(row.name)
+            if fromItems ~= "" then
+                return fromItems
+            end
+        end
+    end
+    if type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, uid)
+        if ok and type(data) == "table" then
+            local fromDb = NarrowChatName(data.name)
+            if fromDb ~= "" then
+                return fromDb
+            end
+        end
+    end
+    return ""
+end
+
+local function JobChatName(job)
+    if type(job) ~= "table" then
+        return "?"
+    end
+    local name = NarrowChatName(job.name or job.label)
     if name ~= "" then
         return name
     end
     local uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
     if uid > 0 then
-        local Inv = StockPiler.Inventory
-        local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
-        if type(sample) == "table" and sample.name ~= nil then
-            return JobChatName({ name = sample.name, uid = uid })
+        local found = CatalogNameForUid(uid)
+        if found ~= "" then
+            return found
         end
         return tostring(uid)
     end
     return "?"
+end
+
+local function CoerceChat(value)
+    if value == nil then
+        return L""
+    end
+    if type(value) == "wstring" then
+        return value
+    end
+    return towstring(tostring(value))
+end
+
+--- Item link when chat can make one, otherwise the resolved name.
+local function QueueItemLabel(job)
+    local uid = 0
+    if type(job) == "table" then
+        uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
+    end
+    local name = JobChatName(job)
+    if uid > 0 and name == tostring(uid) then
+        name = ""
+    end
+    local CC = StockPiler.CraftChatAdapter
+    if uid > 0 and CC and CC.ItemLink then
+        local fallback = nil
+        if name ~= "" and name ~= "?" then
+            fallback = name
+        end
+        local link = CC.ItemLink(uid, fallback)
+        if link ~= nil and link ~= L"" and link ~= "" then
+            return link
+        end
+    end
+    if name ~= "" then
+        return CoerceChat(name)
+    end
+    if uid > 0 then
+        return CoerceChat(tostring(uid))
+    end
+    return CoerceChat("?")
 end
 
 --- Unit cost for a buy job: open store match, else last recorded vendor price.
@@ -837,7 +919,7 @@ local function QueueFingerprint(jobs)
 end
 
 local function PrintQueueMessage(jobs)
-    local parts = {}
+    local list = nil
     local limit = 6
     local shown = 0
     for i = 1, #(jobs or {}) do
@@ -845,8 +927,22 @@ local function PrintQueueMessage(jobs)
         local deficit = tonumber(job and job.deficit) or 0
         if deficit > 0 then
             shown = shown + 1
-            if #parts < limit then
-                parts[#parts + 1] = JobChatName(job) .. " x" .. tostring(deficit)
+            if shown <= limit then
+                local piece = QueueItemLabel(job) .. CoerceChat(" x" .. tostring(deficit))
+                -- {list} is substituted with gsub. A "%" in a link is a capture
+                -- marker, so fall back to the plain name when one is present.
+                if string.find(NarrowChatName(piece), "%%", 1) ~= nil then
+                    local plain = JobChatName(job)
+                    if plain == "" then
+                        plain = "?"
+                    end
+                    piece = CoerceChat(plain .. " x" .. tostring(deficit))
+                end
+                if list == nil then
+                    list = piece
+                else
+                    list = list .. CoerceChat(", ") .. piece
+                end
             end
         end
     end
@@ -868,9 +964,11 @@ local function PrintQueueMessage(jobs)
         return
     end
     Buy._queueHadItems = true
-    local list = table.concat(parts, ", ")
+    if list == nil then
+        list = CoerceChat("")
+    end
     if shown > limit then
-        list = list .. ", +" .. tostring(shown - limit) .. " more"
+        list = list .. CoerceChat(", +" .. tostring(shown - limit) .. " more")
     end
     local estBrass, pricedN, jobN = Buy.EstimateJobsCostBrass(jobs)
     local priced = pricedN > 0 and estBrass > 0
@@ -908,7 +1006,7 @@ local function PrintQueueMessage(jobs)
     LogBuy("queue-announce n=" .. tostring(shown)
         .. " priced=" .. tostring(pricedN) .. "/" .. tostring(jobN)
         .. " estBrass=" .. tostring(estBrass)
-        .. " list=" .. list)
+        .. " list=" .. NarrowChatName(list))
 end
 
 --- Debounced: one chat line whenever the shortage fingerprint changes.

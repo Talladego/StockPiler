@@ -112,10 +112,53 @@ function SE.PlayUserActionSound()
     end
 end
 
+local function BlankName(name)
+    if name == nil then
+        return true
+    end
+    if type(name) == "wstring" then
+        return name == L""
+    end
+    return tostring(name) == ""
+end
+
+--- Name for a seed that is not in the bags yet. Catalog, then the item database.
+local function ItemDisplayName(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local Inv = StockPiler.Inventory
+    if Inv and Inv.GetSample then
+        local sample = Inv.GetSample(uid)
+        if type(sample) == "table" and not BlankName(sample.name) then
+            return sample.name
+        end
+    end
+    local Items = StockPiler.Items
+    if Items and Items.GetByUid then
+        local row = Items.GetByUid(uid)
+        if type(row) == "table" and not BlankName(row.name) then
+            return row.name
+        end
+    end
+    if type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, uid)
+        if ok and type(data) == "table" and not BlankName(data.name) then
+            return data.name
+        end
+    end
+    return nil
+end
+
 function SE.SeedBuyJob(opts)
     opts = type(opts) == "table" and opts or {}
     local seedUid = tonumber(opts.seedUid) or 0
     local specKey = tostring(opts.specKey or "")
+    local name = opts.name or opts.label
+    if BlankName(name) then
+        name = ItemDisplayName(seedUid)
+    end
     local job = {
         uid = seedUid,
         uniqueID = seedUid,
@@ -129,6 +172,9 @@ function SE.SeedBuyJob(opts)
         acquireKey = tostring(opts.acquireKey or specKey),
         skillReq = tonumber(opts.skillReq) or 0,
     }
+    if not BlankName(name) then
+        job.name = name
+    end
     if opts.upgradeSeed == true then
         job.upgradeSeed = true
     end

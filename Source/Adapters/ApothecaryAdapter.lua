@@ -1207,6 +1207,8 @@ function AA.Perform()
     return AA.PerformCrafting()
 end
 
+--- Item in a craft slot, plus the backpack and source slot of that stack.
+--- The object-id fallback has no physical stack, so it returns the item alone.
 function AA.GetSlottedItem(craftingSlot)
     craftingSlot = tonumber(craftingSlot) or -1
     if craftingSlot < 0 then
@@ -1223,7 +1225,7 @@ function AA.GetSlottedItem(craftingSlot)
                 local bag = BagTableForBackpack(entry.backpack, entry.slot)
                 local item = type(bag) == "table" and bag[entry.slot] or nil
                 if type(item) == "table" and (tonumber(item.uniqueID) or 0) > 0 then
-                    return item
+                    return item, entry.backpack, entry.slot
                 end
             end
         end
@@ -1238,7 +1240,7 @@ function AA.GetSlottedItem(craftingSlot)
                 local bag = BagTableForBackpack(sourceBackpack, cd.sourceSlot)
                 local fromBag = type(bag) == "table" and bag[cd.sourceSlot] or nil
                 if type(fromBag) == "table" and (tonumber(fromBag.uniqueID) or 0) > 0 then
-                    return fromBag
+                    return fromBag, sourceBackpack, cd.sourceSlot
                 end
             end
             if (tonumber(cd.objectId) or 0) > 0 then
