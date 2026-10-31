@@ -3141,6 +3141,49 @@ end
 
 local StampRowSeedBufferUids
 
+--- True when a stamped buffer seed/plant line has no credit at all (0/5), not
+--- merely under the cushion (3/5). Empty lines need Buy seeds / Restocking, not
+--- the "Seed buffer" cushion message.
+local function SeedBufferHasEmptyLine(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    StampRowSeedBufferUids(row)
+    local Refine = StockPiler.Refine
+    local Inv = StockPiler.Inventory
+    local uids = row.seedBufferSeedUids
+    if type(uids) == "table" then
+        for i = 1, #uids do
+            local uid = tonumber(uids[i]) or 0
+            if uid > 0 then
+                local credit = 0
+                if Refine and Refine.GetSeedBudget then
+                    local budget = Refine.GetSeedBudget(uid)
+                    credit = tonumber(budget and budget.credit) or 0
+                elseif Inv and Inv.CountByUid then
+                    credit = tonumber(Inv.CountByUid(uid)) or 0
+                end
+                if credit <= 0 then
+                    return true
+                end
+            end
+        end
+    end
+    local pUids = row.seedBufferPlantUids
+    if type(pUids) == "table" then
+        for i = 1, #pUids do
+            local uid = tonumber(pUids[i]) or 0
+            if uid > 0 then
+                local credit = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+                if credit <= 0 then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function ApplySeedBufferStatus(row)
     local buffer = 5
     local Watch = StockPiler.Watch
@@ -3242,6 +3285,15 @@ local function ApplySeedBufferStatus(row)
         end
         lines[#lines + 1] = T("tip.watch.upgrade_seeds")
         row.statusLines = lines
+        row.craftableShared = false
+        return
+    end
+    -- Completely missing seed/plant line: same paint as other material shorts
+    -- (Restocking / Enable AutoGrow / Buy seeds), not cushion "Seed buffer".
+    if SeedBufferHasEmptyLine(row) then
+        SetMaterialsShortStatus(row, true, T("watch.note.buy_seeds"))
+        row.tipBuffer = buffer
+        row.seedBufferShort = true
         row.craftableShared = false
         return
     end

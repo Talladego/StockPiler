@@ -1261,6 +1261,53 @@ local function CollectUpgradeTargets()
         end
     end
 
+    -- Potion AutoGrow seed-buffer lines missing Cult-max / target-tier stock.
+    -- Must not wait on WatchesAllowUpgradeClimb: that gate requires SeedBufferOk,
+    -- which stays false while these lines are empty (Draught stimulant Marshroot
+    -- stuck on "Seed buffer" with no climb and no L1 AutoBuy).
+    if Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
+        local lines = RS and RS.CollectAutoGrowSeedLines and RS.CollectAutoGrowSeedLines() or nil
+        if type(lines) ~= "table" and StockPiler.Planner and StockPiler.Planner.CollectAutoGrowSeedLines then
+            lines = StockPiler.Planner.CollectAutoGrowSeedLines()
+        end
+        local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+        if buffer < 1 then
+            buffer = 1
+        end
+        if type(lines) == "table" then
+            for i = 1, #lines do
+                local line = lines[i]
+                if type(line) == "table" and type(line.spec) == "table" then
+                    local plantUid = tonumber(line.plantUid) or 0
+                    local seedUid = tonumber(line.seedUid) or 0
+                    if plantUid > 0 and seenPlant[plantUid] ~= true then
+                        local credit = 0
+                        if seedUid > 0 then
+                            local budget = US.GetSeedBudget and US.GetSeedBudget(seedUid)
+                            credit = tonumber(budget and budget.credit) or 0
+                        elseif Inv and Inv.CountByUid then
+                            credit = tonumber(Inv.CountByUid(plantUid)) or 0
+                        end
+                        if credit < buffer then
+                            local needReq = NeedReqFor(line.spec, plantUid)
+                            local ladder = LadderFor(line.spec)
+                            if not HaveTargetRung(ladder, needReq, plantUid, seedUid, {
+                                requireBufferFull = true,
+                            }) then
+                                Consider(line.spec, math.max(1, buffer - credit), plantUid, {
+                                    needReq = needReq,
+                                    seedUid = seedUid,
+                                    ladder = ladder,
+                                    requireBufferFull = true,
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     table.sort(out, function(a, b)
         return (tonumber(a.short) or 0) > (tonumber(b.short) or 0)
     end)

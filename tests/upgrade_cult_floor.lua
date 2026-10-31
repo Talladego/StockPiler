@@ -600,6 +600,75 @@ watchL1(true)
 pinTargets({})
 eq(#US.CollectBuyJobs(), 0, "a filled L1 stack with no headroom is not bought")
 
+-- Empty potion seed-buffer line: climb/buy without SeedBufferOk idle gate.
+nextFrame()
+clearBags()
+watches = {}
+growPlant = true
+bufferOn = true
+bufferMin = 5
+credit[L200_SEED] = 0
+headroom[L200_SEED] = 5
+emptyPlots = 2
+activeLadder = sparseLadder()
+cultSkill = 200
+StockPiler.SeedEconomy.SeedBufferOk = function()
+    return false
+end
+StockPiler.SkillUp = {
+    WatchesDone = function()
+        return false
+    end,
+    AllShortWatchesProgressBlocked = function()
+        return false
+    end,
+}
+StockPiler.Watch.AllEnabledPotionWatchesStocked = function()
+    return true
+end
+StockPiler.RecipeSpec = {
+    BuildBalancedSpecDemand = function()
+        return {}
+    end,
+    CollectAutoGrowSeedLines = function()
+        return {
+            {
+                spec = { name = "Goldweed", skillLevel = 200, role = "main" },
+                plantUid = L200_PLANT,
+                seedUid = L200_SEED,
+            },
+        }
+    end,
+}
+StockPiler.SeedMap.IsGrowableSpec = function()
+    return true
+end
+StockPiler.SeedMap.IsHarvestByproduct = function()
+    return false
+end
+StockPiler.SeedMap.FindPlantUidForSpec = function()
+    return L200_PLANT
+end
+StockPiler.SeedMap.ResolveSeedUidForPlant = function()
+    return L200_SEED
+end
+US._upgradeTargetsCache = nil
+US._upgradeTargetsKey = nil
+local bufJobs = US.CollectBuyJobs()
+eq(#bufJobs >= 1, true, "empty potion buffer line AutoBuys L1 while SeedBufferOk is false")
+eq(bufJobs[1] and bufJobs[1].seedUid, L1_SEED, "that buy is the L1 vendor seed")
+
+nextFrame()
+clearBags()
+counts[L1_SEED] = 5
+credit[L1_SEED] = 5
+headroom[L1_SEED] = 0
+credit[L200_SEED] = 0
+US._upgradeTargetsCache = nil
+US._upgradeTargetsKey = nil
+local bufPlant = US.PickPlantJob()
+eq(bufPlant and bufPlant.seedUid, L1_SEED, "empty potion buffer climbs by planting owned L1")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)

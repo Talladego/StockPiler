@@ -4,6 +4,8 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.5
 
+- When a watched potion is stocked but a seed line is empty, Upgrade Seeds climbs (or AutoBuy queues the basic seed) instead of stalling on Seed buffer. An empty line shows Restocking / Buy seeds like other missing materials; Seed buffer stays for a partial cushion.
+- AutoGrow no longer errors each tick when a seed has a measured harvest success rate.
 - The garden now fills all free plots with spare seeds for your watched potions.
 - AutoBrew no longer starts a brew when two ingredients share one stack that does not have enough left. It clears a board it loaded and tries again, and it leaves a board you loaded yourself alone.
 - Upgrade Seeds no longer buys the basic vendor seed when you already have a higher seed, or the plant from a higher tier of that family.

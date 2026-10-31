@@ -315,7 +315,12 @@ StockPiler.SeedMap = {
         return {}
     end,
     HarvestSuccessRate = function()
-        return harvestRate
+        -- Match SeedMap: rate, successes, attempts, fails. tonumber(f()) must
+        -- not treat successes as a tonumber base.
+        if harvestRate == nil then
+            return nil
+        end
+        return harvestRate, 40, 50, 10
     end,
 }
 StockPiler.Garden = {
@@ -815,6 +820,19 @@ setPlots(1, 0, 0)
 resetCursor()
 eq(Grow.PickPlantCandidate(), nil, "no free seeds does not backfill")
 eq(specScans, 0, "no free seeds skips the bag plant count")
+
+-- Multi-return HarvestSuccessRate must not blow tonumber(base).
+seeds[SEED_A] = 9
+outcomeRate = nil
+harvestRate = 0.8
+plantBags[PLANT_A] = 0
+rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 10, 0) }
+setPlots(1, 0, 0)
+resetCursor()
+local okRate, jobRate = pcall(Grow.PickPlantCandidate)
+check(okRate == true, "harvest multi-return does not throw in PickPlantCandidate")
+check(type(jobRate) == "table", "harvest multi-return still yields a plant job")
+harvestRate = nil
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
