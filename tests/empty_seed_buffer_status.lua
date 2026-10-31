@@ -317,6 +317,19 @@ StockPiler.UpgradeSeed._active = {
 creditByUid[SEED_PARTIAL] = 3
 eq(Timer.UserStayInfo(), nil,
     "a partial cushion in that family does not turn the Craft button red")
+local realShort = Timer.ShortestSeconds
+Timer.ShortestSeconds = function()
+    return 12
+end
+StockPiler.UpgradeSeed._stallLatch = "need_vendor"
+StockPiler.UpgradeSeed._active = {
+    why = "refining",
+    seedUid = SEED,
+    genus = "goldweed",
+}
+creditByUid[SEED] = 0
+eq(Timer.UserStayInfo(), nil, "active work keeps the Craft button normal")
+Timer.ShortestSeconds = realShort
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

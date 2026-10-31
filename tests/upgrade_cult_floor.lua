@@ -717,7 +717,11 @@ counts[L1_SEED] = 3
 credit[L1_SEED] = 3
 headroom[L1_SEED] = 2
 eq(US.SeedDeficit(L1_SEED), 2, "after some L1 credit only the cushion is topped up")
-US._active = { why = "refining", genus = "goldweed" }
+US._active = {
+    why = "refining",
+    genus = "goldweed",
+    familyKey = "goldweed|main|0",
+}
 pinTargets({
     {
         spec = { name = "Goldweed", skillLevel = 200 },
@@ -728,6 +732,145 @@ pinTargets({
     },
 })
 eq(#US.CollectBuyJobs(), 0, "refining does not re-queue L1 after the first buy wave")
+
+-- Another family at 0 credit still buys while this family is planting.
+local L1_B = 3011001
+local function fuskLadder()
+    return {
+        key = "fusk|main|0",
+        genus = "fusk",
+        role = "main",
+        rungs = {
+            rung(1, L1_B, 4011001),
+            rung(200, 3011200, 4011200),
+        },
+    }
+end
+nextFrame()
+clearBags()
+watches = {}
+bufferOn = true
+bufferMin = 5
+emptyPlots = 4
+cultSkill = 200
+credit[L1_SEED] = 3
+credit[L1_B] = 0
+headroom[L1_B] = 5
+US._active = {
+    why = "planting",
+    genus = "goldweed",
+    familyKey = "goldweed|main|0",
+    seedUid = L1_SEED,
+}
+pinTargets({
+    {
+        spec = { name = "Fusk", skillLevel = 200 },
+        needReq = 200,
+        ladder = fuskLadder(),
+        plantUid = 4011200,
+        seedUid = L1_B,
+        familyKey = "fusk|main|0",
+    },
+})
+local otherJobs = US.CollectBuyJobs()
+eq(#otherJobs >= 1, true, "family B still AutoBuys while family A is planting")
+eq(otherJobs[1] and otherJobs[1].seedUid, L1_B, "that buy is family B's basic seed")
+
+nextFrame()
+clearBags()
+emptyPlots = 0
+credit[L1_B] = 0
+headroom[L1_B] = 5
+US._active = {
+    why = "planting",
+    genus = "goldweed",
+    familyKey = "goldweed|main|0",
+    seedUid = L1_SEED,
+}
+pinTargets({
+    {
+        spec = { name = "Fusk", skillLevel = 200 },
+        needReq = 200,
+        ladder = fuskLadder(),
+        plantUid = 4011200,
+        seedUid = L1_B,
+        familyKey = "fusk|main|0",
+    },
+})
+local fullJobs = US.CollectBuyJobs()
+eq(#fullJobs >= 1, true, "family B still AutoBuys while the garden is full")
+eq(fullJobs[1] and fullJobs[1].seedUid, L1_B, "the full-garden buy is still family B's basic seed")
+
+-- Real need_buy state names the seed line. 3/5 stays normal; 0/5 turns Craft red.
+nextFrame()
+clearBags()
+watches = {}
+emptyPlots = 2
+bufferOn = true
+bufferMin = 5
+cultSkill = 200
+refinable = 0
+credit[L1_SEED] = 0
+headroom[L1_SEED] = 5
+US._active = nil
+US._stallLatch = nil
+pinTargets({
+    {
+        spec = { name = "Goldweed", skillLevel = 200 },
+        needReq = 200,
+        ladder = sparseLadder(),
+        plantUid = L200_PLANT,
+        seedUid = L1_SEED,
+        familyKey = "goldweed|main|0",
+        short = 5,
+    },
+})
+eq(US.PickPlantJob(), nil, "an empty basic seed does not plant")
+eq(type(US._active) == "table" and US._active.why, "need_buy", "empty line climb is need_buy")
+eq(type(US._active) == "table" and US._active.seedUid, L1_SEED, "need_buy records the seed line")
+StockPiler.Grow.IsSeedBufferSatisfied = function()
+    return false
+end
+load_module("Source/Macro/CraftHarvestTimer.lua")
+local Timer = StockPiler.CraftHarvestTimer
+local emptyStay = Timer.UserStayInfo()
+eq(type(emptyStay) == "table" and emptyStay.key, "need_buy", "a 0/5 line turns the Craft button red")
+
+nextFrame()
+credit[L1_SEED] = 3
+US._stallLatch = "need_vendor"
+pinTargets({
+    {
+        spec = { name = "Goldweed", skillLevel = 200 },
+        needReq = 200,
+        ladder = sparseLadder(),
+        plantUid = L200_PLANT,
+        seedUid = L1_SEED,
+        familyKey = "goldweed|main|0",
+        short = 2,
+    },
+})
+eq(US.PickPlantJob(), nil, "a partial basic seed does not plant when bags are empty")
+eq(type(US._active) == "table" and US._active.seedUid, L1_SEED, "partial need_buy still names the seed")
+eq(Timer.UserStayInfo(), nil, "a 3/5 line leaves the Craft button normal")
+
+local realShort = Timer.ShortestSeconds
+Timer.ShortestSeconds = function()
+    return 20
+end
+US._stallLatch = "need_vendor"
+US._active = {
+    why = "refining",
+    familyKey = "goldweed|main|0",
+    seedUid = L1_SEED,
+    genus = "goldweed",
+}
+credit[L1_SEED] = 0
+eq(Timer.UserStayInfo(), nil, "a grow timer keeps the Craft button normal while a buy latch is set")
+Timer.ShortestSeconds = realShort
+credit[L1_SEED] = 3
+US.MaybeNotifyStall()
+eq(US._stallLatch, nil, "the buy latch clears once the seed line has credit")
 US._active = nil
 
 if failures > 0 then

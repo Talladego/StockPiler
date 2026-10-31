@@ -1514,6 +1514,7 @@ function US.PickPlantJob()
                 needReq = needReq,
                 why = "no_family",
                 genus = SM and SM.GenusKeyFromName and SM.GenusKeyFromName(t.spec and t.spec.name),
+                seedUid = tonumber(t.seedUid) or 0,
             }
         else
             local up, ownedReq = TargetUpgradePlant(t)
@@ -1651,6 +1652,7 @@ function US.PickPlantJob()
                         needReq = needReq,
                         why = "need_buy",
                         genus = t.ladder.genus,
+                        seedUid = seedUid,
                     }
                 else
                     stallActive = stallActive or {
@@ -1677,6 +1679,7 @@ function US.PickPlantJob()
                     needReq = needReq,
                     why = "need_buy",
                     genus = t.ladder.genus,
+                    seedUid = tonumber(t.seedUid) or 0,
                 }
             end
         end
@@ -1933,13 +1936,24 @@ local function AppendL1VendorBuyJob(jobs, seenBuy, ladder, needReq, fallbackSpec
     if HaveTargetRung(ladder, buyReq + 1, 0, 0) then
         return
     end
-    -- Planting / refining already owns the L1 wave. Re-queuing buffer+empty
-    -- after each harvest left AutoBuy buying forever (9 -> plant -> 6 more...).
+    -- Same family already planting or refining, and this seed already has
+    -- credit: do not re-queue. Another family's empty line still buys, and a
+    -- first fill (credit 0) still buys even if the garden is full.
     local active = US._active
     if type(active) == "table" then
         local why = tostring(active.why or "")
-        if why == "planting" or why == "refining" or why == "climbing" then
-            return
+        if (why == "planting" or why == "refining" or why == "climbing")
+            and tostring(active.familyKey or "") ~= ""
+            and active.familyKey == ladder.key
+        then
+            local budget = US.GetSeedBudget and US.GetSeedBudget(seedUid) or nil
+            local credit = tonumber(type(budget) == "table" and budget.credit or nil)
+            if credit == nil and type(budget) == "table" then
+                credit = tonumber(budget.live) or 0
+            end
+            if credit ~= nil and credit >= 1 then
+                return
+            end
         end
     end
     if seenBuy[seedUid] == true then
@@ -2034,6 +2048,29 @@ function US.MaybeNotifyStall()
         return
     end
     local why = tostring(active.why or "")
+    -- Empty-line buy stall is over once that seed has any credit.
+    local lineCredit = nil
+    local lineSeed = tonumber(active.seedUid) or 0
+    if lineSeed > 0 and US.GetSeedBudget then
+        local budget = US.GetSeedBudget(lineSeed)
+        if type(budget) == "table" then
+            lineCredit = tonumber(budget.credit)
+            if lineCredit == nil then
+                lineCredit = tonumber(budget.live) or 0
+            end
+        end
+    end
+    if lineCredit ~= nil and lineCredit > 0 then
+        local latch = tostring(US._stallLatch or "")
+        if latch == "need_buy" or latch == "need_vendor" or latch == "autobuy_off"
+            or latch == "no_vendor_seed" or latch == "no_family"
+        then
+            US._stallLatch = nil
+        end
+        if why == "need_buy" or why == "no_family" then
+            return
+        end
+    end
     -- Progress: clear latch so a later real stall can warn once.
     if why == "planting" then
         US._stallLatch = nil

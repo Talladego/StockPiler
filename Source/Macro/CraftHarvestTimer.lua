@@ -474,19 +474,15 @@ local function HasPendingPlant()
     return false
 end
 
---- need_buy / no_family is a player stall only while that seed line is empty.
---- A partial cushion (credit > 0) is not a red wait, even in the same family.
-local function EmptySeedBuyStall(active)
+--- True only when this climb names a seed line and that line has no credit.
+--- A missing seed id is not an empty line.
+local function LineIsEmpty(active)
     if type(active) ~= "table" then
-        return false
-    end
-    local why = tostring(active.why or "")
-    if why ~= "need_buy" and why ~= "no_family" then
         return false
     end
     local seedUid = tonumber(active.seedUid) or 0
     if seedUid <= 0 then
-        return true
+        return false
     end
     local credit = nil
     local Refine = StockPiler.Refine
@@ -506,9 +502,13 @@ local function EmptySeedBuyStall(active)
         end
     end
     if credit == nil then
-        return true
+        return false
     end
     return credit <= 0
+end
+
+local function BuyLatchFromEmptyLine(reason)
+    return reason == "need_buy" or reason == "need_vendor" or reason == "autobuy_off"
 end
 
 --- Garden / buffer / buy still moving: stay icon must wait.
@@ -531,12 +531,13 @@ local function HasActiveWork()
         return true
     end
     if SeedBufferSettled() ~= true then
-        -- Empty seed line waiting on a buy is a player stall, not plant work.
-        -- A partial cushion still counts as work, so it does not turn the
-        -- Craft button red just because the family has another empty line.
+        -- An empty line waiting on a buy is a player stall, not garden work.
+        -- Anything else, including a partial cushion, stays active work.
         local US = StockPiler.UpgradeSeed
         local active = type(US) == "table" and US._active or nil
-        if EmptySeedBuyStall(active) ~= true then
+        local why = tostring(type(active) == "table" and active.why or "")
+        local emptyStall = (why == "need_buy" or why == "no_family") and LineIsEmpty(active)
+        if emptyStall ~= true then
             return true
         end
     end
@@ -580,39 +581,30 @@ end
 --- Why Craft is user-blocked (red tint). Nil when not waiting on the player.
 --- key is a USER_STALL reason; text/name are optional plan-row hints.
 function Timer.UserStayInfo()
-    -- Upgrade Seed need_buy / no_family before HasActiveWork: an empty seed
-    -- buffer is still "unsettled work" otherwise, which hid the red HUD tint
-    -- while the Watch row already said Buy seeds.
+    -- Timers, refines, and an open vendor buy stay the normal button.
+    if HasActiveWork() == true then
+        return nil
+    end
     local US = StockPiler.UpgradeSeed
     if US then
         local active = type(US._active) == "table" and US._active or nil
         local latch = tostring(US._stallLatch or "")
         if USER_STALL[latch] == true then
-            local latchActive = active
-            if latch == "need_buy" or latch == "no_family" then
-                latchActive = active or { why = latch }
-                if tostring(latchActive.why or "") ~= latch then
-                    latchActive = { why = latch, seedUid = active and active.seedUid or 0 }
-                end
-            end
-            if (latch ~= "need_buy" and latch ~= "no_family")
-                or EmptySeedBuyStall(latchActive) == true
-            then
+            if not BuyLatchFromEmptyLine(latch) or LineIsEmpty(active) then
                 return { key = latch }
             end
         end
         if active ~= nil then
             local why = tostring(active.why or "")
-            if USER_STALL[why] == true and EmptySeedBuyStall(active) == true then
+            if USER_STALL[why] == true
+                and (not BuyLatchFromEmptyLine(why) or LineIsEmpty(active))
+            then
                 return {
                     key = why,
                     name = active.genus or active.name,
                 }
             end
         end
-    end
-    if HasActiveWork() == true then
-        return nil
     end
     local SkillUp = StockPiler.SkillUp
     if SkillUp then
