@@ -992,7 +992,9 @@ end
 ----------------------------------------------------------------
 
 --- AutoGrow watches with potion deficit (target - have), largest first.
-local function CollectPlantWatchOrder(RS)
+--- opts.includeStocked: also keep a watched recipe whose deficit is already 0.
+--- Fill-all uses that so a satisfied watch can still spend spare seeds.
+local function CollectPlantWatchOrder(RS, opts)
     local list = {}
     local Watch = StockPiler.Watch
     local PS = StockPiler.PlanSnapshot
@@ -1000,11 +1002,18 @@ local function CollectPlantWatchOrder(RS)
     local planRows = type(plan) == "table" and plan.rows or nil
     local BottleGap = StockPiler.Planner and StockPiler.Planner.BottleGap
 
+    local includeStocked = type(opts) == "table" and opts.includeStocked == true
     local function push(potionKey, name, deficit, recipe, have, target, craftable, bottleGap, priorityTier)
         potionKey = tostring(potionKey or "")
         deficit = tonumber(deficit) or 0
-        if potionKey == "" or deficit <= 0 or type(recipe) ~= "table" then
+        if potionKey == "" or type(recipe) ~= "table" then
             return
+        end
+        if deficit <= 0 and includeStocked ~= true then
+            return
+        end
+        if deficit < 0 then
+            deficit = 0
         end
         if RS.ShouldAutoGrowPotion and RS.ShouldAutoGrowPotion(potionKey, nil) ~= true then
             return
@@ -1809,6 +1818,8 @@ local function SeedBufferFloor()
 end
 
 --- True only for this seed's buffer line. A different short line does not block it.
+--- Refine.GetSeedBudget headroom is max(0, buffer - credit): seeds still missing
+--- before the line reaches the buffer. headroom > 0 means this line is short.
 local function BufferLineShort(seedUid)
     local floor = SeedBufferFloor()
     if floor <= 0 then
@@ -2200,31 +2211,43 @@ local function PickEstimateBackfillCandidate(SM, RS, watches)
 end
 
 --- After measured backfill: keep planting spare bag seeds for watched recipes
---- until every free plot is full. Weights are each recipe's plant need, spread
---- by smooth weighted round-robin. The cursor is not demand and not a buy.
---- craftsShort stays 0 so this job cannot be read as something to purchase.
+--- until every free plot is full. Optimistic stays on (BackfillStageOpen).
+--- A measured loss is not required. Need only steers the spread; a satisfied
+--- watch (need 0) still gets weight 1. One plot per job so the round-robin
+--- actually alternates. craftsShort stays 0 so this is not a buy.
 local function PickFillAllCandidate(SM, RS, watches)
     if BackfillStageOpen() ~= true or type(RS) ~= "table" or type(SM) ~= "table" then
         return nil
     end
-    local plants = AggregateBackfillPlants(SM, RS, watches)
+    -- Demand is still cold: lift has not run. Do not spend the plots first.
+    if Grow._plantDemandCold == true then
+        return nil
+    end
+    -- Include satisfied watches. The passed list is the deficit-only order.
+    if type(watches) ~= "table" then
+        watches = nil
+    end
+    local fillWatches = CollectPlantWatchOrder(RS, { includeStocked = true })
+    if type(fillWatches) ~= "table" or #fillWatches < 1 then
+        fillWatches = watches
+    end
+    local plants = AggregateBackfillPlants(SM, RS, fillWatches)
     local active, parts = {}, {}
     for i = 1, #plants do
         local row = plants[i]
-        if RowHasMeasuredLoss(row) then
-            local weight = tonumber(row.need) or 0
-            if weight >= 1 then
-                local seedUid, spare = ChooseBackfillSeed(row.seedUids, true)
-                if spare >= 1 then
-                    active[#active + 1] = {
-                        row = row,
-                        seedUid = seedUid,
-                        spare = spare,
-                        weight = weight,
-                    }
-                    parts[#parts + 1] = tostring(seedUid) .. ":" .. tostring(weight)
-                end
-            end
+        local weight = tonumber(row.need) or 0
+        if weight < 1 then
+            weight = 1
+        end
+        local seedUid, spare = ChooseBackfillSeed(row.seedUids, true)
+        if spare >= 1 then
+            active[#active + 1] = {
+                row = row,
+                seedUid = seedUid,
+                spare = spare,
+                weight = weight,
+            }
+            parts[#parts + 1] = tostring(seedUid) .. ":" .. tostring(weight)
         end
     end
     if #active < 1 then
@@ -2272,7 +2295,9 @@ local function PickFillAllCandidate(SM, RS, watches)
         seedUid = seedUid,
         plantUid = tonumber(row.plantUid) or 0,
         seedHave = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid)),
-        plantable = best.spare,
+        -- One plot. IssuePlantOne plants a single seed; a larger plantable
+        -- would let one seed take every remaining plot before the cursor moves.
+        plantable = 1,
         deficit = best.weight,
         craftsShort = 0,
         role = SpecRole(row.spec),

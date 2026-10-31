@@ -185,10 +185,40 @@ StockPiler.UpgradeSeed = {
     end,
     FreshTargetsPending = function() return false end,
 }
+local function groundPlots(uid)
+    local n = 0
+    uid = tonumber(uid) or 0
+    for i = 1, #plots do
+        local row = plots[i]
+        if type(row) == "table" and (tonumber(row.seedUid) or 0) == uid and row.stage ~= 0 then
+            n = n + 1
+        end
+    end
+    return n
+end
+
 StockPiler.Refine = {
     HasAnyBufferShort = function() return false end,
     HasPendingBufferRefine = function() return false end,
     PeekFreshBufferPending = function() return false end,
+    -- Same meaning as Refine.GetSeedBudget: headroom is seeds still missing.
+    GetSeedBudget = function(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        local live = tonumber(seeds[seedUid]) or 0
+        local ground = groundPlots(seedUid)
+        local floor = 0
+        if bufferOn == true then
+            floor = tonumber(bufferMin) or 5
+        end
+        local credit = live + ground
+        return {
+            live = live,
+            ground = ground,
+            credit = credit,
+            bufferMin = floor,
+            headroom = math.max(0, floor - credit),
+        }
+    end,
 }
 StockPiler.SkillUp = {
     ShouldCultPlant = function()
@@ -339,35 +369,52 @@ local function plantAll(limit)
     return jobs
 end
 
--- 4 free plots, measured need 1: the short plot is backfill, the rest are fill-all.
-outcomeRate = 0.5
+-- Perfect brew rate, no harvest samples, Optimistic on. Need 1 still fills 4 plots.
+outcomeRate = 1
 harvestRate = nil
 bufferOn = true
 bufferMin = 5
 optimisticOn = true
 skillOn = false
 upgradeEnabled = false
-seeds[SEED_A] = 12
+seeds[SEED_A] = 9
 seeds[SEED_B] = 0
-plantBags[PLANT_A] = 1
+plantBags[PLANT_A] = 0
 plantBags[PLANT_B] = 0
 variants[PLANT_A] = { SEED_A }
 variants[PLANT_B] = { SEED_B }
 rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 1, 0) }
+rows[1].buyQty = 4
 setPlots(4, 0, 0)
 resetCursor()
 buyCalls = 0
+local function planBuyQty()
+    local n = buyCalls
+    for i = 1, #rows do
+        local row = rows[i]
+        n = n + (tonumber(row.potionDeficit) or 0)
+        n = n + (tonumber(row.bottleGap) or 0)
+        n = n + (tonumber(row.buyQty) or 0)
+    end
+    return n
+end
+local buyBefore = planBuyQty()
 local filled = plantAll(6)
 eq(#filled, 4, "4 free plots with need 1 fills all 4")
-eq(filled[1] and filled[1].plantReason, "estimate_backfill", "the one short plot is measured backfill")
-eq(filled[2] and filled[2].plantReason, "fill_all", "the second plot is fill-all")
-eq(filled[3] and filled[3].plantReason, "fill_all", "the third plot is fill-all")
-eq(filled[4] and filled[4].plantReason, "fill_all", "the fourth plot is fill-all")
-eq(filled[1] and filled[1].seedUid, SEED_A, "need 1 plants the watched seed")
-eq(tonumber(filled[2] and filled[2].craftsShort), 0, "fill-all is not a buy quantity")
-eq(seeds[SEED_A], 8, "four bag seeds were planted")
-check((tonumber(seeds[SEED_A]) or 0) >= bufferMin, "planting stopped above the seed buffer")
+for i = 1, #filled do
+    eq(filled[i] and filled[i].plantReason, "fill_all", "plot " .. tostring(i) .. " is fill-all with no measured loss")
+    eq(filled[i] and filled[i].seedUid, SEED_A, "plot " .. tostring(i) .. " uses the watched seed")
+    eq(filled[i] and filled[i].plantable, 1, "plot " .. tostring(i) .. " plants one seed")
+    eq(tonumber(filled[i] and filled[i].craftsShort), 0, "plot " .. tostring(i) .. " is not a buy quantity")
+end
+eq(seeds[SEED_A], bufferMin, "four plots stop at the seed buffer")
+check((tonumber(seeds[SEED_A]) or 0) >= bufferMin, "bag count never drops below the buffer")
 eq(buyCalls, 0, "fill-all does not call AutoBuy")
+eq(planBuyQty(), buyBefore, "filling plots does not change the plan or buy quantity")
+local again = Grow.PickPlantCandidate()
+eq(again, nil, "a full garden does not ask for another seed")
+eq(planBuyQty(), buyBefore, "a second pick after the fill leaves plan and buy unchanged")
+eq(rows[1].buyQty, 4, "the plan buy quantity field is untouched")
 
 -- Fill-all wins over SkillUp while spare seeds remain, and does not dip the buffer.
 skillOn = false
@@ -496,27 +543,34 @@ rows = {
 }
 setPlots(4, 0, 0)
 resetCursor()
+local shortBefore = seeds[SEED_A]
 local lineJobs = plantAll(6)
 eq(#lineJobs, 4, "the other buffer line still fills free plots")
 local onlyB = true
 for i = 1, #lineJobs do
-    if lineJobs[i].seedUid ~= SEED_B then
+    if lineJobs[i].seedUid ~= SEED_B or lineJobs[i].plantable ~= 1 then
         onlyB = false
     end
 end
 check(onlyB == true, "a short buffer line is not planted")
+eq(seeds[SEED_A], shortBefore, "the short line's bag count is unchanged")
+check((tonumber(seeds[SEED_B]) or 0) >= bufferMin, "the filled line stays at or above its buffer")
+local budgetA = StockPiler.Refine.GetSeedBudget(SEED_A)
+local budgetB = StockPiler.Refine.GetSeedBudget(SEED_B)
+check((tonumber(budgetA and budgetA.headroom) or 0) > 0, "headroom > 0 means that line is still short")
+check((tonumber(budgetB and budgetB.headroom) or 0) == 0, "the planted line is not short")
 
--- Spread by need: weights 3 and 1 across 4 plots, not a dump into one seed.
+-- Spread by need: weight 3 and a satisfied watch (need 0, floor weight 1).
 outcomeRate = nil
-harvestRate = 0.5
+harvestRate = nil
 bufferOn = false
 seeds[SEED_A] = 10
 seeds[SEED_B] = 10
 plantBags[PLANT_A] = 3
-plantBags[PLANT_B] = 1
+plantBags[PLANT_B] = 8
 rows = {
     potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 3, 0),
-    potionRow("potion:b", "Beta", PLANT_B, SEED_B, 1, 0),
+    potionRow("potion:b", "Beta", PLANT_B, SEED_B, 0, 0),
 }
 setPlots(4, 0, 0)
 resetCursor()
@@ -526,6 +580,8 @@ eq(spread[1] and spread[1].seedUid, SEED_A, "spread pick 1 follows the heavier n
 eq(spread[2] and spread[2].seedUid, SEED_A, "spread pick 2 follows the heavier need")
 eq(spread[3] and spread[3].seedUid, SEED_B, "spread pick 3 includes the lighter need")
 eq(spread[4] and spread[4].seedUid, SEED_A, "spread pick 4 returns to the heavier need")
+eq(spread[1] and spread[1].plantable, 1, "spread plants one plot per job")
+eq(spread[3] and spread[3].plantable, 1, "the satisfied watch still gets one plot")
 
 -- The same fill-all decision is cached until the queue is invalidated.
 setPlots(4, 0, 0)
