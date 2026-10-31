@@ -4,7 +4,7 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 ## 1.1.6
 
-- AutoGrow no longer throws an error once a seed has a measured harvest success rate.
+- Fixed an error that could stop AutoGrow after your harvests were tracked.
 - A watched potion with an empty seed line now upgrades or buys the basic seed instead of waiting on Seed buffer.
 
 ## 1.1.5
