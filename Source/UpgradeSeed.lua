@@ -2193,9 +2193,19 @@ BestOwnedReqOnLadder = function(ladder, climbCap, opts)
         local plants = SM.BagPlantsForGenus(genus)
         if type(plants) == "table" then
             for i = 1, #plants do
-                local req = tonumber(plants[i] and plants[i].req) or 0
-                if req >= 1 and req <= climbCap and req > best then
-                    best = req
+                local row = plants[i]
+                local req = tonumber(row and row.req) or 0
+                local plantUid = tonumber(row and row.uid) or 0
+                if req >= 1 and req <= climbCap and req > best and plantUid > 0
+                    and SM.GetSeedUidsForPlant
+                then
+                    -- Same rule as the upgrade-plant scan: a bag plant with no
+                    -- resolvable seed must not raise the owned tier.
+                    local seeds = SM.GetSeedUidsForPlant(plantUid)
+                    local seedUid = type(seeds) == "table" and (tonumber(seeds[1]) or 0) or 0
+                    if seedUid > 0 then
+                        best = req
+                    end
                 end
             end
         end

@@ -156,6 +156,30 @@ snap = 2
 SM.BestUpgradePlantOnLadder(ladder, 200, 25, {})
 eq(SM._bagPlantScanCount, 2, "a new inventory generation scans once")
 
+bag[#bag + 1] = {
+    uniqueID = 900001,
+    name = "Lost Marsh Root",
+    craftingSkillRequirement = 100,
+    isRefinable = true,
+    count = 2,
+}
+snap = 3
+eq(US.BestOwnedReqOnLadder(ladder, 200), 50,
+    "a same-family bag plant with no seed does not raise the owned tier")
+
+bag = {
+    {
+        uniqueID = 900001,
+        name = "Lost Marsh Root",
+        craftingSkillRequirement = 100,
+        isRefinable = true,
+        count = 2,
+    },
+}
+snap = 4
+eq(US.BestOwnedReqOnLadder(ladder, 200), 0,
+    "only an unlinked bag plant does not count as an owned tier")
+
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))
     os.exit(1)
