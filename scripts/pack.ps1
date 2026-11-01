@@ -34,6 +34,7 @@ $readme = Join-Path $root "README.md"
 if (Test-Path -LiteralPath $readme) {
     Copy-Item -LiteralPath $readme -Destination (Join-Path $stageAddon "README.md")
 }
+# Dev tooling under scripts/ (including gen_waremu_plant_seeds.py) is not copied.
 Copy-Item -LiteralPath (Join-Path $root "Source") -Destination (Join-Path $stageAddon "Source") -Recurse
 
 New-Item -ItemType Directory -Path $outAbs -Force | Out-Null

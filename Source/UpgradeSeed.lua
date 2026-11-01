@@ -721,6 +721,7 @@ HaveTargetRung = function(ladder, needReq, plantUid, seedUid, opts)
     -- for plant-only arrive, same orphan rule).
     return rungArrived(seedUid, plantUid)
 end
+US.HaveTargetRung = HaveTargetRung
 
 --- Plant-watch climb descriptor (stock N vs Cult-max existence).
 --- pending = climb not finished; eligible = stocked, mid-climb, or arrive needed.
@@ -2184,8 +2185,24 @@ BestOwnedReqOnLadder = function(ladder, climbCap, opts)
             end
         end
     end
+    -- Same-genus bag plants count before the ladder lists their rung
+    -- (Cross in bags while the known ladder still ends at Fretting).
+    local genus = string.lower(tostring(ladder.genus or ""))
+    local SM = StockPiler.SeedMap
+    if genus ~= "" and SM and SM.BagPlantsForGenus then
+        local plants = SM.BagPlantsForGenus(genus)
+        if type(plants) == "table" then
+            for i = 1, #plants do
+                local req = tonumber(plants[i] and plants[i].req) or 0
+                if req >= 1 and req <= climbCap and req > best then
+                    best = req
+                end
+            end
+        end
+    end
     return best
 end
+US.BestOwnedReqOnLadder = BestOwnedReqOnLadder
 
 local function RebuildWatchStatusCache()
     local frame = tonumber(StockPiler.FrameCounter) or 0

@@ -48,6 +48,7 @@
             <File name="Source/Stores/WatchStore.lua" />
             <File name="Source/Stores/InventoryStore.lua" />
             <File name="Source/Knowledge/BrewLearn.lua" />
+            <File name="Source/Knowledge/WaremuPlantSeeds.lua" />
             <File name="Source/Knowledge/SeedMap.lua" />
             <File name="Source/Knowledge/Additives.lua" />
             <File name="Source/Knowledge/LearnBridge.lua" />
