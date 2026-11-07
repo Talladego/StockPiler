@@ -111,6 +111,9 @@ local function NormalizeGrowName(nameNarrow)
     s = string.gsub(s, "%s+", " ")
     s = string.gsub(s, "^%s+", "")
     s = string.gsub(s, "%s+$", "")
+    -- Plants are "Marsh Root"; seeds are "Marshroot". Collapse both spellings
+    -- so saved names and new chat lines resolve to the same key.
+    s = string.gsub(s, "marsh root", "marshroot")
     return s
 end
 
@@ -796,6 +799,12 @@ function SM.GetSeedUidsForPlant(plantUid)
     if type(entry) == "table" then
         -- Keep a recorded primary seed even when its sample row is still empty.
         addSeed(entry.seedUid)
+    end
+    -- Catalog fallback after live harvest/refine links. addSeed keeps the
+    -- observed seed first when both exist.
+    local W = StockPiler.WaremuPlantSeeds
+    if W and W.SeedUidForPlant then
+        addSeed(W.SeedUidForPlant(plantUid))
     end
     SM._seedUidsForPlant[plantUid] = out
     return CopyUidList(out)
@@ -3909,6 +3918,66 @@ function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
     return best
 end
 
+--- One bag walk per inventory generation. Hot paths (status, climb picks)
+--- reuse the genus lists instead of scanning again.
+local function EnsureBagPlantIndex()
+    local Inv = StockPiler.Inventory
+    local snap = 0
+    if Inv and Inv.GetSnapGen then
+        snap = tonumber(Inv.GetSnapGen()) or 0
+    end
+    if SM._bagPlantSnap == snap and type(SM._bagPlantsByGenus) == "table" then
+        return
+    end
+    local byGenus = {}
+    SM._bagPlantScanCount = (tonumber(SM._bagPlantScanCount) or 0) + 1
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            if SM.ItemLooksLikeRefinablePlant(item) ~= true and item.isRefinable ~= true then
+                return
+            end
+            local genus = SM.GenusKeyFromName(item.name)
+            if genus == "" then
+                return
+            end
+            local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+            if uid <= 0 then
+                return
+            end
+            local req = ItemSkillReq(item)
+            local list = byGenus[genus]
+            if list == nil then
+                list = {}
+                byGenus[genus] = list
+            end
+            list[#list + 1] = {
+                uid = uid,
+                req = req,
+                name = item.name,
+            }
+        end)
+    end
+    SM._bagPlantsByGenus = byGenus
+    SM._bagPlantSnap = snap
+end
+
+--- Refinable bag plants of this genus from the current inventory snapshot.
+function SM.BagPlantsForGenus(genus)
+    genus = string.lower(tostring(genus or ""))
+    if genus == "" then
+        return {}
+    end
+    EnsureBagPlantIndex()
+    local list = SM._bagPlantsByGenus and SM._bagPlantsByGenus[genus]
+    if type(list) ~= "table" then
+        return {}
+    end
+    return list
+end
+
 --- Refinable plant on the ladder with skillReq > ownedSeedReq and <= climbCap.
 function SM.BestUpgradePlantOnLadder(ladder, climbCap, ownedSeedReq, opts)
     opts = type(opts) == "table" and opts or {}
@@ -3947,6 +4016,45 @@ function SM.BestUpgradePlantOnLadder(ladder, climbCap, ownedSeedReq, opts)
                     best = {
                         seedUid = seedUid,
                         plantUid = plantUid,
+                        skillReq = req,
+                        refinable = refinable,
+                        familyKey = ladder.key,
+                        genus = ladder.genus,
+                        role = ladder.role,
+                        upgrade = true,
+                    }
+                end
+            end
+        end
+    end
+    -- Higher plants may sit in bags before a rung lists them (Cross while the
+    -- ladder still ends at Fretting). The genus list is one shared bag walk.
+    local genus = string.lower(tostring(ladder.genus or ""))
+    local plants = SM.BagPlantsForGenus(genus)
+    for i = 1, #plants do
+        local row = plants[i]
+        local req = tonumber(row.req) or 0
+        local pUid = tonumber(row.uid) or 0
+        if pUid > 0 and req >= 1 and req > ownedSeedReq and req <= climbCap and req > bestReq then
+            local skip = false
+            if opts.mainsOnly == true then
+                local role = tostring(ladder.role or "")
+                if role ~= "" and role ~= "main" and role ~= "unknown" then
+                    skip = true
+                end
+            end
+            if skip ~= true and Refine and Refine.CountRefinablePlants then
+                local spec = Items and Items.ToSpec and Items.ToSpec(pUid) or nil
+                local refinable = tonumber(Refine.CountRefinablePlants(pUid, spec)) or 0
+                if refinable >= 1 then
+                    local seedUid = 0
+                    if SM.ResolveSeedUidForPlant then
+                        seedUid = tonumber(SM.ResolveSeedUidForPlant(pUid, spec)) or 0
+                    end
+                    bestReq = req
+                    best = {
+                        seedUid = seedUid,
+                        plantUid = pUid,
                         skillReq = req,
                         refinable = refinable,
                         familyKey = ladder.key,

@@ -2,6 +2,15 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.6
+
+- Fixed an error that could stop AutoGrow after your harvests were tracked.
+- A watched potion with an empty seed line now upgrades or buys the basic seed instead of waiting, and shows red Buy seeds until it can plant.
+- Upgrade Seeds no longer keeps buying the basic seed after every harvest. It buys enough to start, then only tops up your spare seeds when the garden is idle.
+- Plants whose seed name differs slightly, such as Fretting Marsh Root, now link to their seeds.
+- Upgrade Seeds now uses higher Marshroot plants already in your bags instead of replanting the lower one.
+- Special Moment messages now name the higher Marshroot plant.
+
 ## 1.1.5
 
 - The garden now fills all free plots with spare seeds for your watched potions.

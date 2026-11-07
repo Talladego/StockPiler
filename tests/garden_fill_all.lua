@@ -67,6 +67,7 @@ local plots = {}
 local rows = {}
 local outcomeRate = 0.5
 local harvestRate = nil
+local harvestSuccesses = 40
 local bufferOn = false
 local bufferMin = 5
 local optimisticOn = true
@@ -315,7 +316,13 @@ StockPiler.SeedMap = {
         return {}
     end,
     HarvestSuccessRate = function()
-        return harvestRate
+        -- Match SeedMap: rate, successes, attempts, fails. tonumber(f()) must
+        -- not treat successes as a tonumber base.
+        if harvestRate == nil then
+            return nil
+        end
+        local successes = tonumber(harvestSuccesses) or 40
+        return harvestRate, successes, successes + 10, 10
     end,
 }
 StockPiler.Garden = {
@@ -815,6 +822,32 @@ setPlots(1, 0, 0)
 resetCursor()
 eq(Grow.PickPlantCandidate(), nil, "no free seeds does not backfill")
 eq(specScans, 0, "no free seeds skips the bag plant count")
+
+-- Multi-return HarvestSuccessRate must not blow tonumber(base).
+-- successes < 2 or > 36 throws "base out of range"; 2..36 (except 10) makes
+-- tonumber return nil, so the rate must still inflate the plot count.
+local function assertHarvestSuccesses(successes)
+    harvestSuccesses = successes
+    harvestRate = 0.8
+    outcomeRate = nil
+    bufferOn = false
+    seeds[SEED_A] = 20
+    plantBags[PLANT_A] = 0
+    rows = { potionRow("potion:a", "Alpha", PLANT_A, SEED_A, 10, 0) }
+    setPlots(4, 0, 0)
+    resetCursor()
+    local okRate, jobRate = pcall(Grow.PickPlantCandidate)
+    check(okRate == true, "harvest successes=" .. tostring(successes) .. " does not throw")
+    eq(type(jobRate) == "table" and jobRate.plantReason, "estimate_backfill",
+        "harvest successes=" .. tostring(successes) .. " still backfills")
+    eq(type(jobRate) == "table" and jobRate.deficit, 13,
+        "harvest successes=" .. tostring(successes) .. " still applies rate 0.8")
+end
+assertHarvestSuccesses(1)
+assertHarvestSuccesses(16)
+assertHarvestSuccesses(40)
+harvestRate = nil
+harvestSuccesses = 40
 
 if failures > 0 then
     io.stderr:write(string.format("%d/%d checks failed\n", failures, checks))

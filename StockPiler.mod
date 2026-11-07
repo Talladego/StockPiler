@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler" version="1.1.5" date="2026-10-30">
+    <UiMod name="StockPiler" version="1.1.6" date="2026-10-31">
         <Author name="Talladego" email="" />
         <Description text="Stock potions and plants. Grow, buy, and brew toward the amounts you set." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -48,6 +48,7 @@
             <File name="Source/Stores/WatchStore.lua" />
             <File name="Source/Stores/InventoryStore.lua" />
             <File name="Source/Knowledge/BrewLearn.lua" />
+            <File name="Source/Knowledge/WaremuPlantSeeds.lua" />
             <File name="Source/Knowledge/SeedMap.lua" />
             <File name="Source/Knowledge/Additives.lua" />
             <File name="Source/Knowledge/LearnBridge.lua" />
