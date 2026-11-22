@@ -98,7 +98,14 @@ local function CompareRows(a, b, column, ascending)
         end
         return not less
     end
-    if column == "level" then
+    if column == "name" then
+        local na = string.lower(ToNarrow(a.name))
+        local nb = string.lower(ToNarrow(b.name))
+        if na == nb then
+            return CompareName(a, b)
+        end
+        return finish(na < nb)
+    elseif column == "level" then
         if (a.levelNum or 0) == (b.levelNum or 0) then
             return CompareName(a, b)
         end

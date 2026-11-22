@@ -2,6 +2,15 @@
 
 Newest sections first. The release workflow reads the `## X.Y.Z` section for the version it packs and refuses to publish when that section is missing.
 
+## 1.1.7
+
+- Sorting plants by name from Z to A now reverses the list.
+- The Craft button no longer asks you to step in while a plant is still being refined.
+- After you brew, the Craftable count drops by the number of potions the recipe makes.
+- If the vendor refuses one item, AutoBuy carries on with the rest and retries that item shortly after.
+- Bug fixes.
+- Performance improvements.
+
 ## 1.1.6
 
 - Fixed an error that could stop AutoGrow after your harvests were tracked.

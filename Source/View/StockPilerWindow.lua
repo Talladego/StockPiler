@@ -675,8 +675,8 @@ function StockPilerWindow.FlushOpenPaint()
         if not WatchHasContent() then
             StockPilerWindow._openPaintPending = false
         else
-            -- Plan not built yet; do not burn the attempt budget.
-            StockPilerWindow._openPaintAttempts = attempts - 1
+            -- Count the attempt. BeginOpenPaint is the only reset, so a list
+            -- that never appears cannot kick every frame.
             StockPilerWindow._openPaintNeedKick = true
         end
         return

@@ -1709,6 +1709,16 @@ function Refine.IssueOne(intent, opId)
     if SM and SM.BeginPendingRefine then
         SM.BeginPendingRefine(item)
     end
+    -- Baseline before SendUseItem. A count taken after the call already
+    -- includes seeds the refine just created. A refused send restores it.
+    local trackedSeed = seedUid
+    local hadBaseline = false
+    local previousBaseline = nil
+    if trackedSeed > 0 then
+        hadBaseline = Refine._liveSeedBaseline[trackedSeed] ~= nil
+        previousBaseline = Refine._liveSeedBaseline[trackedSeed]
+        Refine.TrackLiveSeed(trackedSeed)
+    end
 
     local issueFrame = tonumber(StockPiler.FrameCounter) or 0
     Refine._engineIssueFrame = issueFrame
@@ -1731,10 +1741,16 @@ function Refine.IssueOne(intent, opId)
         end
     end
     if sent <= 0 then
+        if trackedSeed > 0 then
+            if hadBaseline then
+                Refine._liveSeedBaseline[trackedSeed] = previousBaseline
+            else
+                Refine._liveSeedBaseline[trackedSeed] = nil
+            end
+        end
         return done(false)
     end
 
-    Refine.TrackLiveSeed(seedUid)
     Refine._pendingByPlant[plantUid] = pending + sent
     if plantUid > 0 and seedUid > 0 then
         Refine._pendingSeedByPlant[plantUid] = seedUid
