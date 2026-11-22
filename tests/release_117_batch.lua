@@ -505,7 +505,7 @@ StockPiler.ApothecaryAdapter = {
 }
 brew_session({ skillUp = true, craftable = 9, recipeYield = 3 })
 Brew.RefreshSessionAfterBrew()
-eq(seenCraftable, 6, "a practice brew subtracts the recipe yield")
+eq(seenCraftable, 8, "a practice brew subtracts one craft, not the bottle yield")
 
 ----------------------------------------------------------------
 -- Watch open paint: a failing flush stops after the attempt cap.

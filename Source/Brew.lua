@@ -2921,7 +2921,8 @@ function Brew.RefreshSessionAfterBrew()
     if session.skillUp == true then
         Brew._brewHaveBefore = nil
         if session.craftable ~= nil then
-            session.craftable = math.max(0, (tonumber(session.craftable) or 0) - OneBrewYield(session))
+            -- Practice craftable is a craft count, not bottles, so one brew is 1.
+            session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
         end
         local stillValid = Brew.ValidateApothecaryPerform() == true
         local craftLeft = tonumber(session.craftable) or 0
