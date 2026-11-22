@@ -6,13 +6,10 @@ Newest sections first. The release workflow reads the `## X.Y.Z` section for the
 
 - Sorting plants by name from Z to A now reverses the list.
 - The Craft button no longer asks you to step in while a plant is still being refined.
-- AutoBuy coin amounts in chat no longer cause an error.
-- A purchase line still appears when the item name cannot be linked.
-- After you brew, the Craftable count drops by how many potions that recipe makes.
-- The Watch list stops redrawing itself when it cannot finish painting.
-- Other hotbar buttons no longer slow the Craft macro.
-- If the vendor refuses one item, AutoBuy continues with the rest and tries that item again a moment later.
-- Refining counts new seeds from how many you had before the refine, so seeds that arrive immediately are not missed.
+- After you brew, the Craftable count drops by the number of potions the recipe makes.
+- If the vendor refuses one item, AutoBuy carries on with the rest and retries that item shortly after.
+- Bug fixes.
+- Performance improvements.
 
 ## 1.1.6
 
