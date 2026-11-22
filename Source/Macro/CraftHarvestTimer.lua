@@ -523,8 +523,8 @@ local function HasActiveWork()
     if Grow and Grow.IsHarvestOpActive and Grow.IsHarvestOpActive() == true then
         return true
     end
-    local Refine = StockPiler.Refine
-    if Refine and Refine.HasOutstanding and Refine.HasOutstanding() == true then
+    local RP = StockPiler.RefinePipeline
+    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
         return true
     end
     if HasPendingPlant() then
@@ -962,14 +962,18 @@ local function VerifiedCraftMacroId()
     return 0
 end
 
-local function ButtonIsVerifiedCraft(self, craftId)
-    craftId = tonumber(craftId) or 0
-    if craftId <= 0 or type(self) ~= "table" then
+local function ButtonIsVerifiedCraft(self)
+    if type(self) ~= "table" then
         return false
     end
     local actions = GameData and GameData.PlayerActions
     local doMacro = actions and actions.DO_MACRO
+    -- Non-macro slots do not need the macro walk. Macro slots still re-check.
     if doMacro == nil or self.m_ActionType ~= doMacro then
+        return false
+    end
+    local craftId = VerifiedCraftMacroId()
+    if craftId <= 0 then
         return false
     end
     return tonumber(self.m_ActionId) == craftId
@@ -995,7 +999,7 @@ local function installCooldownHook()
             return
         end
         local self = ...
-        if Timer._cdArmed == true and ButtonIsVerifiedCraft(self, VerifiedCraftMacroId()) then
+        if Timer._cdArmed == true and ButtonIsVerifiedCraft(self) then
             local remain = tonumber(Timer._cdRemain)
             if remain ~= nil and remain > 0 then
                 local cd = CooldownFrame(self)
@@ -1231,7 +1235,7 @@ function Timer.Install()
                 end
             end
         end
-        if not ButtonIsVerifiedCraft(self, VerifiedCraftMacroId()) then
+        if not ButtonIsVerifiedCraft(self) then
             maybeRestoreFitted()
             return
         end

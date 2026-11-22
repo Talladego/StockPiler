@@ -2897,6 +2897,15 @@ local function SyncWatchLiveCountsAfterBrew()
     end
 end
 
+--- Bottles one craft consumes. Unknown or non-positive yield counts as one.
+local function OneBrewYield(session)
+    local yield = math.floor((tonumber(session and session.recipeYield) or 0) + 1e-9)
+    if yield < 1 then
+        yield = 1
+    end
+    return yield
+end
+
 --- After a brew completes: sync live stock; unload when target met or no longer Ready.
 function Brew.RefreshSessionAfterBrew()
     local session = GetSession()
@@ -2912,7 +2921,7 @@ function Brew.RefreshSessionAfterBrew()
     if session.skillUp == true then
         Brew._brewHaveBefore = nil
         if session.craftable ~= nil then
-            session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
+            session.craftable = math.max(0, (tonumber(session.craftable) or 0) - OneBrewYield(session))
         end
         local stillValid = Brew.ValidateApothecaryPerform() == true
         local craftLeft = tonumber(session.craftable) or 0
@@ -2943,7 +2952,7 @@ function Brew.RefreshSessionAfterBrew()
     end
     Brew._brewHaveBefore = nil
     if session.craftable ~= nil then
-        session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
+        session.craftable = math.max(0, (tonumber(session.craftable) or 0) - OneBrewYield(session))
     end
     -- Live-patch Watch rows (stock/status/craftable) before unload gate.
     SyncWatchLiveCountsAfterBrew()

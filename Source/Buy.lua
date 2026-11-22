@@ -594,7 +594,7 @@ end
 
 --- Brass -> backpack-style money string. Prefers MoneyFrame coin icons (gold /
 --- silver / brass) for chat and tips; falls back to compact "Ng Ns Nb" text.
---- Returns a wstring when icons are used, otherwise a narrow string.
+--- Always a wstring so callers can concatenate it with L"...".
 function Buy.FormatMoneyBrass(brass)
     brass = math.max(0, math.floor((tonumber(brass) or 0) + 1e-9))
     if MoneyFrame and MoneyFrame.FormatMoneyString then
@@ -609,25 +609,27 @@ function Buy.FormatMoneyBrass(brass)
     local rem = brass - (g * perGold)
     local s = math.floor(rem / perSilver)
     local b = rem - (s * perSilver)
+    local text
     if g > 0 then
         if s > 0 and b > 0 then
-            return string.format("%dg %ds %db", g, s, b)
+            text = string.format("%dg %ds %db", g, s, b)
+        elseif s > 0 then
+            text = string.format("%dg %ds", g, s)
+        elseif b > 0 then
+            text = string.format("%dg %db", g, b)
+        else
+            text = string.format("%dg", g)
         end
-        if s > 0 then
-            return string.format("%dg %ds", g, s)
-        end
+    elseif s > 0 then
         if b > 0 then
-            return string.format("%dg %db", g, b)
+            text = string.format("%ds %db", s, b)
+        else
+            text = string.format("%ds", s)
         end
-        return string.format("%dg", g)
+    else
+        text = string.format("%db", b)
     end
-    if s > 0 then
-        if b > 0 then
-            return string.format("%ds %db", s, b)
-        end
-        return string.format("%ds", s)
-    end
-    return string.format("%db", b)
+    return towstring(text)
 end
 
 --- Whole-gold amount (Reserve / Budget caps) as icon money.
@@ -662,7 +664,7 @@ local function ChatMaterialFill(uid, name, count, spentBrass)
             name,
             " (spent " .. tostring(spentNarrow) .. ")"
         )
-    elseif CC and CC.Print then
+    elseif CC and CC.PrintParts then
         CC.PrintParts(
             L"AutoBuy: " .. towstring(tostring(count)) .. L"x "
                 .. towstring(tostring(name or "?"))
@@ -2487,49 +2489,56 @@ function Buy.IssueOne(opId)
                                     qty,
                                     tostring(err)
                                 ))
-                                return done(false)
-                            end
-                            -- No open late stash for this uid (blocked above); clear any stale.
-                            ClearLateAttemptsForUid(uid)
-                            -- Broadcast only - confirm on money/bag movement next tick.
-                            Buy._issueSeq = (tonumber(Buy._issueSeq) or 0) + 1
-                            Buy._pendingBuy = {
-                                beforeMoney = beforeMoney,
-                                bagBefore = bagBefore,
-                                unitCost = unitCost,
-                                costTotal = costTotal,
-                                qty = qty,
-                                key = key,
-                                uid = uid,
-                                name = item.name or job.name,
-                                at = NowSec(),
-                                job = job,
-                                item = item,
-                                remainingWas = remaining,
-                                foreignSpend = 0,
-                                issueSeq = Buy._issueSeq,
-                            }
-                            LogBuy(string.format(
-                                "buy-pending uid=%s slot=%d qty=%d cost=%d before=%d opId=%s",
-                                tostring(uid),
-                                slotNum,
-                                qty,
-                                costTotal,
-                                beforeMoney,
-                                tostring(opId or "?")
-                            ))
-                            if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
-                                StockPiler.Scheduler.WakeAutoBuy()
-                            end
-                            -- Same-frame confirm if money already moved.
-                            local immediate = ResolvePendingBuy()
-                            if immediate == "confirmed" then
+                                -- This uid waits; the rest of the queue still buys.
+                                ArmNoSpendCooldown(uid)
+                                cooldownBlocked = true
+                                local failUntil = tonumber(Buy._noSpendCooldownUntil[uid]) or 0
+                                if failUntil > nowJobs and (resumeAt == nil or failUntil < resumeAt) then
+                                    resumeAt = failUntil
+                                end
+                            else
+                                -- No open late stash for this uid (blocked above); clear any stale.
+                                ClearLateAttemptsForUid(uid)
+                                -- Broadcast only - confirm on money/bag movement next tick.
+                                Buy._issueSeq = (tonumber(Buy._issueSeq) or 0) + 1
+                                Buy._pendingBuy = {
+                                    beforeMoney = beforeMoney,
+                                    bagBefore = bagBefore,
+                                    unitCost = unitCost,
+                                    costTotal = costTotal,
+                                    qty = qty,
+                                    key = key,
+                                    uid = uid,
+                                    name = item.name or job.name,
+                                    at = NowSec(),
+                                    job = job,
+                                    item = item,
+                                    remainingWas = remaining,
+                                    foreignSpend = 0,
+                                    issueSeq = Buy._issueSeq,
+                                }
+                                LogBuy(string.format(
+                                    "buy-pending uid=%s slot=%d qty=%d cost=%d before=%d opId=%s",
+                                    tostring(uid),
+                                    slotNum,
+                                    qty,
+                                    costTotal,
+                                    beforeMoney,
+                                    tostring(opId or "?")
+                                ))
+                                if StockPiler.Scheduler and StockPiler.Scheduler.WakeAutoBuy then
+                                    StockPiler.Scheduler.WakeAutoBuy()
+                                end
+                                -- Same-frame confirm if money already moved.
+                                local immediate = ResolvePendingBuy()
+                                if immediate == "confirmed" then
+                                    return done(true)
+                                end
+                                if immediate == "no-spend" then
+                                    return done(false)
+                                end
                                 return done(true)
                             end
-                            if immediate == "no-spend" then
-                                return done(false)
-                            end
-                            return done(true)
                         end
                     end
                 end
